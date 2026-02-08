@@ -2322,6 +2322,8 @@ function parseCLI() {
       // Update options
       pull: { type: "boolean" },  // git pull before update
       refresh: { type: "boolean" },
+      // MCP options
+      port: { type: "string" },  // HTTP port for MCP server
       // Get options
       l: { type: "string" },  // max lines
       from: { type: "string" },  // start line
@@ -2652,7 +2654,8 @@ if (import.meta.main) {
 
     case "mcp": {
       const { startMcpServer } = await import("./mcp.js");
-      await startMcpServer();
+      const mcpPort = cli.values.port ? parseInt(cli.values.port as string, 10) : undefined;
+      await startMcpServer({ port: mcpPort });
       break;
     }
 

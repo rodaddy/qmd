@@ -10,6 +10,7 @@
 
 import { McpServer, ResourceTemplate } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
 import { z } from "zod";
 import {
   createStore,
@@ -88,7 +89,7 @@ function addLineNumbers(text: string, startLine: number = 1): string {
 // MCP Server
 // =============================================================================
 
-export async function startMcpServer(): Promise<void> {
+export async function startMcpServer(options?: { port?: number }): Promise<void> {
   // Open database once at startup - keep it open for the lifetime of the server
   const store = createStore();
 
@@ -611,16 +612,46 @@ You can also access documents directly via the \`qmd://\` URI scheme:
   );
 
   // ---------------------------------------------------------------------------
-  // Connect via stdio
+  // Connect via stdio or HTTP
   // ---------------------------------------------------------------------------
 
-  const transport = new StdioServerTransport();
-  await server.connect(transport);
+  if (options?.port) {
+    // HTTP mode — stateful StreamableHTTP transport for remote/LXC hosting
+    const port = options.port;
+    const transport = new WebStandardStreamableHTTPServerTransport({
+      sessionIdGenerator: () => crypto.randomUUID(),
+      enableJsonResponse: true,
+    });
+    await server.connect(transport);
+
+    Bun.serve({
+      port,
+      async fetch(req: Request): Promise<Response> {
+        const url = new URL(req.url);
+        if (url.pathname === "/mcp") {
+          return transport.handleRequest(req);
+        }
+        if (url.pathname === "/health") {
+          return Response.json({ status: "ok" });
+        }
+        return new Response("Not found", { status: 404 });
+      },
+    });
+
+    console.log(`QMD MCP server listening on http://0.0.0.0:${port}/mcp`);
+    await new Promise(() => {});
+  } else {
+    // Stdio mode — local subprocess (default)
+    const transport = new StdioServerTransport();
+    await server.connect(transport);
+  }
 
   // Note: Database stays open - it will be closed when the process exits
 }
 
 // Run if this is the main module
 if (import.meta.main) {
-  startMcpServer().catch(console.error);
+  const portArg = process.argv.find((a: string) => a.startsWith("--port="));
+  const port = portArg ? parseInt(portArg.split("=")[1]!, 10) : undefined;
+  startMcpServer({ port }).catch(console.error);
 }
