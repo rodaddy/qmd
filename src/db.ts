@@ -24,8 +24,8 @@ if (isBun) {
   // See: https://bun.com/docs/runtime/sqlite#setcustomsqlite
   if (process.platform === "darwin") {
     const homebrewPaths = [
-      "/opt/homebrew/opt/sqlite/lib/libsqlite3.dylib",  // Apple Silicon
-      "/usr/local/opt/sqlite/lib/libsqlite3.dylib",     // Intel
+      "/opt/homebrew/opt/sqlite/lib/libsqlite3.dylib", // Apple Silicon
+      "/usr/local/opt/sqlite/lib/libsqlite3.dylib", // Intel
     ];
     for (const p of homebrewPaths) {
       try {
@@ -70,6 +70,7 @@ export interface Database {
   prepare(sql: string): Statement;
   loadExtension(path: string): void;
   close(): void;
+  transaction<T>(fn: (...args: any[]) => T): (...args: any[]) => T;
 }
 
 export interface Statement {
@@ -86,10 +87,11 @@ export interface Statement {
  */
 export function loadSqliteVec(db: Database): void {
   if (!_sqliteVecLoad) {
-    const hint = isBun && process.platform === "darwin"
-      ? "On macOS with Bun, install Homebrew SQLite: brew install sqlite\n" +
-        "Or install qmd with npm instead: npm install -g @tobilu/qmd"
-      : "Ensure the sqlite-vec native module is installed correctly.";
+    const hint =
+      isBun && process.platform === "darwin"
+        ? "On macOS with Bun, install Homebrew SQLite: brew install sqlite\n" +
+          "Or install qmd with npm instead: npm install -g @tobilu/qmd"
+        : "Ensure the sqlite-vec native module is installed correctly.";
     throw new Error(`sqlite-vec extension is unavailable. ${hint}`);
   }
   _sqliteVecLoad(db);

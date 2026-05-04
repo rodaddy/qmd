@@ -22,6 +22,7 @@
   ],
   "scripts": {
     "prepare": "[ -d .git ] && ./scripts/install-hooks.sh || true",
+    "postinstall": "[ ! -d dist ] && npm run build || true",
     "build": "tsc -p tsconfig.build.json && printf '#!/usr/bin/env node\n' | cat - dist/cli/qmd.js > dist/cli/qmd.tmp && mv dist/cli/qmd.tmp dist/cli/qmd.js && chmod +x dist/cli/qmd.js",
     "test": "vitest run --reporter=verbose test/",
     "qmd": "tsx src/cli/qmd.ts",
@@ -67,7 +68,7 @@
     "tree-sitter-typescript": "0.23.2"
   },
   "devDependencies": {
-    "@types/better-sqlite3": "7.6.13",
+    "@types/better-sqlite3": "^7.6.13",
     "tsx": "4.21.0",
     "vitest": "3.2.4"
   },
