@@ -7,15 +7,21 @@
  * Follows MCP spec 2025-06-18 for proper response types.
  */
 
-import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import {
+  createServer,
+  type IncomingMessage,
+  type ServerResponse,
+} from "node:http";
 import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "url";
-import { McpServer, ResourceTemplate } from "@modelcontextprotocol/sdk/server/mcp.js";
+import {
+  McpServer,
+  ResourceTemplate,
+} from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { WebStandardStreamableHTTPServerTransport }
-  from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
+import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
 import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 import { existsSync } from "fs";
@@ -37,12 +43,12 @@ import { enableProductionMode } from "../store.js";
 // =============================================================================
 
 type SearchResultItem = {
-  docid: string;  // Short docid (#abc123) for quick reference
+  docid: string; // Short docid (#abc123) for quick reference
   file: string;
   title: string;
   score: number;
   context: string | null;
-  line: number;   // Absolute line in source markdown
+  line: number; // Absolute line in source markdown
   snippet: string;
 };
 
@@ -53,7 +59,7 @@ type StatusResult = {
   collections: {
     name: string;
     path: string | null;
-    pattern: string | null;
+    pattern: string | string[] | null;
     documents: number;
     lastUpdated: string;
   }[];
@@ -69,26 +75,39 @@ type StatusResult = {
  */
 function encodeQmdPath(path: string): string {
   // Encode each path segment separately to preserve slashes
-  return path.split('/').map(segment => encodeURIComponent(segment)).join('/');
+  return path
+    .split("/")
+    .map((segment) => encodeURIComponent(segment))
+    .join("/");
 }
 
 /**
  * Format search results as human-readable text summary
  */
-function formatSearchSummary(results: SearchResultItem[], query: string): string {
+function formatSearchSummary(
+  results: SearchResultItem[],
+  query: string,
+): string {
   if (results.length === 0) {
     return `No results found for "${query}"`;
   }
-  const lines = [`Found ${results.length} result${results.length === 1 ? '' : 's'} for "${query}":\n`];
+  const lines = [
+    `Found ${results.length} result${results.length === 1 ? "" : "s"} for "${query}":\n`,
+  ];
   for (const r of results) {
-    lines.push(`${r.docid} ${Math.round(r.score * 100)}% ${r.file} - ${r.title}`);
+    lines.push(
+      `${r.docid} ${Math.round(r.score * 100)}% ${r.file} - ${r.title}`,
+    );
   }
-  return lines.join('\n');
+  return lines.join("\n");
 }
 
 function getPackageVersion(): string {
   try {
-    const pkgPath = join(dirname(fileURLToPath(import.meta.url)), "../../package.json");
+    const pkgPath = join(
+      dirname(fileURLToPath(import.meta.url)),
+      "../../package.json",
+    );
     const pkg = JSON.parse(readFileSync(pkgPath, "utf-8"));
     return pkg.version ?? "unknown";
   } catch {
@@ -111,7 +130,9 @@ async function buildInstructions(store: QMDStore): Promise<string> {
   const lines: string[] = [];
 
   // --- What is this? ---
-  lines.push(`QMD is your local search engine over ${status.totalDocuments} markdown documents.`);
+  lines.push(
+    `QMD is your local search engine over ${status.totalDocuments} markdown documents.`,
+  );
   if (globalCtx) lines.push(`Context: ${globalCtx}`);
 
   // --- What's searchable? ---
@@ -119,18 +140,24 @@ async function buildInstructions(store: QMDStore): Promise<string> {
   // across a dozen collections, and the same info is available on demand via the `status` tool.
   if (status.collections.length > 0) {
     lines.push("");
-    const names = status.collections.map(c => c.name).join(", ");
+    const names = status.collections.map((c) => c.name).join(", ");
     lines.push(`Collections (scope with \`collections\` parameter): ${names}`);
-    lines.push("Call the `status` tool for collection descriptions, paths, and per-collection doc counts.");
+    lines.push(
+      "Call the `status` tool for collection descriptions, paths, and per-collection doc counts.",
+    );
   }
 
   // --- Capability gaps ---
   if (!status.hasVectorIndex) {
     lines.push("");
-    lines.push("Note: No vector embeddings yet. Run `qmd embed` to enable semantic search (vec/hyde).");
+    lines.push(
+      "Note: No vector embeddings yet. Run `qmd embed` to enable semantic search (vec/hyde).",
+    );
   } else if (status.needsEmbedding > 0) {
     lines.push("");
-    lines.push(`Note: ${status.needsEmbedding} documents need embedding. Run \`qmd embed\` to update.`);
+    lines.push(
+      `Note: ${status.needsEmbedding} documents need embedding. Run \`qmd embed\` to update.`,
+    );
   }
 
   // --- Search tool ---
@@ -138,28 +165,44 @@ async function buildInstructions(store: QMDStore): Promise<string> {
   lines.push("Search: Use `query` with sub-queries (lex/vec/hyde):");
   lines.push("  - type:'lex' — BM25 keyword search (exact terms, fast)");
   lines.push("  - type:'vec' — semantic vector search (meaning-based)");
-  lines.push("  - type:'hyde' — hypothetical document (write what the answer looks like)");
+  lines.push(
+    "  - type:'hyde' — hypothetical document (write what the answer looks like)",
+  );
   lines.push("");
-  lines.push("  Always provide `intent` on every search call to disambiguate and improve snippets.");
+  lines.push(
+    "  Always provide `intent` on every search call to disambiguate and improve snippets.",
+  );
   lines.push("");
   lines.push("Examples:");
   lines.push("  Quick keyword lookup: [{type:'lex', query:'error handling'}]");
-  lines.push("  Semantic search: [{type:'vec', query:'how to handle errors gracefully'}]");
-  lines.push("  Best results: [{type:'lex', query:'error'}, {type:'vec', query:'error handling best practices'}]");
-  lines.push("  With intent: searches=[{type:'lex', query:'performance'}], intent='web page load times'");
+  lines.push(
+    "  Semantic search: [{type:'vec', query:'how to handle errors gracefully'}]",
+  );
+  lines.push(
+    "  Best results: [{type:'lex', query:'error'}, {type:'vec', query:'error handling best practices'}]",
+  );
+  lines.push(
+    "  With intent: searches=[{type:'lex', query:'performance'}], intent='web page load times'",
+  );
 
   // --- Retrieval workflow ---
   lines.push("");
   lines.push("Retrieval:");
-  lines.push("  - `get` — single document by path or docid (#abc123). Supports a line-range suffix: `file.md:100` (from line 100) or `file.md:100:40` (40 lines from line 100).");
-  lines.push("  - `multi_get` — batch retrieve by glob (`journals/2025-05*.md`) or comma-separated list.");
+  lines.push(
+    "  - `get` — single document by path or docid (#abc123). Supports a line-range suffix: `file.md:100` (from line 100) or `file.md:100:40` (40 lines from line 100).",
+  );
+  lines.push(
+    "  - `multi_get` — batch retrieve by glob (`journals/2025-05*.md`) or comma-separated list.",
+  );
 
   // --- Non-obvious things that prevent mistakes ---
   lines.push("");
   lines.push("Tips:");
   lines.push("  - File paths in results are relative to their collection.");
   lines.push("  - Use `minScore: 0.5` to filter low-confidence results.");
-  lines.push("  - Results include a `context` field describing the content type.");
+  lines.push(
+    "  - Results include a `context` field describing the content type.",
+  );
 
   return lines.join("\n");
 }
@@ -187,39 +230,43 @@ async function createMcpServer(store: QMDStore): Promise<McpServer> {
     new ResourceTemplate("qmd://{+path}", { list: undefined }),
     {
       title: "QMD Document",
-      description: "A markdown document from your QMD knowledge base. Use search tools to discover documents.",
+      description:
+        "A markdown document from your QMD knowledge base. Use search tools to discover documents.",
       mimeType: "text/markdown",
     },
     async (uri, { path }) => {
       // Decode URL-encoded path (MCP clients send encoded URIs)
-      const pathStr = Array.isArray(path) ? path.join('/') : (path || '');
+      const pathStr = Array.isArray(path) ? path.join("/") : path || "";
       const decodedPath = decodeURIComponent(pathStr);
 
       // Use SDK to find document — findDocument handles collection/path resolution
       const result = await store.get(decodedPath, { includeBody: true });
 
       if ("error" in result) {
-        const text = result.error === "excluded_by_ignore"
-          ? `Document excluded by ignore rule: ${decodedPath}\nCollection: ${result.collection}\nMatched path: ${result.path}\nIgnore rule: ${result.rule}`
-          : `Document not found: ${decodedPath}`;
+        const text =
+          result.error === "excluded_by_ignore"
+            ? `Document excluded by ignore rule: ${decodedPath}\nCollection: ${result.collection}\nMatched path: ${result.path}\nIgnore rule: ${result.rule}`
+            : `Document not found: ${decodedPath}`;
         return { contents: [{ uri: uri.href, text }] };
       }
 
-      let text = addLineNumbers(result.body || "");  // Default to line numbers
+      let text = addLineNumbers(result.body || ""); // Default to line numbers
       if (result.context) {
         text = `<!-- Context: ${result.context} -->\n\n` + text;
       }
 
       return {
-        contents: [{
-          uri: uri.href,
-          name: result.displayPath,
-          title: result.title || result.displayPath,
-          mimeType: "text/markdown",
-          text,
-        }],
+        contents: [
+          {
+            uri: uri.href,
+            name: result.displayPath,
+            title: result.title || result.displayPath,
+            mimeType: "text/markdown",
+            text,
+          },
+        ],
       };
-    }
+    },
   );
 
   // ---------------------------------------------------------------------------
@@ -227,14 +274,18 @@ async function createMcpServer(store: QMDStore): Promise<McpServer> {
   // ---------------------------------------------------------------------------
 
   const subSearchSchema = z.object({
-    type: z.enum(['lex', 'vec', 'hyde']).describe(
-      "lex = BM25 keywords (supports \"phrase\" and -negation); " +
-      "vec = semantic question; hyde = hypothetical answer passage"
-    ),
-    query: z.string().describe(
-      "The query text. For lex: use keywords, \"quoted phrases\", and -negation. " +
-      "For vec: natural language question. For hyde: 50-100 word answer passage."
-    ),
+    type: z
+      .enum(["lex", "vec", "hyde"])
+      .describe(
+        'lex = BM25 keywords (supports "phrase" and -negation); ' +
+          "vec = semantic question; hyde = hypothetical answer passage",
+      ),
+    query: z
+      .string()
+      .describe(
+        'The query text. For lex: use keywords, "quoted phrases", and -negation. ' +
+          "For vec: natural language question. For hyde: 50-100 word answer passage.",
+      ),
   });
 
   server.registerTool(
@@ -303,39 +354,86 @@ Intent-aware lex (C++ performance, not sports):
 \`\`\``,
       annotations: { readOnlyHint: true, openWorldHint: false },
       inputSchema: {
-        query: z.string().optional().describe(
-          "Plain-text query, auto-expanded by the SDK into lex/vec/hyde variants, fused via " +
-          "RRF and reranked. Recommended default for most searches. Mutually exclusive with 'searches'."
-        ),
-        searches: z.array(subSearchSchema).max(10).optional().describe(
-          "Typed sub-queries to execute (lex/vec/hyde). First gets 2x weight. Use for precise " +
-          "control over retrieval strategy. Mutually exclusive with 'query'."
-        ),
-        limit: z.number().optional().default(10).describe("Max results (default: 10)"),
-        minScore: z.number().optional().default(0).describe("Min relevance 0-1 (default: 0)"),
-        candidateLimit: z.number().optional().describe(
-          "Maximum candidates to rerank (default: 40, lower = faster but may miss results)"
-        ),
-        collections: z.array(z.string()).optional().describe("Filter to collections (OR match)"),
-        intent: z.string().optional().describe(
-          "Background context to disambiguate the query. Example: query='performance', intent='web page load times and Core Web Vitals'. Does not search on its own."
-        ),
-        rerank: z.boolean().optional().default(true).describe(
-          "Rerank results using LLM (default: true). Set to false for faster results on CPU-only machines."
-        ),
+        query: z
+          .string()
+          .optional()
+          .describe(
+            "Plain-text query, auto-expanded by the SDK into lex/vec/hyde variants, fused via " +
+              "RRF and reranked. Recommended default for most searches. Mutually exclusive with 'searches'.",
+          ),
+        searches: z
+          .array(subSearchSchema)
+          .max(10)
+          .optional()
+          .describe(
+            "Typed sub-queries to execute (lex/vec/hyde). First gets 2x weight. Use for precise " +
+              "control over retrieval strategy. Mutually exclusive with 'query'.",
+          ),
+        limit: z
+          .number()
+          .optional()
+          .default(10)
+          .describe("Max results (default: 10)"),
+        minScore: z
+          .number()
+          .optional()
+          .default(0)
+          .describe("Min relevance 0-1 (default: 0)"),
+        candidateLimit: z
+          .number()
+          .optional()
+          .describe(
+            "Maximum candidates to rerank (default: 40, lower = faster but may miss results)",
+          ),
+        collections: z
+          .array(z.string())
+          .optional()
+          .describe("Filter to collections (OR match)"),
+        intent: z
+          .string()
+          .optional()
+          .describe(
+            "Background context to disambiguate the query. Example: query='performance', intent='web page load times and Core Web Vitals'. Does not search on its own.",
+          ),
+        rerank: z
+          .boolean()
+          .optional()
+          .default(true)
+          .describe(
+            "Rerank results using LLM (default: true). Set to false for faster results on CPU-only machines.",
+          ),
       },
     },
-    async ({ query, searches, limit, minScore, candidateLimit, collections, intent, rerank }) => {
+    async ({
+      query,
+      searches,
+      limit,
+      minScore,
+      candidateLimit,
+      collections,
+      intent,
+      rerank,
+    }) => {
       // Require exactly one of `query` (plain text, auto-expanded) or `searches` (typed sub-queries).
       if (!query && (!searches || searches.length === 0)) {
         return {
-          content: [{ type: "text" as const, text: "Error: provide either 'query' (plain text) or 'searches' (typed sub-queries)" }],
+          content: [
+            {
+              type: "text" as const,
+              text: "Error: provide either 'query' (plain text) or 'searches' (typed sub-queries)",
+            },
+          ],
           isError: true,
         };
       }
       if (query && searches && searches.length > 0) {
         return {
-          content: [{ type: "text" as const, text: "Error: 'query' and 'searches' are mutually exclusive; provide only one" }],
+          content: [
+            {
+              type: "text" as const,
+              text: "Error: 'query' and 'searches' are mutually exclusive; provide only one",
+            },
+          ],
           isError: true,
         };
       }
@@ -347,11 +445,17 @@ Intent-aware lex (C++ performance, not sports):
       // `searches` runs the caller's typed sub-queries directly.
       const searchOptions = query
         ? { query }
-        : { queries: (searches ?? []).map(s => ({ type: s.type, query: s.query })) };
+        : {
+            queries: (searches ?? []).map((s) => ({
+              type: s.type,
+              query: s.query,
+            })),
+          };
 
       const results = await store.search({
         ...searchOptions,
-        collections: effectiveCollections.length > 0 ? effectiveCollections : undefined,
+        collections:
+          effectiveCollections.length > 0 ? effectiveCollections : undefined,
         limit,
         minScore,
         candidateLimit,
@@ -360,14 +464,22 @@ Intent-aware lex (C++ performance, not sports):
       });
 
       // Use the plain query, or the first lex/vec sub-query, for snippet extraction
-      const primaryQuery = query
-        || searches?.find(s => s.type === 'lex')?.query
-        || searches?.find(s => s.type === 'vec')?.query
-        || searches?.[0]?.query
-        || "";
+      const primaryQuery =
+        query ||
+        searches?.find((s) => s.type === "lex")?.query ||
+        searches?.find((s) => s.type === "vec")?.query ||
+        searches?.[0]?.query ||
+        "";
 
-      const filtered: SearchResultItem[] = results.map(r => {
-        const { line, snippet } = extractSnippet(r.body, primaryQuery, 300, r.bestChunkPos, r.bestChunk.length, intent);
+      const filtered: SearchResultItem[] = results.map((r) => {
+        const { line, snippet } = extractSnippet(
+          r.body,
+          primaryQuery,
+          300,
+          r.bestChunkPos,
+          r.bestChunk.length,
+          intent,
+        );
         return {
           docid: `#${r.docid}`,
           file: r.displayPath,
@@ -380,10 +492,12 @@ Intent-aware lex (C++ performance, not sports):
       });
 
       return {
-        content: [{ type: "text", text: formatSearchSummary(filtered, primaryQuery) }],
+        content: [
+          { type: "text", text: formatSearchSummary(filtered, primaryQuery) },
+        ],
         structuredContent: { results: filtered },
       };
-    }
+    },
   );
 
   // ---------------------------------------------------------------------------
@@ -394,13 +508,30 @@ Intent-aware lex (C++ performance, not sports):
     "get",
     {
       title: "Get Document",
-      description: "Retrieve the full content of a document by its file path or docid. Use paths or docids (#abc123) from search results. Suggests similar files if not found.",
+      description:
+        "Retrieve the full content of a document by its file path or docid. Use paths or docids (#abc123) from search results. Suggests similar files if not found.",
       annotations: { readOnlyHint: true, openWorldHint: false },
       inputSchema: {
-        file: z.string().describe("File path or docid from search results. Supports a line-range suffix: 'pages/meeting.md:100' starts at line 100; 'pages/meeting.md:100:40' (or '#abc123:100:40') reads 40 lines from line 100."),
-        fromLine: z.number().optional().describe("Start from this line number (1-indexed)"),
-        maxLines: z.number().optional().describe("Maximum number of lines to return"),
-        lineNumbers: z.boolean().optional().default(true).describe("Add line numbers to output (format: 'N: content'). On by default; set false for raw content."),
+        file: z
+          .string()
+          .describe(
+            "File path or docid from search results. Supports a line-range suffix: 'pages/meeting.md:100' starts at line 100; 'pages/meeting.md:100:40' (or '#abc123:100:40') reads 40 lines from line 100.",
+          ),
+        fromLine: z
+          .number()
+          .optional()
+          .describe("Start from this line number (1-indexed)"),
+        maxLines: z
+          .number()
+          .optional()
+          .describe("Maximum number of lines to return"),
+        lineNumbers: z
+          .boolean()
+          .optional()
+          .default(true)
+          .describe(
+            "Add line numbers to output (format: 'N: content'). On by default; set false for raw content.",
+          ),
       },
     },
     async ({ file, fromLine, maxLines, lineNumbers }) => {
@@ -411,8 +542,10 @@ Intent-aware lex (C++ performance, not sports):
       let lookup = file;
       const rangeMatch = lookup.match(/:(\d+):(\d+)$/);
       if (rangeMatch) {
-        if (parsedFromLine === undefined) parsedFromLine = parseInt(rangeMatch[1]!, 10);
-        if (parsedMaxLines === undefined) parsedMaxLines = parseInt(rangeMatch[2]!, 10);
+        if (parsedFromLine === undefined)
+          parsedFromLine = parseInt(rangeMatch[1]!, 10);
+        if (parsedMaxLines === undefined)
+          parsedMaxLines = parseInt(rangeMatch[2]!, 10);
         lookup = lookup.slice(0, -rangeMatch[0].length);
       } else {
         const colonMatch = lookup.match(/:(\d+)$/);
@@ -421,16 +554,18 @@ Intent-aware lex (C++ performance, not sports):
           lookup = lookup.slice(0, -colonMatch[0].length);
         }
       }
-      if (parsedFromLine !== undefined) parsedFromLine = Math.max(1, parsedFromLine);
+      if (parsedFromLine !== undefined)
+        parsedFromLine = Math.max(1, parsedFromLine);
 
       const result = await store.get(lookup, { includeBody: false });
 
       if ("error" in result) {
-        let msg = result.error === "excluded_by_ignore"
-          ? `Document excluded by ignore rule: ${file}\nCollection: ${result.collection}\nMatched path: ${result.path}\nIgnore rule: ${result.rule}`
-          : `Document not found: ${file}`;
+        let msg =
+          result.error === "excluded_by_ignore"
+            ? `Document excluded by ignore rule: ${file}\nCollection: ${result.collection}\nMatched path: ${result.path}\nIgnore rule: ${result.rule}`
+            : `Document not found: ${file}`;
         if (result.error === "not_found" && result.similarFiles.length > 0) {
-          msg += `\n\nDid you mean one of these?\n${result.similarFiles.map(s => `  - ${s}`).join('\n')}`;
+          msg += `\n\nDid you mean one of these?\n${result.similarFiles.map((s) => `  - ${s}`).join("\n")}`;
         }
         return {
           content: [{ type: "text", text: msg }],
@@ -438,7 +573,11 @@ Intent-aware lex (C++ performance, not sports):
         };
       }
 
-      const body = await store.getDocumentBody(result.filepath, { fromLine: parsedFromLine, maxLines: parsedMaxLines }) ?? "";
+      const body =
+        (await store.getDocumentBody(result.filepath, {
+          fromLine: parsedFromLine,
+          maxLines: parsedMaxLines,
+        })) ?? "";
       let text = body;
       if (lineNumbers) {
         const startLine = parsedFromLine || 1;
@@ -449,18 +588,20 @@ Intent-aware lex (C++ performance, not sports):
       }
 
       return {
-        content: [{
-          type: "resource",
-          resource: {
-            uri: `qmd://${encodeQmdPath(result.displayPath)}`,
-            name: result.displayPath,
-            title: result.title,
-            mimeType: "text/markdown",
-            text,
+        content: [
+          {
+            type: "resource",
+            resource: {
+              uri: `qmd://${encodeQmdPath(result.displayPath)}`,
+              name: result.displayPath,
+              title: result.title,
+              mimeType: "text/markdown",
+              text,
+            },
           },
-        }],
+        ],
       };
-    }
+    },
   );
 
   // ---------------------------------------------------------------------------
@@ -471,29 +612,59 @@ Intent-aware lex (C++ performance, not sports):
     "multi_get",
     {
       title: "Multi-Get Documents",
-      description: "Retrieve multiple documents by glob pattern (e.g., 'journals/2025-05*.md') or comma-separated list. Skips files larger than maxBytes.",
+      description:
+        "Retrieve multiple documents by glob pattern (e.g., 'journals/2025-05*.md') or comma-separated list. Skips files larger than maxBytes.",
       annotations: { readOnlyHint: true, openWorldHint: false },
       inputSchema: {
-        pattern: z.string().describe("Glob pattern or comma-separated list of file paths"),
+        pattern: z
+          .string()
+          .describe("Glob pattern or comma-separated list of file paths"),
         maxLines: z.number().optional().describe("Maximum lines per file"),
-        maxBytes: z.number().optional().default(DEFAULT_MULTI_GET_MAX_BYTES).describe("Skip files larger than this (default: 65536 = 64KB)"),
-        lineNumbers: z.boolean().optional().default(true).describe("Add line numbers to output (format: 'N: content'). On by default; set false for raw content."),
+        maxBytes: z
+          .number()
+          .optional()
+          .default(DEFAULT_MULTI_GET_MAX_BYTES)
+          .describe("Skip files larger than this (default: 65536 = 64KB)"),
+        lineNumbers: z
+          .boolean()
+          .optional()
+          .default(true)
+          .describe(
+            "Add line numbers to output (format: 'N: content'). On by default; set false for raw content.",
+          ),
       },
     },
     async ({ pattern, maxLines, maxBytes, lineNumbers }) => {
-      const { docs, errors } = await store.multiGet(pattern, { includeBody: true, maxBytes: maxBytes || DEFAULT_MULTI_GET_MAX_BYTES });
+      const { docs, errors } = await store.multiGet(pattern, {
+        includeBody: true,
+        maxBytes: maxBytes || DEFAULT_MULTI_GET_MAX_BYTES,
+      });
 
       if (docs.length === 0 && errors.length === 0) {
         return {
-          content: [{ type: "text", text: `No files matched pattern: ${pattern}` }],
+          content: [
+            { type: "text", text: `No files matched pattern: ${pattern}` },
+          ],
           isError: true,
         };
       }
 
-      const content: ({ type: "text"; text: string } | { type: "resource"; resource: { uri: string; name: string; title?: string; mimeType: string; text: string } })[] = [];
+      const content: (
+        | { type: "text"; text: string }
+        | {
+            type: "resource";
+            resource: {
+              uri: string;
+              name: string;
+              title?: string;
+              mimeType: string;
+              text: string;
+            };
+          }
+      )[] = [];
 
       if (errors.length > 0) {
-        content.push({ type: "text", text: `Errors:\n${errors.join('\n')}` });
+        content.push({ type: "text", text: `Errors:\n${errors.join("\n")}` });
       }
 
       for (const result of docs) {
@@ -533,7 +704,7 @@ Intent-aware lex (C++ performance, not sports):
       }
 
       return { content };
-    }
+    },
   );
 
   // ---------------------------------------------------------------------------
@@ -544,7 +715,8 @@ Intent-aware lex (C++ performance, not sports):
     "status",
     {
       title: "Index Status",
-      description: "Show the status of the QMD index: collections, document counts, and health information.",
+      description:
+        "Show the status of the QMD index: collections, document counts, and health information.",
       annotations: { readOnlyHint: true, openWorldHint: false },
       inputSchema: {},
     },
@@ -555,7 +727,7 @@ Intent-aware lex (C++ performance, not sports):
         `QMD Index Status:`,
         `  Total documents: ${status.totalDocuments}`,
         `  Needs embedding: ${status.needsEmbedding}`,
-        `  Vector index: ${status.hasVectorIndex ? 'yes' : 'no'}`,
+        `  Vector index: ${status.hasVectorIndex ? "yes" : "no"}`,
         `  Collections: ${status.collections.length}`,
       ];
 
@@ -564,10 +736,10 @@ Intent-aware lex (C++ performance, not sports):
       }
 
       return {
-        content: [{ type: "text", text: summary.join('\n') }],
+        content: [{ type: "text", text: summary.join("\n") }],
         structuredContent: status,
       };
-    }
+    },
   );
 
   return server;
@@ -581,7 +753,9 @@ export type McpStartupOptions = {
   dbPath?: string;
 };
 
-export async function startMcpServer(options: McpStartupOptions = {}): Promise<void> {
+export async function startMcpServer(
+  options: McpStartupOptions = {},
+): Promise<void> {
   // Opt into production mode when the MCP server is actually started, not
   // when this module is merely imported for its exports. Importing the module
   // at the top level flipped the global production flag and broke test
@@ -616,7 +790,7 @@ export type HttpServerHandle = {
  */
 export async function startMcpHttpServer(
   port: number,
-  options: ({ quiet?: boolean; host?: string } & McpStartupOptions) = {},
+  options: { quiet?: boolean; host?: string } & McpStartupOptions = {},
 ): Promise<HttpServerHandle> {
   // See startMcpServer() for the rationale — flip production mode here so the
   // HTTP transport resolves the real database path, without leaking state into
@@ -705,168 +879,234 @@ export async function startMcpHttpServer(
     return Buffer.concat(chunks).toString();
   }
 
-  const httpServer = createServer(async (nodeReq: IncomingMessage, nodeRes: ServerResponse) => {
-    const reqStart = Date.now();
-    const pathname = nodeReq.url || "/";
+  const httpServer = createServer(
+    async (nodeReq: IncomingMessage, nodeRes: ServerResponse) => {
+      const reqStart = Date.now();
+      const pathname = nodeReq.url || "/";
 
-    try {
-      if (pathname === "/health" && nodeReq.method === "GET") {
-        const body = JSON.stringify({ status: "ok", uptime: Math.floor((Date.now() - startTime) / 1000) });
-        nodeRes.writeHead(200, { "Content-Type": "application/json" });
-        nodeRes.end(body);
-        log(`${ts()} GET /health (${Date.now() - reqStart}ms)`);
-        return;
-      }
-
-      // REST endpoint: POST /search — structured search without MCP protocol
-      // REST endpoint: POST /query (alias: /search) — structured search without MCP protocol
-      if ((pathname === "/query" || pathname === "/search") && nodeReq.method === "POST") {
-        const rawBody = await collectBody(nodeReq);
-        const params = JSON.parse(rawBody) as Record<string, unknown>;
-
-        // Validate required fields
-        if (!params.searches || !Array.isArray(params.searches)) {
-          nodeRes.writeHead(400, { "Content-Type": "application/json" });
-          nodeRes.end(JSON.stringify({ error: "Missing required field: searches (array)" }));
+      try {
+        if (pathname === "/health" && nodeReq.method === "GET") {
+          const body = JSON.stringify({
+            status: "ok",
+            uptime: Math.floor((Date.now() - startTime) / 1000),
+          });
+          nodeRes.writeHead(200, { "Content-Type": "application/json" });
+          nodeRes.end(body);
+          log(`${ts()} GET /health (${Date.now() - reqStart}ms)`);
           return;
         }
 
-        // Map to internal format
-        const searches = params.searches as RestSearchInput[];
-        const queries: ExpandedQuery[] = searches.map((s) => ({
-          type: s.type as 'lex' | 'vec' | 'hyde',
-          query: String(s.query || ""),
-        }));
+        // REST endpoint: POST /search — structured search without MCP protocol
+        // REST endpoint: POST /query (alias: /search) — structured search without MCP protocol
+        if (
+          (pathname === "/query" || pathname === "/search") &&
+          nodeReq.method === "POST"
+        ) {
+          const rawBody = await collectBody(nodeReq);
+          const params = JSON.parse(rawBody) as Record<string, unknown>;
 
-        // Use default collections if none specified
-        const effectiveCollections = Array.isArray(params.collections) ? params.collections.map(String) : defaultCollectionNames;
-
-        const results = await store.search({
-          queries,
-          collections: effectiveCollections.length > 0 ? effectiveCollections : undefined,
-          limit: typeof params.limit === "number" ? params.limit : 10,
-          minScore: typeof params.minScore === "number" ? params.minScore : 0,
-          candidateLimit: typeof params.candidateLimit === "number" ? params.candidateLimit : undefined,
-          intent: typeof params.intent === "string" ? params.intent : undefined,
-          rerank: typeof params.rerank === "boolean" ? params.rerank : undefined,
-        });
-
-        // Use first lex or vec query for snippet extraction
-        const primaryQuery = searches.find((s) => s.type === 'lex')?.query
-          || searches.find((s) => s.type === 'vec')?.query
-          || searches[0]?.query || "";
-
-        const formatted = results.map(r => {
-          const { line, snippet } = extractSnippet(r.body, String(primaryQuery), 300, r.bestChunkPos, r.bestChunk.length, typeof params.intent === "string" ? params.intent : undefined);
-          return {
-            docid: `#${r.docid}`,
-            file: `qmd://${encodeQmdPath(r.displayPath)}`,
-            title: r.title,
-            score: Math.round(r.score * 100) / 100,
-            context: r.context,
-            line,
-            snippet: addLineNumbers(snippet, line),
-          };
-        });
-
-        nodeRes.writeHead(200, { "Content-Type": "application/json" });
-        nodeRes.end(JSON.stringify({ results: formatted }));
-        log(`${ts()} POST /query ${params.searches.length} queries (${Date.now() - reqStart}ms)`);
-        return;
-      }
-
-      if (pathname === "/mcp" && nodeReq.method === "POST") {
-        const rawBody = await collectBody(nodeReq);
-        const body = JSON.parse(rawBody);
-        const label = describeRequest(body);
-        const url = `http://localhost:${port}${pathname}`;
-        const headers: Record<string, string> = {};
-        for (const [k, v] of Object.entries(nodeReq.headers)) {
-          if (typeof v === "string") headers[k] = v;
-        }
-
-        // Route to existing session or create new one on initialize
-        const sessionId = headers["mcp-session-id"];
-        let transport: WebStandardStreamableHTTPServerTransport;
-
-        if (sessionId) {
-          const existing = sessions.get(sessionId);
-          if (!existing) {
-            nodeRes.writeHead(404, { "Content-Type": "application/json" });
-            nodeRes.end(JSON.stringify({
-              jsonrpc: "2.0",
-              error: { code: -32001, message: "Session not found" },
-              id: body?.id ?? null,
-            }));
+          // Validate required fields
+          if (!params.searches || !Array.isArray(params.searches)) {
+            nodeRes.writeHead(400, { "Content-Type": "application/json" });
+            nodeRes.end(
+              JSON.stringify({
+                error: "Missing required field: searches (array)",
+              }),
+            );
             return;
           }
-          transport = existing;
-        } else if (isInitializeRequest(body)) {
-          transport = await createSession();
-        } else {
-          nodeRes.writeHead(400, { "Content-Type": "application/json" });
-          nodeRes.end(JSON.stringify({
-            jsonrpc: "2.0",
-            error: { code: -32000, message: "Bad Request: Missing session ID" },
-            id: body?.id ?? null,
+
+          // Map to internal format
+          const searches = params.searches as RestSearchInput[];
+          const queries: ExpandedQuery[] = searches.map((s) => ({
+            type: s.type as "lex" | "vec" | "hyde",
+            query: String(s.query || ""),
           }));
+
+          // Use default collections if none specified
+          const effectiveCollections = Array.isArray(params.collections)
+            ? params.collections.map(String)
+            : defaultCollectionNames;
+
+          const results = await store.search({
+            queries,
+            collections:
+              effectiveCollections.length > 0
+                ? effectiveCollections
+                : undefined,
+            limit: typeof params.limit === "number" ? params.limit : 10,
+            minScore: typeof params.minScore === "number" ? params.minScore : 0,
+            candidateLimit:
+              typeof params.candidateLimit === "number"
+                ? params.candidateLimit
+                : undefined,
+            intent:
+              typeof params.intent === "string" ? params.intent : undefined,
+            rerank:
+              typeof params.rerank === "boolean" ? params.rerank : undefined,
+          });
+
+          // Use first lex or vec query for snippet extraction
+          const primaryQuery =
+            searches.find((s) => s.type === "lex")?.query ||
+            searches.find((s) => s.type === "vec")?.query ||
+            searches[0]?.query ||
+            "";
+
+          const formatted = results.map((r) => {
+            const { line, snippet } = extractSnippet(
+              r.body,
+              String(primaryQuery),
+              300,
+              r.bestChunkPos,
+              r.bestChunk.length,
+              typeof params.intent === "string" ? params.intent : undefined,
+            );
+            return {
+              docid: `#${r.docid}`,
+              file: `qmd://${encodeQmdPath(r.displayPath)}`,
+              title: r.title,
+              score: Math.round(r.score * 100) / 100,
+              context: r.context,
+              line,
+              snippet: addLineNumbers(snippet, line),
+            };
+          });
+
+          nodeRes.writeHead(200, { "Content-Type": "application/json" });
+          nodeRes.end(JSON.stringify({ results: formatted }));
+          log(
+            `${ts()} POST /query ${params.searches.length} queries (${Date.now() - reqStart}ms)`,
+          );
           return;
         }
 
-        const request = new Request(url, { method: "POST", headers, body: rawBody });
-        const response = await transport.handleRequest(request, { parsedBody: body });
+        if (pathname === "/mcp" && nodeReq.method === "POST") {
+          const rawBody = await collectBody(nodeReq);
+          const body = JSON.parse(rawBody);
+          const label = describeRequest(body);
+          const url = `http://localhost:${port}${pathname}`;
+          const headers: Record<string, string> = {};
+          for (const [k, v] of Object.entries(nodeReq.headers)) {
+            if (typeof v === "string") headers[k] = v;
+          }
 
-        nodeRes.writeHead(response.status, Object.fromEntries(response.headers));
-        nodeRes.end(Buffer.from(await response.arrayBuffer()));
-        log(`${ts()} POST /mcp ${label} (${Date.now() - reqStart}ms)`);
-        return;
+          // Route to existing session or create new one on initialize
+          const sessionId = headers["mcp-session-id"];
+          let transport: WebStandardStreamableHTTPServerTransport;
+
+          if (sessionId) {
+            const existing = sessions.get(sessionId);
+            if (!existing) {
+              nodeRes.writeHead(404, { "Content-Type": "application/json" });
+              nodeRes.end(
+                JSON.stringify({
+                  jsonrpc: "2.0",
+                  error: { code: -32001, message: "Session not found" },
+                  id: body?.id ?? null,
+                }),
+              );
+              return;
+            }
+            transport = existing;
+          } else if (isInitializeRequest(body)) {
+            transport = await createSession();
+          } else {
+            nodeRes.writeHead(400, { "Content-Type": "application/json" });
+            nodeRes.end(
+              JSON.stringify({
+                jsonrpc: "2.0",
+                error: {
+                  code: -32000,
+                  message: "Bad Request: Missing session ID",
+                },
+                id: body?.id ?? null,
+              }),
+            );
+            return;
+          }
+
+          const request = new Request(url, {
+            method: "POST",
+            headers,
+            body: rawBody,
+          });
+          const response = await transport.handleRequest(request, {
+            parsedBody: body,
+          });
+
+          nodeRes.writeHead(
+            response.status,
+            Object.fromEntries(response.headers),
+          );
+          nodeRes.end(Buffer.from(await response.arrayBuffer()));
+          log(`${ts()} POST /mcp ${label} (${Date.now() - reqStart}ms)`);
+          return;
+        }
+
+        if (pathname === "/mcp") {
+          const headers: Record<string, string> = {};
+          for (const [k, v] of Object.entries(nodeReq.headers)) {
+            if (typeof v === "string") headers[k] = v;
+          }
+
+          // GET/DELETE must have a valid session
+          const sessionId = headers["mcp-session-id"];
+          if (!sessionId) {
+            nodeRes.writeHead(400, { "Content-Type": "application/json" });
+            nodeRes.end(
+              JSON.stringify({
+                jsonrpc: "2.0",
+                error: {
+                  code: -32000,
+                  message: "Bad Request: Missing session ID",
+                },
+                id: null,
+              }),
+            );
+            return;
+          }
+          const transport = sessions.get(sessionId);
+          if (!transport) {
+            nodeRes.writeHead(404, { "Content-Type": "application/json" });
+            nodeRes.end(
+              JSON.stringify({
+                jsonrpc: "2.0",
+                error: { code: -32001, message: "Session not found" },
+                id: null,
+              }),
+            );
+            return;
+          }
+
+          const url = `http://localhost:${port}${pathname}`;
+          const rawBody =
+            nodeReq.method !== "GET" && nodeReq.method !== "HEAD"
+              ? await collectBody(nodeReq)
+              : undefined;
+          const request = new Request(url, {
+            method: nodeReq.method || "GET",
+            headers,
+            ...(rawBody ? { body: rawBody } : {}),
+          });
+          const response = await transport.handleRequest(request);
+          nodeRes.writeHead(
+            response.status,
+            Object.fromEntries(response.headers),
+          );
+          nodeRes.end(Buffer.from(await response.arrayBuffer()));
+          return;
+        }
+
+        nodeRes.writeHead(404);
+        nodeRes.end("Not Found");
+      } catch (err) {
+        console.error("HTTP handler error:", err);
+        nodeRes.writeHead(500);
+        nodeRes.end("Internal Server Error");
       }
-
-      if (pathname === "/mcp") {
-        const headers: Record<string, string> = {};
-        for (const [k, v] of Object.entries(nodeReq.headers)) {
-          if (typeof v === "string") headers[k] = v;
-        }
-
-        // GET/DELETE must have a valid session
-        const sessionId = headers["mcp-session-id"];
-        if (!sessionId) {
-          nodeRes.writeHead(400, { "Content-Type": "application/json" });
-          nodeRes.end(JSON.stringify({
-            jsonrpc: "2.0",
-            error: { code: -32000, message: "Bad Request: Missing session ID" },
-            id: null,
-          }));
-          return;
-        }
-        const transport = sessions.get(sessionId);
-        if (!transport) {
-          nodeRes.writeHead(404, { "Content-Type": "application/json" });
-          nodeRes.end(JSON.stringify({
-            jsonrpc: "2.0",
-            error: { code: -32001, message: "Session not found" },
-            id: null,
-          }));
-          return;
-        }
-
-        const url = `http://localhost:${port}${pathname}`;
-        const rawBody = nodeReq.method !== "GET" && nodeReq.method !== "HEAD" ? await collectBody(nodeReq) : undefined;
-        const request = new Request(url, { method: nodeReq.method || "GET", headers, ...(rawBody ? { body: rawBody } : {}) });
-        const response = await transport.handleRequest(request);
-        nodeRes.writeHead(response.status, Object.fromEntries(response.headers));
-        nodeRes.end(Buffer.from(await response.arrayBuffer()));
-        return;
-      }
-
-      nodeRes.writeHead(404);
-      nodeRes.end("Not Found");
-    } catch (err) {
-      console.error("HTTP handler error:", err);
-      nodeRes.writeHead(500);
-      nodeRes.end("Internal Server Error");
-    }
-  });
+    },
+  );
 
   const host = options.host ?? process.env.QMD_HOST ?? "localhost";
   await new Promise<void>((resolve, reject) => {
@@ -904,6 +1144,10 @@ export async function startMcpHttpServer(
 }
 
 // Run if this is the main module
-if (fileURLToPath(import.meta.url) === process.argv[1] || process.argv[1]?.endsWith("/server.ts") || process.argv[1]?.endsWith("/server.js")) {
+if (
+  fileURLToPath(import.meta.url) === process.argv[1] ||
+  process.argv[1]?.endsWith("/server.ts") ||
+  process.argv[1]?.endsWith("/server.js")
+) {
   startMcpServer().catch(console.error);
 }

@@ -65,9 +65,7 @@ import {
   type EmbedResult,
   type ChunkStrategy,
 } from "./store.js";
-import {
-  LlamaCpp,
-} from "./llm.js";
+import { LlamaCpp } from "./llm.js";
 import {
   setConfigSource,
   loadConfig,
@@ -233,26 +231,44 @@ export interface QMDStore {
   searchLex(query: string, options?: LexSearchOptions): Promise<SearchResult[]>;
 
   /** Vector similarity search (embedding model, no reranking) */
-  searchVector(query: string, options?: VectorSearchOptions): Promise<SearchResult[]>;
+  searchVector(
+    query: string,
+    options?: VectorSearchOptions,
+  ): Promise<SearchResult[]>;
 
   /** Expand a query into typed sub-searches (lex/vec/hyde) for manual control */
-  expandQuery(query: string, options?: ExpandQueryOptions): Promise<ExpandedQuery[]>;
+  expandQuery(
+    query: string,
+    options?: ExpandQueryOptions,
+  ): Promise<ExpandedQuery[]>;
 
   // ── Document Retrieval ──────────────────────────────────────────────
 
   /** Get a single document by path or docid */
-  get(pathOrDocid: string, options?: { includeBody?: boolean }): Promise<DocumentResult | DocumentLookupError>;
+  get(
+    pathOrDocid: string,
+    options?: { includeBody?: boolean },
+  ): Promise<DocumentResult | DocumentLookupError>;
 
   /** Get the body content of a document, optionally sliced by line range */
-  getDocumentBody(pathOrDocid: string, opts?: { fromLine?: number; maxLines?: number }): Promise<string | null>;
+  getDocumentBody(
+    pathOrDocid: string,
+    opts?: { fromLine?: number; maxLines?: number },
+  ): Promise<string | null>;
 
   /** Get multiple documents by glob pattern or comma-separated list */
-  multiGet(pattern: string, options?: { includeBody?: boolean; maxBytes?: number }): Promise<{ docs: MultiGetResult[]; errors: string[] }>;
+  multiGet(
+    pattern: string,
+    options?: { includeBody?: boolean; maxBytes?: number },
+  ): Promise<{ docs: MultiGetResult[]; errors: string[] }>;
 
   // ── Collection Management ───────────────────────────────────────────
 
   /** Add or update a collection */
-  addCollection(name: string, opts: { path: string; pattern?: string; ignore?: string[] }): Promise<void>;
+  addCollection(
+    name: string,
+    opts: { path: string; pattern?: string; ignore?: string[] },
+  ): Promise<void>;
 
   /** Remove a collection */
   removeCollection(name: string): Promise<boolean>;
@@ -261,7 +277,17 @@ export interface QMDStore {
   renameCollection(oldName: string, newName: string): Promise<boolean>;
 
   /** List all collections with document stats */
-  listCollections(): Promise<{ name: string; pwd: string; glob_pattern: string; doc_count: number; active_count: number; last_modified: string | null; includeByDefault: boolean }[]>;
+  listCollections(): Promise<
+    {
+      name: string;
+      pwd: string;
+      glob_pattern: string | string[];
+      doc_count: number;
+      active_count: number;
+      last_modified: string | null;
+      includeByDefault: boolean;
+    }[]
+  >;
 
   /** Get names of collections included by default in queries */
   getDefaultCollectionNames(): Promise<string[]>;
@@ -269,7 +295,11 @@ export interface QMDStore {
   // ── Context Management ──────────────────────────────────────────────
 
   /** Add context for a path within a collection */
-  addContext(collectionName: string, pathPrefix: string, contextText: string): Promise<boolean>;
+  addContext(
+    collectionName: string,
+    pathPrefix: string,
+    contextText: string,
+  ): Promise<boolean>;
 
   /** Remove context from a collection path */
   removeContext(collectionName: string, pathPrefix: string): Promise<boolean>;
@@ -281,7 +311,9 @@ export interface QMDStore {
   getGlobalContext(): Promise<string | undefined>;
 
   /** List all contexts across all collections */
-  listContexts(): Promise<Array<{ collection: string; path: string; context: string }>>;
+  listContexts(): Promise<
+    Array<{ collection: string; path: string; context: string }>
+  >;
 
   // ── Indexing ────────────────────────────────────────────────────────
 
@@ -425,9 +457,12 @@ export async function createStore(options: StoreOptions): Promise<QMDStore> {
         chunkStrategy: opts.chunkStrategy,
       });
     },
-    searchLex: async (q, opts) => internal.searchFTS(q, opts?.limit, opts?.collection),
-    searchVector: async (q, opts) => internal.searchVec(q, llm.embedModelName, opts?.limit, opts?.collection),
-    expandQuery: async (q, opts) => internal.expandQuery(q, undefined, opts?.intent),
+    searchLex: async (q, opts) =>
+      internal.searchFTS(q, opts?.limit, opts?.collection),
+    searchVector: async (q, opts) =>
+      internal.searchVec(q, llm.embedModelName, opts?.limit, opts?.collection),
+    expandQuery: async (q, opts) =>
+      internal.expandQuery(q, undefined, opts?.intent),
     get: async (pathOrDocid, opts) => internal.findDocument(pathOrDocid, opts),
     getDocumentBody: async (pathOrDocid, opts) => {
       const result = internal.findDocument(pathOrDocid, { includeBody: false });
@@ -438,7 +473,11 @@ export async function createStore(options: StoreOptions): Promise<QMDStore> {
 
     // Collection Management — write to SQLite + write-through to YAML/inline if configured
     addCollection: async (name, opts) => {
-      upsertStoreCollection(db, name, { path: opts.path, pattern: opts.pattern, ignore: opts.ignore });
+      upsertStoreCollection(db, name, {
+        path: opts.path,
+        pattern: opts.pattern,
+        ignore: opts.ignore,
+      });
       if (hasYamlConfig || options.config) {
         collectionsAddCollection(name, opts.path, opts.pattern);
       }
@@ -460,12 +499,17 @@ export async function createStore(options: StoreOptions): Promise<QMDStore> {
     listCollections: async () => storeListCollections(db),
     getDefaultCollectionNames: async () => {
       const collections = storeListCollections(db);
-      return collections.filter(c => c.includeByDefault).map(c => c.name);
+      return collections.filter((c) => c.includeByDefault).map((c) => c.name);
     },
 
     // Context Management — write to SQLite + write-through to YAML/inline if configured
     addContext: async (collectionName, pathPrefix, contextText) => {
-      const result = updateStoreContext(db, collectionName, pathPrefix, contextText);
+      const result = updateStoreContext(
+        db,
+        collectionName,
+        pathPrefix,
+        contextText,
+      );
       if (hasYamlConfig || options.config) {
         collectionsAddContext(collectionName, pathPrefix, contextText);
       }
@@ -491,20 +535,30 @@ export async function createStore(options: StoreOptions): Promise<QMDStore> {
     update: async (updateOpts) => {
       const collections = getStoreCollections(db);
       const filtered = updateOpts?.collections
-        ? collections.filter(c => updateOpts.collections!.includes(c.name))
+        ? collections.filter((c) => updateOpts.collections!.includes(c.name))
         : collections;
 
       internal.clearCache();
 
-      let totalIndexed = 0, totalUpdated = 0, totalUnchanged = 0, totalRemoved = 0;
+      let totalIndexed = 0,
+        totalUpdated = 0,
+        totalUnchanged = 0,
+        totalRemoved = 0;
 
       for (const col of filtered) {
-        const result = await reindexCollection(internal, col.path, col.pattern || "**/*.md", col.name, {
-          ignorePatterns: col.ignore,
-          onProgress: updateOpts?.onProgress
-            ? (info) => updateOpts.onProgress!({ collection: col.name, ...info })
-            : undefined,
-        });
+        const result = await reindexCollection(
+          internal,
+          col.path,
+          col.pattern || "**/*.md",
+          col.name,
+          {
+            ignorePatterns: col.ignore,
+            onProgress: updateOpts?.onProgress
+              ? (info) =>
+                  updateOpts.onProgress!({ collection: col.name, ...info })
+              : undefined,
+          },
+        );
         totalIndexed += result.indexed;
         totalUpdated += result.updated;
         totalUnchanged += result.unchanged;

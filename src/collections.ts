@@ -25,11 +25,15 @@ export type ContextMap = Record<string, string>;
  * A single collection configuration
  */
 export interface Collection {
-  path: string;              // Absolute path to index
-  pattern: string;           // Glob pattern (e.g., "**/*.md")
-  ignore?: string[];         // Glob patterns to exclude (e.g., ["Sessions/**"])
-  context?: ContextMap;      // Optional context definitions
-  update?: string;           // Optional bash command to run during qmd update
+  path: string; // Absolute path to index
+  // Glob pattern(s), e.g. "**/*.md". An ARRAY acts as an allowlist:
+  // deny-all-allow-some. That is the only thing that works in a repo which
+  // vendors other git repos -- a blocklist cannot separate 42 tracked files
+  // from 89,433 vendored ones in the same directory.
+  pattern: string | string[];
+  ignore?: string[]; // Glob patterns to exclude (e.g., ["Sessions/**"])
+  context?: ContextMap; // Optional context definitions
+  update?: string; // Optional bash command to run during qmd update
   includeByDefault?: boolean; // Include in queries by default (default: true)
 }
 
@@ -46,10 +50,10 @@ export interface ModelsConfig {
  * The complete configuration file structure
  */
 export interface CollectionConfig {
-  global_context?: string;                    // Context applied to all collections
-  editor_uri?: string;                        // Editor URI template for terminal hyperlinks
-  editor_uri_template?: string;               // Alias for editor_uri
-  collections: Record<string, Collection>;    // Collection name -> config
+  global_context?: string; // Context applied to all collections
+  editor_uri?: string; // Editor URI template for terminal hyperlinks
+  editor_uri_template?: string; // Alias for editor_uri
+  collections: Record<string, Collection>; // Collection name -> config
   models?: ModelsConfig;
 }
 
@@ -68,7 +72,9 @@ export interface NamedCollection extends Collection {
 let currentIndexName: string = "index";
 
 // SDK mode: optional in-memory config or custom config path
-let configSource: { type: 'file'; path?: string } | { type: 'inline'; config: CollectionConfig } = { type: 'file' };
+let configSource:
+  | { type: "file"; path?: string }
+  | { type: "inline"; config: CollectionConfig } = { type: "file" };
 
 /**
  * Set the config source for SDK mode.
@@ -76,9 +82,12 @@ let configSource: { type: 'file'; path?: string } | { type: 'inline'; config: Co
  * - Inline config: use an in-memory CollectionConfig (saveConfig updates in place, no file I/O)
  * - undefined: reset to default file-based config
  */
-export function setConfigSource(source?: { configPath?: string; config?: CollectionConfig }): void {
+export function setConfigSource(source?: {
+  configPath?: string;
+  config?: CollectionConfig;
+}): void {
   if (!source) {
-    configSource = { type: 'file' };
+    configSource = { type: "file" };
     return;
   }
   if (source.config) {
@@ -86,11 +95,11 @@ export function setConfigSource(source?: { configPath?: string; config?: Collect
     if (!source.config.collections) {
       source.config.collections = {};
     }
-    configSource = { type: 'inline', config: source.config };
+    configSource = { type: "inline", config: source.config };
   } else if (source.configPath) {
-    configSource = { type: 'file', path: source.configPath };
+    configSource = { type: "file", path: source.configPath };
   } else {
-    configSource = { type: 'file' };
+    configSource = { type: "file" };
   }
 }
 
@@ -100,10 +109,10 @@ export function setConfigSource(source?: { configPath?: string; config?: Collect
  */
 export function setConfigIndexName(name: string): void {
   // Resolve relative paths to absolute paths and sanitize for use as filename
-  if (name.includes('/')) {
+  if (name.includes("/")) {
     const absolutePath = resolve(process.cwd(), name);
     // Replace path separators with underscores to create a valid filename
-    currentIndexName = absolutePath.replace(/\//g, '_').replace(/^_/, '');
+    currentIndexName = absolutePath.replace(/\//g, "_").replace(/^_/, "");
   } else {
     currentIndexName = name;
   }
@@ -131,7 +140,9 @@ function getConfigFilePath(): string {
  * when used by the CLI, keeps both config and index DB writes inside
  * the project instead of the global ~/.config / ~/.cache locations.
  */
-export function findLocalConfigPath(startDir: string = process.cwd()): string | undefined {
+export function findLocalConfigPath(
+  startDir: string = process.cwd(),
+): string | undefined {
   let dir = resolve(startDir);
 
   while (true) {
@@ -175,7 +186,7 @@ function ensureConfigDir(): void {
  */
 export function loadConfig(): CollectionConfig {
   // SDK inline config mode
-  if (configSource.type === 'inline') {
+  if (configSource.type === "inline") {
     return configSource.config;
   }
 
@@ -208,7 +219,7 @@ export function loadConfig(): CollectionConfig {
  */
 export function saveConfig(config: CollectionConfig): void {
   // SDK inline config mode: update in place, no file I/O
-  if (configSource.type === 'inline') {
+  if (configSource.type === "inline") {
     configSource.config = config;
     return;
   }
@@ -222,7 +233,7 @@ export function saveConfig(config: CollectionConfig): void {
   try {
     const yaml = YAML.stringify(config, {
       indent: 2,
-      lineWidth: 0,  // Don't wrap lines
+      lineWidth: 0, // Don't wrap lines
     });
     writeFileSync(configPath, yaml, "utf-8");
   } catch (error) {
@@ -260,14 +271,14 @@ export function listCollections(): NamedCollection[] {
  * Get collections that are included by default in queries
  */
 export function getDefaultCollections(): NamedCollection[] {
-  return listCollections().filter(c => c.includeByDefault !== false);
+  return listCollections().filter((c) => c.includeByDefault !== false);
 }
 
 /**
  * Get collection names that are included by default
  */
 export function getDefaultCollectionNames(): string[] {
-  return getDefaultCollections().map(c => c.name);
+  return getDefaultCollections().map((c) => c.name);
 }
 
 /**
@@ -275,7 +286,7 @@ export function getDefaultCollectionNames(): string[] {
  */
 export function updateCollectionSettings(
   name: string,
-  settings: { update?: string | null; includeByDefault?: boolean }
+  settings: { update?: string | null; includeByDefault?: boolean },
 ): boolean {
   const config = loadConfig();
   const collection = config.collections[name];
@@ -308,7 +319,7 @@ export function updateCollectionSettings(
 export function addCollection(
   name: string,
   path: string,
-  pattern: string = "**/*.md"
+  pattern: string = "**/*.md",
 ): void {
   const config = loadConfig();
 
@@ -391,7 +402,7 @@ export function getContexts(collectionName: string): ContextMap | undefined {
 export function addContext(
   collectionName: string,
   pathPrefix: string,
-  contextText: string
+  contextText: string,
 ): boolean {
   const config = loadConfig();
   const collection = config.collections[collectionName];
@@ -414,7 +425,7 @@ export function addContext(
  */
 export function removeContext(
   collectionName: string,
-  pathPrefix: string
+  pathPrefix: string,
 ): boolean {
   const config = loadConfig();
   const collection = config.collections[collectionName];
@@ -443,7 +454,8 @@ export function listAllContexts(): Array<{
   context: string;
 }> {
   const config = loadConfig();
-  const results: Array<{ collection: string; path: string; context: string }> = [];
+  const results: Array<{ collection: string; path: string; context: string }> =
+    [];
 
   // Add global context if present
   if (config.global_context) {
@@ -476,7 +488,7 @@ export function listAllContexts(): Array<{
  */
 export function findContextForPath(
   collectionName: string,
-  filePath: string
+  filePath: string,
 ): string | undefined {
   const config = loadConfig();
   const collection = config.collections[collectionName];
@@ -516,7 +528,7 @@ export function findContextForPath(
  * Get the config file path (useful for error messages)
  */
 export function getConfigPath(): string {
-  if (configSource.type === 'inline') return '<inline>';
+  if (configSource.type === "inline") return "<inline>";
   return configSource.path || getConfigFilePath();
 }
 
@@ -524,7 +536,7 @@ export function getConfigPath(): string {
  * Check if config file exists
  */
 export function configExists(): boolean {
-  if (configSource.type === 'inline') return true;
+  if (configSource.type === "inline") return true;
   const path = configSource.path || getConfigFilePath();
   return existsSync(path);
 }

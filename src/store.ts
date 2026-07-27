@@ -58,15 +58,17 @@ const EMBED_FINGERPRINT_PROBE_DOC = "__qmd_embedding_document_probe__";
 // Chunking: 900 tokens per chunk with 15% overlap
 // Increased from 800 to accommodate smart chunking finding natural break points
 export const CHUNK_SIZE_TOKENS = 900;
-export const CHUNK_OVERLAP_TOKENS = Math.floor(CHUNK_SIZE_TOKENS * 0.15);  // 135 tokens (15% overlap)
+export const CHUNK_OVERLAP_TOKENS = Math.floor(CHUNK_SIZE_TOKENS * 0.15); // 135 tokens (15% overlap)
 // Fallback char-based approximation for sync chunking (~4 chars per token)
-export const CHUNK_SIZE_CHARS = CHUNK_SIZE_TOKENS * 4;  // 3600 chars
-export const CHUNK_OVERLAP_CHARS = CHUNK_OVERLAP_TOKENS * 4;  // 540 chars
+export const CHUNK_SIZE_CHARS = CHUNK_SIZE_TOKENS * 4; // 3600 chars
+export const CHUNK_OVERLAP_CHARS = CHUNK_OVERLAP_TOKENS * 4; // 540 chars
 // Search window for finding optimal break points (in tokens, ~200 tokens)
 export const CHUNK_WINDOW_TOKENS = 200;
-export const CHUNK_WINDOW_CHARS = CHUNK_WINDOW_TOKENS * 4;  // 800 chars
+export const CHUNK_WINDOW_CHARS = CHUNK_WINDOW_TOKENS * 4; // 800 chars
 
-export function getEmbeddingFingerprint(model: string = DEFAULT_EMBED_MODEL): string {
+export function getEmbeddingFingerprint(
+  model: string = DEFAULT_EMBED_MODEL,
+): string {
   const significant = [
     `model:${model}`,
     `query:${formatQueryForEmbedding(EMBED_FINGERPRINT_PROBE_QUERY, model)}`,
@@ -93,9 +95,9 @@ function getLlm(store: Store): LlamaCpp {
  * A potential break point in the document with a base score indicating quality.
  */
 export interface BreakPoint {
-  pos: number;    // character position
-  score: number;  // base score (higher = better break point)
-  type: string;   // for debugging: 'h1', 'h2', 'blank', etc.
+  pos: number; // character position
+  score: number; // base score (higher = better break point)
+  type: string; // for debugging: 'h1', 'h2', 'blank', etc.
 }
 
 /**
@@ -103,8 +105,8 @@ export interface BreakPoint {
  * We should never split inside a code fence.
  */
 export interface CodeFenceRegion {
-  start: number;  // position of opening ```
-  end: number;    // position of closing ``` (or document end if unclosed)
+  start: number; // position of opening ```
+  end: number; // position of closing ``` (or document end if unclosed)
 }
 
 /**
@@ -114,18 +116,18 @@ export interface CodeFenceRegion {
  * Order matters for scoring - more specific patterns first.
  */
 export const BREAK_PATTERNS: [RegExp, number, string][] = [
-  [/\n#{1}(?!#)/g, 100, 'h1'],     // # but not ##
-  [/\n#{2}(?!#)/g, 90, 'h2'],      // ## but not ###
-  [/\n#{3}(?!#)/g, 80, 'h3'],      // ### but not ####
-  [/\n#{4}(?!#)/g, 70, 'h4'],      // #### but not #####
-  [/\n#{5}(?!#)/g, 60, 'h5'],      // ##### but not ######
-  [/\n#{6}(?!#)/g, 50, 'h6'],      // ######
-  [/\n```/g, 80, 'codeblock'],     // code block boundary (same as h3)
-  [/\n(?:---|\*\*\*|___)\s*\n/g, 60, 'hr'],  // horizontal rule
-  [/\n\n+/g, 20, 'blank'],         // paragraph boundary
-  [/\n[-*]\s/g, 5, 'list'],        // unordered list item
-  [/\n\d+\.\s/g, 5, 'numlist'],    // ordered list item
-  [/\n/g, 1, 'newline'],           // minimal break
+  [/\n#{1}(?!#)/g, 100, "h1"], // # but not ##
+  [/\n#{2}(?!#)/g, 90, "h2"], // ## but not ###
+  [/\n#{3}(?!#)/g, 80, "h3"], // ### but not ####
+  [/\n#{4}(?!#)/g, 70, "h4"], // #### but not #####
+  [/\n#{5}(?!#)/g, 60, "h5"], // ##### but not ######
+  [/\n#{6}(?!#)/g, 50, "h6"], // ######
+  [/\n```/g, 80, "codeblock"], // code block boundary (same as h3)
+  [/\n(?:---|\*\*\*|___)\s*\n/g, 60, "hr"], // horizontal rule
+  [/\n\n+/g, 20, "blank"], // paragraph boundary
+  [/\n[-*]\s/g, 5, "list"], // unordered list item
+  [/\n\d+\.\s/g, 5, "numlist"], // ordered list item
+  [/\n/g, 1, "newline"], // minimal break
 ];
 
 /**
@@ -135,7 +137,7 @@ export const BREAK_PATTERNS: [RegExp, number, string][] = [
  */
 export function scanBreakPoints(text: string): BreakPoint[] {
   const points: BreakPoint[] = [];
-  const seen = new Map<number, BreakPoint>();  // pos -> best break point at that pos
+  const seen = new Map<number, BreakPoint>(); // pos -> best break point at that pos
 
   for (const [pattern, score, type] of BREAK_PATTERNS) {
     for (const match of text.matchAll(pattern)) {
@@ -187,8 +189,11 @@ export function findCodeFences(text: string): CodeFenceRegion[] {
 /**
  * Check if a position is inside a code fence region.
  */
-export function isInsideCodeFence(pos: number, fences: CodeFenceRegion[]): boolean {
-  return fences.some(f => pos > f.start && pos < f.end);
+export function isInsideCodeFence(
+  pos: number,
+  fences: CodeFenceRegion[],
+): boolean {
+  return fences.some((f) => pos > f.start && pos < f.end);
 }
 
 /**
@@ -209,7 +214,7 @@ export function findBestCutoff(
   targetCharPos: number,
   windowChars: number = CHUNK_WINDOW_CHARS,
   decayFactor: number = 0.7,
-  codeFences: CodeFenceRegion[] = []
+  codeFences: CodeFenceRegion[] = [],
 ): number {
   const windowStart = targetCharPos - windowChars;
   let bestScore = -1;
@@ -217,7 +222,7 @@ export function findBestCutoff(
 
   for (const bp of breakPoints) {
     if (bp.pos < windowStart) continue;
-    if (bp.pos > targetCharPos) break;  // sorted, so we can stop
+    if (bp.pos > targetCharPos) break; // sorted, so we can stop
 
     // Skip break points inside code fences
     if (isInsideCodeFence(bp.pos, codeFences)) continue;
@@ -230,7 +235,7 @@ export function findBestCutoff(
     // At 75% back: multiplier = 0.606
     // At window edge: multiplier = 0.3
     const normalizedDist = distance / windowChars;
-    const multiplier = 1.0 - (normalizedDist * normalizedDist) * decayFactor;
+    const multiplier = 1.0 - normalizedDist * normalizedDist * decayFactor;
     const finalScore = bp.score * multiplier;
 
     if (finalScore > bestScore) {
@@ -252,7 +257,10 @@ export type ChunkStrategy = "auto" | "regex";
  * Merge two sets of break points (e.g. regex + AST), keeping the highest
  * score at each position. Result is sorted by position.
  */
-export function mergeBreakPoints(a: BreakPoint[], b: BreakPoint[]): BreakPoint[] {
+export function mergeBreakPoints(
+  a: BreakPoint[],
+  b: BreakPoint[],
+): BreakPoint[] {
   const seen = new Map<number, BreakPoint>();
   for (const bp of a) {
     const existing = seen.get(bp.pos);
@@ -279,7 +287,7 @@ export function chunkDocumentWithBreakPoints(
   codeFences: CodeFenceRegion[],
   maxChars: number = CHUNK_SIZE_CHARS,
   overlapChars: number = CHUNK_OVERLAP_CHARS,
-  windowChars: number = CHUNK_WINDOW_CHARS
+  windowChars: number = CHUNK_WINDOW_CHARS,
 ): { text: string; pos: number }[] {
   if (content.length <= maxChars) {
     return [{ text: content, pos: 0 }];
@@ -298,7 +306,7 @@ export function chunkDocumentWithBreakPoints(
         targetEndPos,
         windowChars,
         0.7,
-        codeFences
+        codeFences,
       );
 
       if (bestCutoff > charPos && bestCutoff <= targetEndPos) {
@@ -342,7 +350,7 @@ export const RERANK_CANDIDATE_LIMIT = 40;
  * - hyde: hypothetical document → routes to vector only
  */
 export type ExpandedQuery = {
-  type: 'lex' | 'vec' | 'hyde';
+  type: "lex" | "vec" | "hyde";
   query: string;
   /** Optional line number for error reporting (CLI parser) */
   line?: number;
@@ -362,19 +370,19 @@ export function homedir(): string {
  * - Unix paths: /path/to/file
  * - Windows native: C:\path or C:/path
  * - Git Bash: /c/path or /C/path (C-Z drives, excluding A/B floppy drives)
- * 
+ *
  * Note: /c without trailing slash is treated as Unix path (directory named "c"),
  * while /c/ or /c/path are treated as Git Bash paths (C: drive).
  */
 export function isAbsolutePath(path: string): boolean {
   if (!path) return false;
-  
+
   // Unix absolute path
-  if (path.startsWith('/')) {
+  if (path.startsWith("/")) {
     // Check if it's a Git Bash style path like /c/ or /c/Users (C-Z only, not A or B)
     // Requires path[2] === '/' to distinguish from Unix paths like /c or /cache
     // Skipped on WSL where /c/ is a valid drvfs mount point, not a drive letter
-    if (!isWSL() && path.length >= 3 && path[2] === '/') {
+    if (!isWSL() && path.length >= 3 && path[2] === "/") {
       const driveLetter = path[1];
       if (driveLetter && /[c-zC-Z]/.test(driveLetter)) {
         return true;
@@ -383,12 +391,12 @@ export function isAbsolutePath(path: string): boolean {
     // Any other path starting with / is Unix absolute
     return true;
   }
-  
+
   // Windows native path: C:\ or C:/ (any letter A-Z)
-  if (path.length >= 2 && /[a-zA-Z]/.test(path[0]!) && path[1] === ':') {
+  if (path.length >= 2 && /[a-zA-Z]/.test(path[0]!) && path[1] === ":") {
     return true;
   }
-  
+
   return false;
 }
 
@@ -397,7 +405,7 @@ export function isAbsolutePath(path: string): boolean {
  * Converts Windows backslashes to forward slashes.
  */
 export function normalizePathSeparators(path: string): string {
-  return path.replace(/\\/g, '/');
+  return path.replace(/\\/g, "/");
 }
 
 /**
@@ -413,30 +421,33 @@ function isWSL(): boolean {
  * Returns null if path is not under prefix.
  * Returns empty string if path equals prefix.
  */
-export function getRelativePathFromPrefix(path: string, prefix: string): string | null {
+export function getRelativePathFromPrefix(
+  path: string,
+  prefix: string,
+): string | null {
   // Empty prefix is invalid
   if (!prefix) {
     return null;
   }
-  
+
   const normalizedPath = normalizePathSeparators(path);
   const normalizedPrefix = normalizePathSeparators(prefix);
-  
+
   // Ensure prefix ends with / for proper matching
-  const prefixWithSlash = !normalizedPrefix.endsWith('/') 
-    ? normalizedPrefix + '/' 
+  const prefixWithSlash = !normalizedPrefix.endsWith("/")
+    ? normalizedPrefix + "/"
     : normalizedPrefix;
-  
+
   // Exact match
   if (normalizedPath === normalizedPrefix) {
-    return '';
+    return "";
   }
-  
+
   // Check if path starts with prefix
   if (normalizedPath.startsWith(prefixWithSlash)) {
     return normalizedPath.slice(prefixWithSlash.length);
   }
-  
+
   return null;
 }
 
@@ -444,93 +455,107 @@ export function resolve(...paths: string[]): string {
   if (paths.length === 0) {
     throw new Error("resolve: at least one path segment is required");
   }
-  
+
   // Normalize all paths to use forward slashes
   const normalizedPaths = paths.map(normalizePathSeparators);
-  
-  let result = '';
-  let windowsDrive = '';
-  
+
+  let result = "";
+  let windowsDrive = "";
+
   // Check if first path is absolute
   const firstPath = normalizedPaths[0]!;
   if (isAbsolutePath(firstPath)) {
     result = firstPath;
-    
+
     // Extract Windows drive letter if present
-    if (firstPath.length >= 2 && /[a-zA-Z]/.test(firstPath[0]!) && firstPath[1] === ':') {
+    if (
+      firstPath.length >= 2 &&
+      /[a-zA-Z]/.test(firstPath[0]!) &&
+      firstPath[1] === ":"
+    ) {
       windowsDrive = firstPath.slice(0, 2);
       result = firstPath.slice(2);
-    } else if (!isWSL() && firstPath.startsWith('/') && firstPath.length >= 3 && firstPath[2] === '/') {
+    } else if (
+      !isWSL() &&
+      firstPath.startsWith("/") &&
+      firstPath.length >= 3 &&
+      firstPath[2] === "/"
+    ) {
       // Git Bash style: /c/ -> C: (C-Z drives only, not A or B)
       // Skipped on WSL where /c/ is a valid drvfs mount point, not a drive letter
       const driveLetter = firstPath[1];
       if (driveLetter && /[c-zC-Z]/.test(driveLetter)) {
-        windowsDrive = driveLetter.toUpperCase() + ':';
+        windowsDrive = driveLetter.toUpperCase() + ":";
         result = firstPath.slice(2);
       }
     }
   } else {
     // Start with PWD or cwd, then append the first relative path
     const pwd = normalizePathSeparators(process.env.PWD || process.cwd());
-    
+
     // Extract Windows drive from PWD if present
-    if (pwd.length >= 2 && /[a-zA-Z]/.test(pwd[0]!) && pwd[1] === ':') {
+    if (pwd.length >= 2 && /[a-zA-Z]/.test(pwd[0]!) && pwd[1] === ":") {
       windowsDrive = pwd.slice(0, 2);
-      result = pwd.slice(2) + '/' + firstPath;
+      result = pwd.slice(2) + "/" + firstPath;
     } else {
-      result = pwd + '/' + firstPath;
+      result = pwd + "/" + firstPath;
     }
   }
-  
+
   // Process remaining paths
   for (let i = 1; i < normalizedPaths.length; i++) {
     const p = normalizedPaths[i]!;
     if (isAbsolutePath(p)) {
       // Absolute path replaces everything
       result = p;
-      
+
       // Update Windows drive if present
-      if (p.length >= 2 && /[a-zA-Z]/.test(p[0]!) && p[1] === ':') {
+      if (p.length >= 2 && /[a-zA-Z]/.test(p[0]!) && p[1] === ":") {
         windowsDrive = p.slice(0, 2);
         result = p.slice(2);
-      } else if (!isWSL() && p.startsWith('/') && p.length >= 3 && p[2] === '/') {
+      } else if (
+        !isWSL() &&
+        p.startsWith("/") &&
+        p.length >= 3 &&
+        p[2] === "/"
+      ) {
         // Git Bash style (C-Z drives only, not A or B)
         // Skipped on WSL where /c/ is a valid drvfs mount point, not a drive letter
         const driveLetter = p[1];
         if (driveLetter && /[c-zC-Z]/.test(driveLetter)) {
-          windowsDrive = driveLetter.toUpperCase() + ':';
+          windowsDrive = driveLetter.toUpperCase() + ":";
           result = p.slice(2);
         } else {
-          windowsDrive = '';
+          windowsDrive = "";
         }
       } else {
-        windowsDrive = '';
+        windowsDrive = "";
       }
     } else {
       // Relative path - append
-      result = result + '/' + p;
+      result = result + "/" + p;
     }
   }
-  
+
   // Normalize . and .. components
-  const parts = result.split('/').filter(Boolean);
+  const parts = result.split("/").filter(Boolean);
   const normalized: string[] = [];
   for (const part of parts) {
-    if (part === '..') {
+    if (part === "..") {
       normalized.pop();
-    } else if (part !== '.') {
+    } else if (part !== ".") {
       normalized.push(part);
     }
   }
-  
+
   // Build final path
-  const finalPath = '/' + normalized.join('/');
-  
+  const finalPath = "/" + normalized.join("/");
+
   // Prepend Windows drive if present
   if (windowsDrive) {
     return windowsDrive + finalPath;
   }
-  
+
   return finalPath;
 }
 
@@ -556,13 +581,15 @@ export function getDefaultDbPath(indexName: string = "index"): string {
   if (!_productionMode) {
     throw new Error(
       "Database path not set. Tests must set INDEX_PATH env var or use createStore() with explicit path. " +
-      "This prevents tests from accidentally writing to the global index."
+        "This prevents tests from accidentally writing to the global index.",
     );
   }
 
   const cacheDir = process.env.XDG_CACHE_HOME || resolve(homedir(), ".cache");
   const qmdCacheDir = resolve(cacheDir, "qmd");
-  try { mkdirSync(qmdCacheDir, { recursive: true }); } catch { }
+  try {
+    mkdirSync(qmdCacheDir, { recursive: true });
+  } catch {}
   return resolve(qmdCacheDir, `${indexName}.sqlite`);
 }
 
@@ -584,7 +611,7 @@ export function getRealPath(path: string): string {
 
 export type VirtualPath = {
   collectionName: string;
-  path: string;  // relative path within collection
+  path: string; // relative path within collection
   indexName?: string;
 };
 
@@ -603,17 +630,17 @@ export function normalizeVirtualPath(input: string): string {
   let path = input.trim();
 
   // Handle qmd:// with extra slashes: qmd:////collection/path -> qmd://collection/path
-  if (path.startsWith('qmd:')) {
+  if (path.startsWith("qmd:")) {
     // Remove qmd: prefix and normalize slashes
     path = path.slice(4);
     // Remove leading slashes and re-add exactly two
-    path = path.replace(/^\/+/, '');
+    path = path.replace(/^\/+/, "");
     return `qmd://${path}`;
   }
 
   // Handle //collection/path (missing qmd: prefix)
-  if (path.startsWith('//')) {
-    path = path.replace(/^\/+/, '');
+  if (path.startsWith("//")) {
+    path = path.replace(/^\/+/, "");
     return `qmd://${path}`;
   }
 
@@ -635,10 +662,11 @@ export function parseVirtualPath(virtualPath: string): VirtualPath | null {
   // Allows: qmd://name, qmd://name/, qmd://name/path
   const match = pathPart.match(/^qmd:\/\/([^\/]+)\/?(.*)$/);
   if (!match?.[1]) return null;
-  const indexName = new URLSearchParams(queryString).get("index")?.trim() || undefined;
+  const indexName =
+    new URLSearchParams(queryString).get("index")?.trim() || undefined;
   return {
     collectionName: match[1],
-    path: match[2] ?? '',  // Empty string for collection root
+    path: match[2] ?? "", // Empty string for collection root
     ...(indexName ? { indexName } : {}),
   };
 }
@@ -646,7 +674,11 @@ export function parseVirtualPath(virtualPath: string): VirtualPath | null {
 /**
  * Build a virtual path from collection name and relative path.
  */
-export function buildVirtualPath(collectionName: string, path: string, indexName?: string): string {
+export function buildVirtualPath(
+  collectionName: string,
+  path: string,
+  indexName?: string,
+): string {
   const base = `qmd://${collectionName}/${path}`;
   return indexName ? `${base}?index=${encodeURIComponent(indexName)}` : base;
 }
@@ -664,10 +696,10 @@ export function isVirtualPath(path: string): boolean {
   const trimmed = path.trim();
 
   // Explicit qmd:// prefix (with any number of slashes)
-  if (trimmed.startsWith('qmd:')) return true;
+  if (trimmed.startsWith("qmd:")) return true;
 
   // //collection/path format (missing qmd: prefix)
-  if (trimmed.startsWith('//')) return true;
+  if (trimmed.startsWith("//")) return true;
 
   return false;
 }
@@ -675,7 +707,10 @@ export function isVirtualPath(path: string): boolean {
 /**
  * Resolve a virtual path to absolute filesystem path.
  */
-export function resolveVirtualPath(db: Database, virtualPath: string): string | null {
+export function resolveVirtualPath(
+  db: Database,
+  virtualPath: string,
+): string | null {
   const parsed = parseVirtualPath(virtualPath);
   if (!parsed) return null;
 
@@ -689,25 +724,35 @@ export function resolveVirtualPath(db: Database, virtualPath: string): string | 
  * Convert an absolute filesystem path to a virtual path.
  * Returns null if the file is not in any indexed collection.
  */
-export function toVirtualPath(db: Database, absolutePath: string): string | null {
+export function toVirtualPath(
+  db: Database,
+  absolutePath: string,
+): string | null {
   // Get all collections from DB
   const collections = getStoreCollections(db);
 
   // Find which collection this absolute path belongs to
   for (const coll of collections) {
-    if (absolutePath.startsWith(coll.path + '/') || absolutePath === coll.path) {
+    if (
+      absolutePath.startsWith(coll.path + "/") ||
+      absolutePath === coll.path
+    ) {
       // Extract relative path
-      const relativePath = absolutePath.startsWith(coll.path + '/')
+      const relativePath = absolutePath.startsWith(coll.path + "/")
         ? absolutePath.slice(coll.path.length + 1)
-        : '';
+        : "";
 
       // Verify this document exists in the database
-      const doc = db.prepare(`
+      const doc = db
+        .prepare(
+          `
         SELECT d.path
         FROM documents d
         WHERE d.collection = ? AND d.path = ? AND d.active = 1
         LIMIT 1
-      `).get(coll.name, relativePath) as { path: string } | null;
+      `,
+        )
+        .get(coll.name, relativePath) as { path: string } | null;
 
       if (doc) {
         return buildVirtualPath(coll.name, relativePath);
@@ -722,13 +767,12 @@ export function toVirtualPath(db: Database, absolutePath: string): string | null
 // Database initialization
 // =============================================================================
 
-
 function createSqliteVecUnavailableError(reason: string): Error {
   return new Error(
     "sqlite-vec extension is unavailable. " +
-    `${reason}. ` +
-    "Install Homebrew SQLite so the sqlite-vec extension can be loaded, " +
-    "and set BREW_PREFIX if Homebrew is installed in a non-standard location."
+      `${reason}. ` +
+      "Install Homebrew SQLite so the sqlite-vec extension can be loaded, " +
+      "and set BREW_PREFIX if Homebrew is installed in a non-standard location.",
   );
 }
 
@@ -740,20 +784,26 @@ function getErrorMessage(err: unknown): string {
 
 export function verifySqliteVecLoaded(db: Database): void {
   try {
-    const row = db.prepare(`SELECT vec_version() AS version`).get() as { version?: string } | null;
+    const row = db.prepare(`SELECT vec_version() AS version`).get() as {
+      version?: string;
+    } | null;
     if (!row?.version || typeof row.version !== "string") {
       throw new Error("vec_version() returned no version");
     }
   } catch (err) {
     const message = getErrorMessage(err);
-    throw createSqliteVecUnavailableError(`sqlite-vec probe failed (${message})`);
+    throw createSqliteVecUnavailableError(
+      `sqlite-vec probe failed (${message})`,
+    );
   }
 }
 
 let _sqliteVecAvailable: boolean | null = null;
 
-const CJK_CHAR_PATTERN = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]/u;
-const CJK_RUN_PATTERN = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]+/gu;
+const CJK_CHAR_PATTERN =
+  /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]/u;
+const CJK_RUN_PATTERN =
+  /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]+/gu;
 const FTS_CJK_NORMALIZED_VERSION = "1";
 
 // Bump when any FTS sync trigger body in applyFtsSyncTriggers changes, so the
@@ -766,7 +816,10 @@ const STORE_SCHEMA_VERSION = 1;
  * translated into phrase queries while Latin text keeps the default tokenizer.
  */
 export function normalizeCjkForFTS(text: string): string {
-  return text.replace(CJK_RUN_PATTERN, run => ` ${Array.from(run).join(' ')} `);
+  return text.replace(
+    CJK_RUN_PATTERN,
+    (run) => ` ${Array.from(run).join(" ")} `,
+  );
 }
 
 function containsCjk(text: string): boolean {
@@ -776,13 +829,14 @@ function containsCjk(text: string): boolean {
 function sanitizeFTS5Phrase(phrase: string): string {
   return normalizeCjkForFTS(phrase)
     .split(/\s+/)
-    .map(t => sanitizeFTS5Term(t))
-    .filter(t => t)
-    .join(' ');
+    .map((t) => sanitizeFTS5Term(t))
+    .filter((t) => t)
+    .join(" ");
 }
 
 function getUserVersion(db: Database): number {
-  const row = db.prepare(`PRAGMA user_version`).get() as Record<string, number> | undefined;
+  const row = db.prepare(`PRAGMA user_version`).get() as
+    Record<string, number> | undefined;
   const value = row ? Object.values(row)[0] : 0;
   return typeof value === "number" ? value : Number(value) || 0;
 }
@@ -852,7 +906,11 @@ function applyFtsSyncTriggers(db: Database): void {
 }
 
 function cjkRebuildVersion(db: Database): string | undefined {
-  const version = db.prepare(`SELECT value FROM store_config WHERE key = 'fts_cjk_normalized_version'`).get() as { value?: string } | undefined;
+  const version = db
+    .prepare(
+      `SELECT value FROM store_config WHERE key = 'fts_cjk_normalized_version'`,
+    )
+    .get() as { value?: string } | undefined;
   return version?.value;
 }
 
@@ -888,9 +946,17 @@ function rebuildFTSForCjkNormalization(db: Database): void {
       )
     `);
 
-    type FtsRow = { id: number; collection: string; path: string; title: string; body: string };
+    type FtsRow = {
+      id: number;
+      collection: string;
+      path: string;
+      title: string;
+      body: string;
+    };
 
-    const insert = db.prepare(`INSERT INTO ${quotedRebuildTable}(rowid, filepath, title, body) VALUES (?, ?, ?, ?)`);
+    const insert = db.prepare(
+      `INSERT INTO ${quotedRebuildTable}(rowid, filepath, title, body) VALUES (?, ?, ?, ?)`,
+    );
 
     // The transaction closes over a mutable `batch` buffer rather than taking the
     // batch as an argument: the wrapper's transaction() type only accepts scalar
@@ -902,19 +968,23 @@ function rebuildFTSForCjkNormalization(db: Database): void {
           row.id,
           normalizeCjkForFTS(`${row.collection}/${row.path}`),
           normalizeCjkForFTS(row.title),
-          normalizeCjkForFTS(row.body)
+          normalizeCjkForFTS(row.body),
         );
       }
     });
 
     // .iterate() pulls rows one at a time from SQLite rather than materializing
     // the entire result set (every document body) into a JS array up front.
-    const iterator = db.prepare(`
+    const iterator = db
+      .prepare(
+        `
       SELECT d.id, d.collection, d.path, d.title, content.doc as body
       FROM documents d
       JOIN content ON content.hash = d.hash
       WHERE d.active = 1
-    `).iterate<FtsRow>();
+    `,
+      )
+      .iterate<FtsRow>();
 
     for (const row of iterator) {
       batch.push(row);
@@ -937,12 +1007,14 @@ function rebuildFTSForCjkNormalization(db: Database): void {
         db.exec(`DELETE FROM documents_fts`);
         db.exec(
           `INSERT INTO documents_fts(rowid, filepath, title, body)
-           SELECT rowid, filepath, title, body FROM ${quotedRebuildTable}`
+           SELECT rowid, filepath, title, body FROM ${quotedRebuildTable}`,
         );
-        db.prepare(`
+        db.prepare(
+          `
           INSERT OR REPLACE INTO store_config(key, value)
           VALUES ('fts_cjk_normalized_version', ?)
-        `).run(FTS_CJK_NORMALIZED_VERSION);
+        `,
+        ).run(FTS_CJK_NORMALIZED_VERSION);
       }
       db.exec(`COMMIT`);
     } catch (err) {
@@ -998,9 +1070,13 @@ function initializeDatabase(db: Database): void {
     )
   `);
 
-  db.exec(`CREATE INDEX IF NOT EXISTS idx_documents_collection ON documents(collection, active)`);
+  db.exec(
+    `CREATE INDEX IF NOT EXISTS idx_documents_collection ON documents(collection, active)`,
+  );
   db.exec(`CREATE INDEX IF NOT EXISTS idx_documents_hash ON documents(hash)`);
-  db.exec(`CREATE INDEX IF NOT EXISTS idx_documents_path ON documents(path, active)`);
+  db.exec(
+    `CREATE INDEX IF NOT EXISTS idx_documents_path ON documents(path, active)`,
+  );
 
   // Cache table for LLM API calls
   db.exec(`
@@ -1074,12 +1150,41 @@ type StoreCollectionRow = {
   context: string | null;
 };
 
+/**
+ * Decode a `pattern` column that may hold either a plain glob or a JSON array.
+ *
+ * Array patterns act as an allowlist. They are stored JSON-encoded, the same
+ * way `ignore_patterns` is. A real glob never starts with '[', so the leading
+ * character discriminates the two forms without a schema change.
+ *
+ * Anything that fails to parse, or parses to a non-array, is returned as the
+ * raw string: a malformed row degrades to "treat it as a glob" instead of
+ * throwing and taking the whole collection listing down.
+ */
+function parseStoredPattern(raw: string): string | string[] {
+  if (typeof raw !== "string" || raw.charCodeAt(0) !== 0x5b /* [ */) return raw;
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    return Array.isArray(parsed) && parsed.every((p) => typeof p === "string")
+      ? (parsed as string[])
+      : raw;
+  } catch {
+    return raw;
+  }
+}
+
 function rowToNamedCollection(row: StoreCollectionRow): NamedCollection {
   return {
     name: row.name,
     path: row.path,
-    pattern: row.pattern,
-    ...(row.ignore_patterns ? { ignore: JSON.parse(row.ignore_patterns) as string[] } : {}),
+    // Array patterns are stored as JSON (see upsertStoreCollection). A real
+    // glob never begins with '[', so the leading character is an unambiguous
+    // discriminator. Parse defensively: a malformed value falls back to the
+    // raw string rather than throwing and taking the whole collection down.
+    pattern: parseStoredPattern(row.pattern),
+    ...(row.ignore_patterns
+      ? { ignore: JSON.parse(row.ignore_patterns) as string[] }
+      : {}),
     ...(row.include_by_default === 0 ? { includeByDefault: false } : {}),
     ...(row.update_command ? { update: row.update_command } : {}),
     ...(row.context ? { context: JSON.parse(row.context) as ContextMap } : {}),
@@ -1087,24 +1192,36 @@ function rowToNamedCollection(row: StoreCollectionRow): NamedCollection {
 }
 
 export function getStoreCollections(db: Database): NamedCollection[] {
-  const rows = db.prepare(`SELECT * FROM store_collections`).all() as StoreCollectionRow[];
+  const rows = db
+    .prepare(`SELECT * FROM store_collections`)
+    .all() as StoreCollectionRow[];
   return rows.map(rowToNamedCollection);
 }
 
-export function getStoreCollection(db: Database, name: string): NamedCollection | null {
-  const row = db.prepare(`SELECT * FROM store_collections WHERE name = ?`).get(name) as StoreCollectionRow | null | undefined;
+export function getStoreCollection(
+  db: Database,
+  name: string,
+): NamedCollection | null {
+  const row = db
+    .prepare(`SELECT * FROM store_collections WHERE name = ?`)
+    .get(name) as StoreCollectionRow | null | undefined;
   if (row == null) return null;
   return rowToNamedCollection(row);
 }
 
 export function getStoreGlobalContext(db: Database): string | undefined {
-  const row = db.prepare(`SELECT value FROM store_config WHERE key = 'global_context'`).get() as { value: string } | null | undefined;
+  const row = db
+    .prepare(`SELECT value FROM store_config WHERE key = 'global_context'`)
+    .get() as { value: string } | null | undefined;
   if (row == null) return undefined;
   return row.value || undefined;
 }
 
-export function getStoreContexts(db: Database): Array<{ collection: string; path: string; context: string }> {
-  const results: Array<{ collection: string; path: string; context: string }> = [];
+export function getStoreContexts(
+  db: Database,
+): Array<{ collection: string; path: string; context: string }> {
+  const results: Array<{ collection: string; path: string; context: string }> =
+    [];
 
   // Global context
   const globalCtx = getStoreGlobalContext(db);
@@ -1113,7 +1230,11 @@ export function getStoreContexts(db: Database): Array<{ collection: string; path
   }
 
   // Collection contexts
-  const rows = db.prepare(`SELECT name, context FROM store_collections WHERE context IS NOT NULL`).all() as { name: string; context: string }[];
+  const rows = db
+    .prepare(
+      `SELECT name, context FROM store_collections WHERE context IS NOT NULL`,
+    )
+    .all() as { name: string; context: string }[];
   for (const row of rows) {
     const ctxMap = JSON.parse(row.context) as ContextMap;
     for (const [path, context] of Object.entries(ctxMap)) {
@@ -1124,8 +1245,13 @@ export function getStoreContexts(db: Database): Array<{ collection: string; path
   return results;
 }
 
-export function upsertStoreCollection(db: Database, name: string, collection: Omit<Collection, 'pattern'> & { pattern?: string }): void {
-  db.prepare(`
+export function upsertStoreCollection(
+  db: Database,
+  name: string,
+  collection: Omit<Collection, "pattern"> & { pattern?: string | string[] },
+): void {
+  db.prepare(
+    `
     INSERT INTO store_collections (name, path, pattern, ignore_patterns, include_by_default, update_command, context)
     VALUES (?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(name) DO UPDATE SET
@@ -1135,10 +1261,16 @@ export function upsertStoreCollection(db: Database, name: string, collection: Om
       include_by_default = excluded.include_by_default,
       update_command = excluded.update_command,
       context = excluded.context
-  `).run(
+  `,
+  ).run(
     name,
     collection.path,
-    collection.pattern || '**/*.md',
+    // An array pattern (allowlist) is stored as JSON, the same way `ignore` on
+    // the next line is. Readers detect it by the leading '[' -- a plain glob
+    // never starts with one, so the two forms cannot be confused.
+    Array.isArray(collection.pattern)
+      ? JSON.stringify(collection.pattern)
+      : collection.pattern || "**/*.md",
     collection.ignore ? JSON.stringify(collection.ignore) : null,
     collection.includeByDefault === false ? 0 : 1,
     collection.update || null,
@@ -1147,33 +1279,59 @@ export function upsertStoreCollection(db: Database, name: string, collection: Om
 }
 
 export function deleteStoreCollection(db: Database, name: string): boolean {
-  const result = db.prepare(`DELETE FROM store_collections WHERE name = ?`).run(name);
+  const result = db
+    .prepare(`DELETE FROM store_collections WHERE name = ?`)
+    .run(name);
   return result.changes > 0;
 }
 
-export function renameStoreCollection(db: Database, oldName: string, newName: string): boolean {
+export function renameStoreCollection(
+  db: Database,
+  oldName: string,
+  newName: string,
+): boolean {
   // Check target doesn't exist
-  const existing = db.prepare(`SELECT name FROM store_collections WHERE name = ?`).get(newName) as { name: string } | null | undefined;
+  const existing = db
+    .prepare(`SELECT name FROM store_collections WHERE name = ?`)
+    .get(newName) as { name: string } | null | undefined;
   if (existing != null) {
     throw new Error(`Collection '${newName}' already exists`);
   }
 
-  const result = db.prepare(`UPDATE store_collections SET name = ? WHERE name = ?`).run(newName, oldName);
+  const result = db
+    .prepare(`UPDATE store_collections SET name = ? WHERE name = ?`)
+    .run(newName, oldName);
   return result.changes > 0;
 }
 
-export function updateStoreContext(db: Database, collectionName: string, path: string, text: string): boolean {
-  const row = db.prepare(`SELECT context FROM store_collections WHERE name = ?`).get(collectionName) as { context: string | null } | null | undefined;
+export function updateStoreContext(
+  db: Database,
+  collectionName: string,
+  path: string,
+  text: string,
+): boolean {
+  const row = db
+    .prepare(`SELECT context FROM store_collections WHERE name = ?`)
+    .get(collectionName) as { context: string | null } | null | undefined;
   if (row == null) return false;
 
   const ctxMap: ContextMap = row.context ? JSON.parse(row.context) : {};
   ctxMap[path] = text;
-  db.prepare(`UPDATE store_collections SET context = ? WHERE name = ?`).run(JSON.stringify(ctxMap), collectionName);
+  db.prepare(`UPDATE store_collections SET context = ? WHERE name = ?`).run(
+    JSON.stringify(ctxMap),
+    collectionName,
+  );
   return true;
 }
 
-export function removeStoreContext(db: Database, collectionName: string, path: string): boolean {
-  const row = db.prepare(`SELECT context FROM store_collections WHERE name = ?`).get(collectionName) as { context: string | null } | null | undefined;
+export function removeStoreContext(
+  db: Database,
+  collectionName: string,
+  path: string,
+): boolean {
+  const row = db
+    .prepare(`SELECT context FROM store_collections WHERE name = ?`)
+    .get(collectionName) as { context: string | null } | null | undefined;
   if (row == null) return false;
   if (!row.context) return false;
 
@@ -1182,15 +1340,23 @@ export function removeStoreContext(db: Database, collectionName: string, path: s
 
   delete ctxMap[path];
   const newCtx = Object.keys(ctxMap).length > 0 ? JSON.stringify(ctxMap) : null;
-  db.prepare(`UPDATE store_collections SET context = ? WHERE name = ?`).run(newCtx, collectionName);
+  db.prepare(`UPDATE store_collections SET context = ? WHERE name = ?`).run(
+    newCtx,
+    collectionName,
+  );
   return true;
 }
 
-export function setStoreGlobalContext(db: Database, value: string | undefined): void {
+export function setStoreGlobalContext(
+  db: Database,
+  value: string | undefined,
+): void {
   if (value === undefined) {
     db.prepare(`DELETE FROM store_config WHERE key = 'global_context'`).run();
   } else {
-    db.prepare(`INSERT INTO store_config (key, value) VALUES ('global_context', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`).run(value);
+    db.prepare(
+      `INSERT INTO store_config (key, value) VALUES ('global_context', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+    ).run(value);
   }
 }
 
@@ -1201,9 +1367,11 @@ export function setStoreGlobalContext(db: Database, value: string | undefined): 
 export function syncConfigToDb(db: Database, config: CollectionConfig): void {
   // Check config hash — skip sync if unchanged
   const configJson = JSON.stringify(config);
-  const hash = createHash('sha256').update(configJson).digest('hex');
+  const hash = createHash("sha256").update(configJson).digest("hex");
 
-  const existingHash = db.prepare(`SELECT value FROM store_config WHERE key = 'config_hash'`).get() as { value: string } | null | undefined;
+  const existingHash = db
+    .prepare(`SELECT value FROM store_config WHERE key = 'config_hash'`)
+    .get() as { value: string } | null | undefined;
   if (existingHash != null && existingHash.value === hash) {
     return; // Config unchanged, skip sync
   }
@@ -1216,7 +1384,9 @@ export function syncConfigToDb(db: Database, config: CollectionConfig): void {
   }
 
   // Delete collections not in config
-  const dbCollections = db.prepare(`SELECT name FROM store_collections`).all() as { name: string }[];
+  const dbCollections = db
+    .prepare(`SELECT name FROM store_collections`)
+    .all() as { name: string }[];
   for (const row of dbCollections) {
     if (!configNames.has(row.name)) {
       db.prepare(`DELETE FROM store_collections WHERE name = ?`).run(row.name);
@@ -1231,9 +1401,10 @@ export function syncConfigToDb(db: Database, config: CollectionConfig): void {
   }
 
   // Save config hash
-  db.prepare(`INSERT INTO store_config (key, value) VALUES ('config_hash', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`).run(hash);
+  db.prepare(
+    `INSERT INTO store_config (key, value) VALUES ('config_hash', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+  ).run(hash);
 }
-
 
 export function isSqliteVecAvailable(): boolean {
   return _sqliteVecAvailable === true;
@@ -1242,25 +1413,32 @@ export function isSqliteVecAvailable(): boolean {
 function ensureVecTableInternal(db: Database, dimensions: number): void {
   if (!_sqliteVecAvailable) {
     throw createSqliteVecUnavailableError(
-      _sqliteVecUnavailableReason ?? "vector operations require a SQLite build with extension loading support"
+      _sqliteVecUnavailableReason ??
+        "vector operations require a SQLite build with extension loading support",
     );
   }
-  const tableInfo = db.prepare(`SELECT sql FROM sqlite_master WHERE type='table' AND name='vectors_vec'`).get() as { sql: string } | null;
+  const tableInfo = db
+    .prepare(
+      `SELECT sql FROM sqlite_master WHERE type='table' AND name='vectors_vec'`,
+    )
+    .get() as { sql: string } | null;
   if (tableInfo) {
     const match = tableInfo.sql.match(/float\[(\d+)\]/);
-    const hasHashSeq = tableInfo.sql.includes('hash_seq');
-    const hasCosine = tableInfo.sql.includes('distance_metric=cosine');
+    const hasHashSeq = tableInfo.sql.includes("hash_seq");
+    const hasCosine = tableInfo.sql.includes("distance_metric=cosine");
     const existingDims = match?.[1] ? parseInt(match[1], 10) : null;
     if (existingDims === dimensions && hasHashSeq && hasCosine) return;
     if (existingDims !== null && existingDims !== dimensions) {
       throw new Error(
         `Embedding dimension mismatch: existing vectors are ${existingDims}d but the current model produces ${dimensions}d. ` +
-        `Run 'qmd embed -f' to re-embed with the new model.`
+          `Run 'qmd embed -f' to re-embed with the new model.`,
       );
     }
     db.exec("DROP TABLE IF EXISTS vectors_vec");
   }
-  db.exec(`CREATE VIRTUAL TABLE vectors_vec USING vec0(hash_seq TEXT PRIMARY KEY, embedding float[${dimensions}] distance_metric=cosine)`);
+  db.exec(
+    `CREATE VIRTUAL TABLE vectors_vec USING vec0(hash_seq TEXT PRIMARY KEY, embedding float[${dimensions}] distance_metric=cosine)`,
+  );
 }
 
 // =============================================================================
@@ -1296,8 +1474,14 @@ export type Store = {
   // Context
   getContextForFile: (filepath: string) => string | null;
   getContextForPath: (collectionName: string, path: string) => string | null;
-  getCollectionByName: (name: string) => { name: string; pwd: string; glob_pattern: string } | null;
-  getCollectionsWithoutContext: () => { name: string; pwd: string; doc_count: number }[];
+  getCollectionByName: (
+    name: string,
+  ) => { name: string; pwd: string; glob_pattern: string | string[] } | null;
+  getCollectionsWithoutContext: () => {
+    name: string;
+    pwd: string;
+    doc_count: number;
+  }[];
   getTopLevelPathsWithoutContext: (collectionName: string) => string[];
 
   // Virtual paths
@@ -1308,37 +1492,106 @@ export type Store = {
   toVirtualPath: (absolutePath: string) => string | null;
 
   // Search
-  searchFTS: (query: string, limit?: number, collectionName?: string) => SearchResult[];
-  searchVec: (query: string, model: string, limit?: number, collectionName?: string, session?: ILLMSession, precomputedEmbedding?: number[]) => Promise<SearchResult[]>;
+  searchFTS: (
+    query: string,
+    limit?: number,
+    collectionName?: string,
+  ) => SearchResult[];
+  searchVec: (
+    query: string,
+    model: string,
+    limit?: number,
+    collectionName?: string,
+    session?: ILLMSession,
+    precomputedEmbedding?: number[],
+  ) => Promise<SearchResult[]>;
 
   // Query expansion & reranking
-  expandQuery: (query: string, model?: string, intent?: string) => Promise<ExpandedQuery[]>;
-  rerank: (query: string, documents: { file: string; text: string }[], model?: string, intent?: string) => Promise<{ file: string; score: number }[]>;
+  expandQuery: (
+    query: string,
+    model?: string,
+    intent?: string,
+  ) => Promise<ExpandedQuery[]>;
+  rerank: (
+    query: string,
+    documents: { file: string; text: string }[],
+    model?: string,
+    intent?: string,
+  ) => Promise<{ file: string; score: number }[]>;
 
   // Document retrieval
-  findDocument: (filename: string, options?: { includeBody?: boolean }) => DocumentResult | DocumentLookupError;
-  getDocumentBody: (doc: DocumentResult | { filepath: string }, fromLine?: number, maxLines?: number) => string | null;
-  findDocuments: (pattern: string, options?: { includeBody?: boolean; maxBytes?: number }) => { docs: MultiGetResult[]; errors: string[] };
+  findDocument: (
+    filename: string,
+    options?: { includeBody?: boolean },
+  ) => DocumentResult | DocumentLookupError;
+  getDocumentBody: (
+    doc: DocumentResult | { filepath: string },
+    fromLine?: number,
+    maxLines?: number,
+  ) => string | null;
+  findDocuments: (
+    pattern: string,
+    options?: { includeBody?: boolean; maxBytes?: number },
+  ) => { docs: MultiGetResult[]; errors: string[] };
 
   // Fuzzy matching and docid lookup
-  findSimilarFiles: (query: string, maxDistance?: number, limit?: number) => string[];
-  matchFilesByGlob: (pattern: string) => { filepath: string; displayPath: string; bodyLength: number }[];
-  findDocumentByDocid: (docid: string) => { filepath: string; hash: string } | null;
+  findSimilarFiles: (
+    query: string,
+    maxDistance?: number,
+    limit?: number,
+  ) => string[];
+  matchFilesByGlob: (
+    pattern: string,
+  ) => { filepath: string; displayPath: string; bodyLength: number }[];
+  findDocumentByDocid: (
+    docid: string,
+  ) => { filepath: string; hash: string } | null;
 
   // Document indexing operations
   insertContent: (hash: string, content: string, createdAt: string) => void;
-  insertDocument: (collectionName: string, path: string, title: string, hash: string, createdAt: string, modifiedAt: string) => void;
-  findActiveDocument: (collectionName: string, path: string) => { id: number; hash: string; title: string } | null;
-  findOrMigrateLegacyDocument: (collectionName: string, path: string) => { id: number; hash: string; title: string } | null;
-  updateDocumentTitle: (documentId: number, title: string, modifiedAt: string) => void;
-  updateDocument: (documentId: number, title: string, hash: string, modifiedAt: string) => void;
+  insertDocument: (
+    collectionName: string,
+    path: string,
+    title: string,
+    hash: string,
+    createdAt: string,
+    modifiedAt: string,
+  ) => void;
+  findActiveDocument: (
+    collectionName: string,
+    path: string,
+  ) => { id: number; hash: string; title: string } | null;
+  findOrMigrateLegacyDocument: (
+    collectionName: string,
+    path: string,
+  ) => { id: number; hash: string; title: string } | null;
+  updateDocumentTitle: (
+    documentId: number,
+    title: string,
+    modifiedAt: string,
+  ) => void;
+  updateDocument: (
+    documentId: number,
+    title: string,
+    hash: string,
+    modifiedAt: string,
+  ) => void;
   deactivateDocument: (collectionName: string, path: string) => void;
   getActiveDocumentPaths: (collectionName: string) => string[];
 
   // Vector/embedding operations
   getHashesForEmbedding: () => { hash: string; body: string; path: string }[];
   clearAllEmbeddings: () => void;
-  insertEmbedding: (hash: string, seq: number, pos: number, embedding: Float32Array, model: string, embeddedAt: string, totalChunks?: number, fingerprint?: string) => void;
+  insertEmbedding: (
+    hash: string,
+    seq: number,
+    pos: number,
+    embedding: Float32Array,
+    model: string,
+    embeddedAt: string,
+    totalChunks?: number,
+    fingerprint?: string,
+  ) => void;
 };
 
 // =============================================================================
@@ -1366,19 +1619,27 @@ export type ReindexResult = {
 export async function reindexCollection(
   store: Store,
   collectionPath: string,
-  globPattern: string,
+  // Array = allowlist. fast-glob accepts either; see Collection.pattern.
+  globPattern: string | string[],
   collectionName: string,
   options?: {
     ignorePatterns?: string[];
     onProgress?: (info: ReindexProgress) => void;
-  }
+  },
 ): Promise<ReindexResult> {
   const db = store.db;
   const now = new Date().toISOString();
-  const excludeDirs = ["node_modules", ".git", ".cache", "vendor", "dist", "build"];
+  const excludeDirs = [
+    "node_modules",
+    ".git",
+    ".cache",
+    "vendor",
+    "dist",
+    "build",
+  ];
 
   const allIgnore = [
-    ...excludeDirs.map(d => `**/${d}/**`),
+    ...excludeDirs.map((d) => `**/${d}/**`),
     ...(options?.ignorePatterns || []),
   ];
   const allFiles: string[] = await fastGlob(globPattern, {
@@ -1389,13 +1650,16 @@ export async function reindexCollection(
     ignore: allIgnore,
   });
   // Filter hidden files/folders
-  const files = allFiles.filter(file => {
+  const files = allFiles.filter((file) => {
     const parts = file.split("/");
-    return !parts.some(part => part.startsWith("."));
+    return !parts.some((part) => part.startsWith("."));
   });
 
   const total = files.length;
-  let indexed = 0, updated = 0, unchanged = 0, processed = 0;
+  let indexed = 0,
+    updated = 0,
+    unchanged = 0,
+    processed = 0;
   const seenPaths = new Set<string>();
 
   for (const relativeFile of files) {
@@ -1436,17 +1700,28 @@ export async function reindexCollection(
       } else {
         insertContent(db, hash, content, now);
         const stat = statSync(filepath);
-        updateDocument(db, existing.id, title, hash,
-          stat ? new Date(stat.mtime).toISOString() : now);
+        updateDocument(
+          db,
+          existing.id,
+          title,
+          hash,
+          stat ? new Date(stat.mtime).toISOString() : now,
+        );
         updated++;
       }
     } else {
       indexed++;
       insertContent(db, hash, content, now);
       const stat = statSync(filepath);
-      insertDocument(db, collectionName, path, title, hash,
+      insertDocument(
+        db,
+        collectionName,
+        path,
+        title,
+        hash,
         stat ? new Date(stat.birthtime).toISOString() : now,
-        stat ? new Date(stat.mtime).toISOString() : now);
+        stat ? new Date(stat.mtime).toISOString() : now,
+      );
     }
 
     processed++;
@@ -1538,7 +1813,11 @@ type ChunkItem = {
   expectedTotalChunks: number;
 };
 
-function validatePositiveIntegerOption(name: string, value: number | undefined, fallback: number): number {
+function validatePositiveIntegerOption(
+  name: string,
+  value: number | undefined,
+  fallback: number,
+): number {
   if (value === undefined) return fallback;
   if (!Number.isInteger(value) || value < 1) {
     throw new Error(`${name} must be a positive integer`);
@@ -1546,10 +1825,20 @@ function validatePositiveIntegerOption(name: string, value: number | undefined, 
   return value;
 }
 
-function resolveEmbedOptions(options?: EmbedOptions): Required<Pick<EmbedOptions, "maxDocsPerBatch" | "maxBatchBytes">> {
+function resolveEmbedOptions(
+  options?: EmbedOptions,
+): Required<Pick<EmbedOptions, "maxDocsPerBatch" | "maxBatchBytes">> {
   return {
-    maxDocsPerBatch: validatePositiveIntegerOption("maxDocsPerBatch", options?.maxDocsPerBatch, DEFAULT_EMBED_MAX_DOCS_PER_BATCH),
-    maxBatchBytes: validatePositiveIntegerOption("maxBatchBytes", options?.maxBatchBytes, DEFAULT_EMBED_MAX_BATCH_BYTES),
+    maxDocsPerBatch: validatePositiveIntegerOption(
+      "maxDocsPerBatch",
+      options?.maxDocsPerBatch,
+      DEFAULT_EMBED_MAX_DOCS_PER_BATCH,
+    ),
+    maxBatchBytes: validatePositiveIntegerOption(
+      "maxBatchBytes",
+      options?.maxBatchBytes,
+      DEFAULT_EMBED_MAX_BATCH_BYTES,
+    ),
   };
 }
 
@@ -1567,13 +1856,17 @@ function isContentVectorColumnError(error: unknown): boolean {
   if (!/(no such column|has no column named)/i.test(message)) {
     return false;
   }
-  return CONTENT_VECTOR_DESIRED_COLUMNS.some(col => message.includes(col.name));
+  return CONTENT_VECTOR_DESIRED_COLUMNS.some((col) =>
+    message.includes(col.name),
+  );
 }
 
 function runContentVectorColumnRepairs(db: Database): void {
   for (const column of CONTENT_VECTOR_DESIRED_COLUMNS) {
     try {
-      db.exec(`ALTER TABLE content_vectors ADD COLUMN ${column.name} ${column.definition}`);
+      db.exec(
+        `ALTER TABLE content_vectors ADD COLUMN ${column.name} ${column.definition}`,
+      );
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       // The repair series is intentionally idempotent: most columns should
@@ -1586,7 +1879,10 @@ function runContentVectorColumnRepairs(db: Database): void {
   }
 }
 
-function withLazyContentVectorMigration<T>(db: Database, operation: () => T): T {
+function withLazyContentVectorMigration<T>(
+  db: Database,
+  operation: () => T,
+): T {
   let repaired = false;
   while (true) {
     try {
@@ -1601,7 +1897,11 @@ function withLazyContentVectorMigration<T>(db: Database, operation: () => T): T 
   }
 }
 
-function getPendingEmbeddingDocs(db: Database, collection?: string, model: string = DEFAULT_EMBED_MODEL): PendingEmbeddingDoc[] {
+function getPendingEmbeddingDocs(
+  db: Database,
+  collection?: string,
+  model: string = DEFAULT_EMBED_MODEL,
+): PendingEmbeddingDoc[] {
   const collectionFilter = collection ? `AND d.collection = ?` : ``;
   const fingerprint = getEmbeddingFingerprint(model);
   return withLazyContentVectorMigration(db, () => {
@@ -1621,7 +1921,11 @@ function getPendingEmbeddingDocs(db: Database, collection?: string, model: strin
       GROUP BY d.hash
       ORDER BY MIN(d.path)
     `);
-    return (collection ? stmt.all(model, fingerprint, collection) : stmt.all(model, fingerprint)) as PendingEmbeddingDoc[];
+    return (
+      collection
+        ? stmt.all(model, fingerprint, collection)
+        : stmt.all(model, fingerprint)
+    ) as PendingEmbeddingDoc[];
   });
 }
 
@@ -1637,7 +1941,8 @@ function buildEmbeddingBatches(
   for (const doc of docs) {
     const docBytes = Math.max(0, doc.bytes);
     const wouldExceedDocs = currentBatch.length >= maxDocsPerBatch;
-    const wouldExceedBytes = currentBatch.length > 0 && (currentBytes + docBytes) > maxBatchBytes;
+    const wouldExceedBytes =
+      currentBatch.length > 0 && currentBytes + docBytes > maxBatchBytes;
 
     if (wouldExceedDocs || wouldExceedBytes) {
       batches.push(currentBatch);
@@ -1656,16 +1961,23 @@ function buildEmbeddingBatches(
   return batches;
 }
 
-function getEmbeddingDocsForBatch(db: Database, batch: PendingEmbeddingDoc[]): EmbeddingDoc[] {
+function getEmbeddingDocsForBatch(
+  db: Database,
+  batch: PendingEmbeddingDoc[],
+): EmbeddingDoc[] {
   if (batch.length === 0) return [];
 
   const placeholders = batch.map(() => "?").join(",");
-  const rows = db.prepare(`
+  const rows = db
+    .prepare(
+      `
     SELECT hash, doc as body
     FROM content
     WHERE hash IN (${placeholders})
-  `).all(...batch.map(doc => doc.hash)) as { hash: string; body: string }[];
-  const bodyByHash = new Map(rows.map(row => [row.hash, row.body]));
+  `,
+    )
+    .all(...batch.map((doc) => doc.hash)) as { hash: string; body: string }[];
+  const bodyByHash = new Map(rows.map((row) => [row.hash, row.body]));
 
   return batch.map((doc) => ({
     ...doc,
@@ -1680,7 +1992,7 @@ function getEmbeddingDocsForBatch(db: Database, batch: PendingEmbeddingDoc[]): E
  */
 export async function generateEmbeddings(
   store: Store,
-  options?: EmbedOptions
+  options?: EmbedOptions,
 ): Promise<EmbedResult> {
   const db = store.db;
   const llm = getLlm(store);
@@ -1699,7 +2011,10 @@ export async function generateEmbeddings(
   if (docsToEmbed.length === 0) {
     return { docsProcessed: 0, chunksEmbedded: 0, errors: 0, durationMs: 0 };
   }
-  const totalBytes = docsToEmbed.reduce((sum, doc) => sum + Math.max(0, doc.bytes), 0);
+  const totalBytes = docsToEmbed.reduce(
+    (sum, doc) => sum + Math.max(0, doc.bytes),
+    0,
+  );
   const totalDocs = docsToEmbed.length;
   const startTime = Date.now();
 
@@ -1707,228 +2022,340 @@ export async function generateEmbeddings(
   const embedModelUri = model;
 
   // Create a session manager for this llm instance
-  const result = await withLLMSessionForLlm(llm, async (session) => {
-    let chunksEmbedded = 0;
-    let bytesProcessed = 0;
-    let totalChunks = 0;
-    let vectorTableInitialized = false;
-    const BATCH_SIZE = 32;
-    const RETRY_AFTER_SUCCESSFUL_CHUNKS = 64;
-    const MAX_RETRY_ATTEMPTS = 3;
-    const failures = new Map<string, EmbedFailure>();
-    const retryQueue = new Map<string, ChunkItem>();
-    let successesSinceRetry = 0;
+  const result = await withLLMSessionForLlm(
+    llm,
+    async (session) => {
+      let chunksEmbedded = 0;
+      let bytesProcessed = 0;
+      let totalChunks = 0;
+      let vectorTableInitialized = false;
+      const BATCH_SIZE = 32;
+      const RETRY_AFTER_SUCCESSFUL_CHUNKS = 64;
+      const MAX_RETRY_ATTEMPTS = 3;
+      const failures = new Map<string, EmbedFailure>();
+      const retryQueue = new Map<string, ChunkItem>();
+      let successesSinceRetry = 0;
 
-    const failureList = () => [...failures.values()];
-    const activeErrorCount = () => failures.size;
-    const chunkKey = (chunk: ChunkItem) => `${chunk.hash}:${chunk.seq}`;
-    const reasonFromError = (error: unknown) => {
-      const raw = error instanceof Error ? error.message : String(error);
-      return raw.length > 180 ? `${raw.slice(0, 177)}...` : raw;
-    };
-    const recordFailure = (chunk: ChunkItem, reason: string) => {
-      const key = chunkKey(chunk);
-      const previous = failures.get(key);
-      failures.set(key, {
-        path: chunk.path,
-        hash: chunk.hash,
-        seq: chunk.seq,
-        attempts: (previous?.attempts ?? 0) + 1,
-        reason,
-      });
-      retryQueue.set(key, chunk);
-    };
-    const clearFailure = (chunk: ChunkItem) => {
-      const key = chunkKey(chunk);
-      failures.delete(key);
-      retryQueue.delete(key);
-    };
-    const tryEmbedChunk = async (chunk: ChunkItem): Promise<boolean> => {
-      try {
-        const text = formatDocForEmbedding(chunk.text, chunk.title, embedModelUri);
-        const result = await session.embed(text, { model });
-        if (!result) {
-          recordFailure(chunk, "embedding returned no vector");
+      const failureList = () => [...failures.values()];
+      const activeErrorCount = () => failures.size;
+      const chunkKey = (chunk: ChunkItem) => `${chunk.hash}:${chunk.seq}`;
+      const reasonFromError = (error: unknown) => {
+        const raw = error instanceof Error ? error.message : String(error);
+        return raw.length > 180 ? `${raw.slice(0, 177)}...` : raw;
+      };
+      const recordFailure = (chunk: ChunkItem, reason: string) => {
+        const key = chunkKey(chunk);
+        const previous = failures.get(key);
+        failures.set(key, {
+          path: chunk.path,
+          hash: chunk.hash,
+          seq: chunk.seq,
+          attempts: (previous?.attempts ?? 0) + 1,
+          reason,
+        });
+        retryQueue.set(key, chunk);
+      };
+      const clearFailure = (chunk: ChunkItem) => {
+        const key = chunkKey(chunk);
+        failures.delete(key);
+        retryQueue.delete(key);
+      };
+      const tryEmbedChunk = async (chunk: ChunkItem): Promise<boolean> => {
+        try {
+          const text = formatDocForEmbedding(
+            chunk.text,
+            chunk.title,
+            embedModelUri,
+          );
+          const result = await session.embed(text, { model });
+          if (!result) {
+            recordFailure(chunk, "embedding returned no vector");
+            return false;
+          }
+          insertEmbedding(
+            db,
+            chunk.hash,
+            chunk.seq,
+            chunk.pos,
+            new Float32Array(result.embedding),
+            model,
+            now,
+            chunk.expectedTotalChunks,
+            fingerprint,
+          );
+          chunksEmbedded++;
+          successesSinceRetry++;
+          clearFailure(chunk);
+          return true;
+        } catch (error) {
+          recordFailure(chunk, reasonFromError(error));
           return false;
         }
-        insertEmbedding(db, chunk.hash, chunk.seq, chunk.pos, new Float32Array(result.embedding), model, now, chunk.expectedTotalChunks, fingerprint);
-        chunksEmbedded++;
-        successesSinceRetry++;
-        clearFailure(chunk);
-        return true;
-      } catch (error) {
-        recordFailure(chunk, reasonFromError(error));
-        return false;
-      }
-    };
-    const retryFailedChunks = async (force = false) => {
-      if (!session.isValid || retryQueue.size === 0) return;
-      if (!force && successesSinceRetry < RETRY_AFTER_SUCCESSFUL_CHUNKS) return;
-      successesSinceRetry = 0;
+      };
+      const retryFailedChunks = async (force = false) => {
+        if (!session.isValid || retryQueue.size === 0) return;
+        if (!force && successesSinceRetry < RETRY_AFTER_SUCCESSFUL_CHUNKS)
+          return;
+        successesSinceRetry = 0;
 
-      // Normal mode: one retry pass after enough unrelated chunks succeeded.
-      // Force mode: we have run out of other chunks for this batch, so keep
-      // retrying outstanding failures until they recover or hit the cap. The
-      // cap prevents endless loops on permanently bad chunks.
-      do {
-        let retried = 0;
-        for (const [key, chunk] of [...retryQueue]) {
-          const failure = failures.get(key);
-          if (!failure || failure.attempts >= MAX_RETRY_ATTEMPTS) continue;
-          retried++;
-          await tryEmbedChunk(chunk);
+        // Normal mode: one retry pass after enough unrelated chunks succeeded.
+        // Force mode: we have run out of other chunks for this batch, so keep
+        // retrying outstanding failures until they recover or hit the cap. The
+        // cap prevents endless loops on permanently bad chunks.
+        do {
+          let retried = 0;
+          for (const [key, chunk] of [...retryQueue]) {
+            const failure = failures.get(key);
+            if (!failure || failure.attempts >= MAX_RETRY_ATTEMPTS) continue;
+            retried++;
+            await tryEmbedChunk(chunk);
+          }
+          if (!force || retried === 0) break;
+        } while (
+          session.isValid &&
+          [...retryQueue].some(([key]) => {
+            const failure = failures.get(key);
+            return !!failure && failure.attempts < MAX_RETRY_ATTEMPTS;
+          })
+        );
+      };
+      const batches = buildEmbeddingBatches(
+        docsToEmbed,
+        maxDocsPerBatch,
+        maxBatchBytes,
+      );
+
+      for (const batchMeta of batches) {
+        // Abort early if session has been invalidated
+        if (!session.isValid) {
+          console.warn(
+            `⚠ Session expired — skipping remaining document batches`,
+          );
+          break;
         }
-        if (!force || retried === 0) break;
-      } while (session.isValid && [...retryQueue].some(([key]) => {
-        const failure = failures.get(key);
-        return !!failure && failure.attempts < MAX_RETRY_ATTEMPTS;
-      }));
-    };
-    const batches = buildEmbeddingBatches(docsToEmbed, maxDocsPerBatch, maxBatchBytes);
 
-    for (const batchMeta of batches) {
-      // Abort early if session has been invalidated
-      if (!session.isValid) {
-        console.warn(`⚠ Session expired — skipping remaining document batches`);
-        break;
-      }
-
-      const batchDocs = getEmbeddingDocsForBatch(db, batchMeta);
-      const batchChunks: ChunkItem[] = [];
-      const expectedChunksByHash = new Map<string, number>();
-      const batchBytes = batchMeta.reduce((sum, doc) => sum + Math.max(0, doc.bytes), 0);
-
-      for (const doc of batchDocs) {
-        if (!doc.body.trim()) continue;
-
-        const title = extractTitle(doc.body, doc.path);
-        const chunks = await chunkDocumentByTokens(
-          doc.body,
-          undefined, undefined, undefined,
-          doc.path,
-          options?.chunkStrategy,
-          session.signal,
+        const batchDocs = getEmbeddingDocsForBatch(db, batchMeta);
+        const batchChunks: ChunkItem[] = [];
+        const expectedChunksByHash = new Map<string, number>();
+        const batchBytes = batchMeta.reduce(
+          (sum, doc) => sum + Math.max(0, doc.bytes),
+          0,
         );
 
-        for (let seq = 0; seq < chunks.length; seq++) {
-          batchChunks.push({
-            hash: doc.hash,
-            path: doc.path,
-            title,
-            text: chunks[seq]!.text,
-            seq,
-            pos: chunks[seq]!.pos,
-            tokens: chunks[seq]!.tokens,
-            bytes: encoder.encode(chunks[seq]!.text).length,
-            expectedTotalChunks: chunks.length,
+        for (const doc of batchDocs) {
+          if (!doc.body.trim()) continue;
+
+          const title = extractTitle(doc.body, doc.path);
+          const chunks = await chunkDocumentByTokens(
+            doc.body,
+            undefined,
+            undefined,
+            undefined,
+            doc.path,
+            options?.chunkStrategy,
+            session.signal,
+          );
+
+          for (let seq = 0; seq < chunks.length; seq++) {
+            batchChunks.push({
+              hash: doc.hash,
+              path: doc.path,
+              title,
+              text: chunks[seq]!.text,
+              seq,
+              pos: chunks[seq]!.pos,
+              tokens: chunks[seq]!.tokens,
+              bytes: encoder.encode(chunks[seq]!.text).length,
+              expectedTotalChunks: chunks.length,
+            });
+          }
+          expectedChunksByHash.set(doc.hash, chunks.length);
+        }
+
+        totalChunks += batchChunks.length;
+
+        if (batchChunks.length === 0) {
+          bytesProcessed += batchBytes;
+          options?.onProgress?.({
+            chunksEmbedded,
+            totalChunks,
+            bytesProcessed,
+            totalBytes,
+            errors: activeErrorCount(),
+            failures: failureList(),
+          });
+          continue;
+        }
+
+        if (!vectorTableInitialized) {
+          const firstChunk = batchChunks[0]!;
+          const firstText = formatDocForEmbedding(
+            firstChunk.text,
+            firstChunk.title,
+            embedModelUri,
+          );
+          const firstResult = await session.embed(firstText, { model });
+          if (!firstResult) {
+            throw new Error(
+              "Failed to get embedding dimensions from first chunk",
+            );
+          }
+          store.ensureVecTable(firstResult.embedding.length);
+          vectorTableInitialized = true;
+        }
+
+        const totalBatchChunkBytes = batchChunks.reduce(
+          (sum, chunk) => sum + chunk.bytes,
+          0,
+        );
+        let batchChunkBytesProcessed = 0;
+
+        for (
+          let batchStart = 0;
+          batchStart < batchChunks.length;
+          batchStart += BATCH_SIZE
+        ) {
+          // Abort early if session has been invalidated (e.g. max duration exceeded)
+          if (!session.isValid) {
+            const remainingChunks = batchChunks.slice(batchStart);
+            for (const chunk of remainingChunks)
+              recordFailure(
+                chunk,
+                "LLM session expired before embedding chunk",
+              );
+            console.warn(
+              `⚠ Session expired — skipping ${remainingChunks.length} remaining chunks`,
+            );
+            break;
+          }
+
+          // Abort early if active error rate is too high (>80% of attempted chunks failed)
+          const processed = chunksEmbedded + activeErrorCount();
+          if (processed >= BATCH_SIZE && activeErrorCount() > processed * 0.8) {
+            const remainingChunks = batchChunks.slice(batchStart);
+            for (const chunk of remainingChunks)
+              recordFailure(
+                chunk,
+                "embedding aborted because error rate was too high",
+              );
+            console.warn(
+              `⚠ Error rate too high (${activeErrorCount()}/${processed}) — aborting embedding`,
+            );
+            break;
+          }
+
+          const batchEnd = Math.min(
+            batchStart + BATCH_SIZE,
+            batchChunks.length,
+          );
+          const chunkBatch = batchChunks.slice(batchStart, batchEnd);
+          const texts = chunkBatch.map((chunk) =>
+            formatDocForEmbedding(chunk.text, chunk.title, embedModelUri),
+          );
+
+          try {
+            const embeddings = await session.embedBatch(texts, { model });
+            for (let i = 0; i < chunkBatch.length; i++) {
+              const chunk = chunkBatch[i]!;
+              const embedding = embeddings[i];
+              if (embedding) {
+                insertEmbedding(
+                  db,
+                  chunk.hash,
+                  chunk.seq,
+                  chunk.pos,
+                  new Float32Array(embedding.embedding),
+                  model,
+                  now,
+                  chunk.expectedTotalChunks,
+                  fingerprint,
+                );
+                chunksEmbedded++;
+                successesSinceRetry++;
+                clearFailure(chunk);
+              } else {
+                recordFailure(chunk, "batch embedding returned no vector");
+              }
+              batchChunkBytesProcessed += chunk.bytes;
+            }
+            await retryFailedChunks();
+          } catch (error) {
+            // Batch failed — try individual embeddings as fallback. If an
+            // individual retry succeeds, any prior failure for that chunk is
+            // cleared, so the visible error count reflects outstanding failures.
+            const batchReason = reasonFromError(error);
+            if (!session.isValid) {
+              for (const chunk of chunkBatch)
+                recordFailure(
+                  chunk,
+                  `batch failed and session expired: ${batchReason}`,
+                );
+              batchChunkBytesProcessed += chunkBatch.reduce(
+                (sum, c) => sum + c.bytes,
+                0,
+              );
+            } else {
+              for (const chunk of chunkBatch) {
+                await tryEmbedChunk(chunk);
+                batchChunkBytesProcessed += chunk.bytes;
+                await retryFailedChunks();
+              }
+            }
+          }
+
+          const proportionalBytes =
+            totalBatchChunkBytes === 0
+              ? batchBytes
+              : Math.min(
+                  batchBytes,
+                  Math.round(
+                    (batchChunkBytesProcessed / totalBatchChunkBytes) *
+                      batchBytes,
+                  ),
+                );
+          options?.onProgress?.({
+            chunksEmbedded,
+            totalChunks,
+            bytesProcessed: bytesProcessed + proportionalBytes,
+            totalBytes,
+            errors: activeErrorCount(),
+            failures: failureList(),
           });
         }
-        expectedChunksByHash.set(doc.hash, chunks.length);
-      }
 
-      totalChunks += batchChunks.length;
+        await retryFailedChunks(true);
 
-      if (batchChunks.length === 0) {
+        const removedPartialChunks = removeIncompleteEmbeddings(
+          db,
+          expectedChunksByHash,
+          model,
+        );
+        if (removedPartialChunks > 0) {
+          chunksEmbedded = Math.max(0, chunksEmbedded - removedPartialChunks);
+        }
+
         bytesProcessed += batchBytes;
-        options?.onProgress?.({ chunksEmbedded, totalChunks, bytesProcessed, totalBytes, errors: activeErrorCount(), failures: failureList() });
-        continue;
-      }
-
-      if (!vectorTableInitialized) {
-        const firstChunk = batchChunks[0]!;
-        const firstText = formatDocForEmbedding(firstChunk.text, firstChunk.title, embedModelUri);
-        const firstResult = await session.embed(firstText, { model });
-        if (!firstResult) {
-          throw new Error("Failed to get embedding dimensions from first chunk");
-        }
-        store.ensureVecTable(firstResult.embedding.length);
-        vectorTableInitialized = true;
-      }
-
-      const totalBatchChunkBytes = batchChunks.reduce((sum, chunk) => sum + chunk.bytes, 0);
-      let batchChunkBytesProcessed = 0;
-
-      for (let batchStart = 0; batchStart < batchChunks.length; batchStart += BATCH_SIZE) {
-        // Abort early if session has been invalidated (e.g. max duration exceeded)
-        if (!session.isValid) {
-          const remainingChunks = batchChunks.slice(batchStart);
-          for (const chunk of remainingChunks) recordFailure(chunk, "LLM session expired before embedding chunk");
-          console.warn(`⚠ Session expired — skipping ${remainingChunks.length} remaining chunks`);
-          break;
-        }
-
-        // Abort early if active error rate is too high (>80% of attempted chunks failed)
-        const processed = chunksEmbedded + activeErrorCount();
-        if (processed >= BATCH_SIZE && activeErrorCount() > processed * 0.8) {
-          const remainingChunks = batchChunks.slice(batchStart);
-          for (const chunk of remainingChunks) recordFailure(chunk, "embedding aborted because error rate was too high");
-          console.warn(`⚠ Error rate too high (${activeErrorCount()}/${processed}) — aborting embedding`);
-          break;
-        }
-
-        const batchEnd = Math.min(batchStart + BATCH_SIZE, batchChunks.length);
-        const chunkBatch = batchChunks.slice(batchStart, batchEnd);
-        const texts = chunkBatch.map(chunk => formatDocForEmbedding(chunk.text, chunk.title, embedModelUri));
-
-        try {
-          const embeddings = await session.embedBatch(texts, { model });
-          for (let i = 0; i < chunkBatch.length; i++) {
-            const chunk = chunkBatch[i]!;
-            const embedding = embeddings[i];
-            if (embedding) {
-              insertEmbedding(db, chunk.hash, chunk.seq, chunk.pos, new Float32Array(embedding.embedding), model, now, chunk.expectedTotalChunks, fingerprint);
-              chunksEmbedded++;
-              successesSinceRetry++;
-              clearFailure(chunk);
-            } else {
-              recordFailure(chunk, "batch embedding returned no vector");
-            }
-            batchChunkBytesProcessed += chunk.bytes;
-          }
-          await retryFailedChunks();
-        } catch (error) {
-          // Batch failed — try individual embeddings as fallback. If an
-          // individual retry succeeds, any prior failure for that chunk is
-          // cleared, so the visible error count reflects outstanding failures.
-          const batchReason = reasonFromError(error);
-          if (!session.isValid) {
-            for (const chunk of chunkBatch) recordFailure(chunk, `batch failed and session expired: ${batchReason}`);
-            batchChunkBytesProcessed += chunkBatch.reduce((sum, c) => sum + c.bytes, 0);
-          } else {
-            for (const chunk of chunkBatch) {
-              await tryEmbedChunk(chunk);
-              batchChunkBytesProcessed += chunk.bytes;
-              await retryFailedChunks();
-            }
-          }
-        }
-
-        const proportionalBytes = totalBatchChunkBytes === 0
-          ? batchBytes
-          : Math.min(batchBytes, Math.round((batchChunkBytesProcessed / totalBatchChunkBytes) * batchBytes));
         options?.onProgress?.({
           chunksEmbedded,
           totalChunks,
-          bytesProcessed: bytesProcessed + proportionalBytes,
+          bytesProcessed,
           totalBytes,
           errors: activeErrorCount(),
           failures: failureList(),
         });
       }
 
-      await retryFailedChunks(true);
-
-      const removedPartialChunks = removeIncompleteEmbeddings(db, expectedChunksByHash, model);
-      if (removedPartialChunks > 0) {
-        chunksEmbedded = Math.max(0, chunksEmbedded - removedPartialChunks);
-      }
-
-      bytesProcessed += batchBytes;
-      options?.onProgress?.({ chunksEmbedded, totalChunks, bytesProcessed, totalBytes, errors: activeErrorCount(), failures: failureList() });
-    }
-
-    return { chunksEmbedded, errors: activeErrorCount(), failures: failureList() };
-  }, { maxDuration: options?.maxDurationMs ?? DEFAULT_EMBED_MAX_DURATION_MS, name: 'generateEmbeddings' });
+      return {
+        chunksEmbedded,
+        errors: activeErrorCount(),
+        failures: failureList(),
+      };
+    },
+    {
+      maxDuration: options?.maxDurationMs ?? DEFAULT_EMBED_MAX_DURATION_MS,
+      name: "generateEmbeddings",
+    },
+  );
 
   return {
     docsProcessed: totalDocs,
@@ -1955,17 +2382,29 @@ export function createStore(dbPath?: string): Store {
     db,
     dbPath: resolvedPath,
     close: () => db.close(),
-    ensureVecTable: (dimensions: number) => ensureVecTableInternal(db, dimensions),
+    ensureVecTable: (dimensions: number) =>
+      ensureVecTableInternal(db, dimensions),
 
     // Index health
-    getHashesNeedingEmbedding: (model?: string) => getHashesNeedingEmbedding(db, undefined, model ?? store.llm?.embedModelName ?? DEFAULT_EMBED_MODEL),
-    getIndexHealth: (model?: string) => getIndexHealth(db, model ?? store.llm?.embedModelName ?? DEFAULT_EMBED_MODEL),
-    getStatus: (model?: string) => getStatus(db, model ?? store.llm?.embedModelName ?? DEFAULT_EMBED_MODEL),
+    getHashesNeedingEmbedding: (model?: string) =>
+      getHashesNeedingEmbedding(
+        db,
+        undefined,
+        model ?? store.llm?.embedModelName ?? DEFAULT_EMBED_MODEL,
+      ),
+    getIndexHealth: (model?: string) =>
+      getIndexHealth(
+        db,
+        model ?? store.llm?.embedModelName ?? DEFAULT_EMBED_MODEL,
+      ),
+    getStatus: (model?: string) =>
+      getStatus(db, model ?? store.llm?.embedModelName ?? DEFAULT_EMBED_MODEL),
 
     // Caching
     getCacheKey,
     getCachedResult: (cacheKey: string) => getCachedResult(db, cacheKey),
-    setCachedResult: (cacheKey: string, result: string) => setCachedResult(db, cacheKey, result),
+    setCachedResult: (cacheKey: string, result: string) =>
+      setCachedResult(db, cacheKey, result),
     clearCache: () => clearCache(db),
 
     // Cleanup and maintenance
@@ -1977,50 +2416,149 @@ export function createStore(dbPath?: string): Store {
 
     // Context
     getContextForFile: (filepath: string) => getContextForFile(db, filepath),
-    getContextForPath: (collectionName: string, path: string) => getContextForPath(db, collectionName, path),
+    getContextForPath: (collectionName: string, path: string) =>
+      getContextForPath(db, collectionName, path),
     getCollectionByName: (name: string) => getCollectionByName(db, name),
     getCollectionsWithoutContext: () => getCollectionsWithoutContext(db),
-    getTopLevelPathsWithoutContext: (collectionName: string) => getTopLevelPathsWithoutContext(db, collectionName),
+    getTopLevelPathsWithoutContext: (collectionName: string) =>
+      getTopLevelPathsWithoutContext(db, collectionName),
 
     // Virtual paths
     parseVirtualPath,
     buildVirtualPath,
     isVirtualPath,
-    resolveVirtualPath: (virtualPath: string) => resolveVirtualPath(db, virtualPath),
+    resolveVirtualPath: (virtualPath: string) =>
+      resolveVirtualPath(db, virtualPath),
     toVirtualPath: (absolutePath: string) => toVirtualPath(db, absolutePath),
 
     // Search
-    searchFTS: (query: string, limit?: number, collectionName?: string) => searchFTS(db, query, limit, collectionName),
-    searchVec: (query: string, model: string, limit?: number, collectionName?: string, session?: ILLMSession, precomputedEmbedding?: number[]) => searchVec(db, query, model, limit, collectionName, session, precomputedEmbedding),
+    searchFTS: (query: string, limit?: number, collectionName?: string) =>
+      searchFTS(db, query, limit, collectionName),
+    searchVec: (
+      query: string,
+      model: string,
+      limit?: number,
+      collectionName?: string,
+      session?: ILLMSession,
+      precomputedEmbedding?: number[],
+    ) =>
+      searchVec(
+        db,
+        query,
+        model,
+        limit,
+        collectionName,
+        session,
+        precomputedEmbedding,
+      ),
 
     // Query expansion & reranking
-    expandQuery: (query: string, model?: string, intent?: string) => expandQuery(query, model ?? store.llm?.generateModelName ?? DEFAULT_QUERY_MODEL, db, intent, store.llm),
-    rerank: (query: string, documents: { file: string; text: string }[], model?: string, intent?: string) => rerank(query, documents, model ?? store.llm?.rerankModelName ?? DEFAULT_RERANK_MODEL, db, intent, store.llm),
+    expandQuery: (query: string, model?: string, intent?: string) =>
+      expandQuery(
+        query,
+        model ?? store.llm?.generateModelName ?? DEFAULT_QUERY_MODEL,
+        db,
+        intent,
+        store.llm,
+      ),
+    rerank: (
+      query: string,
+      documents: { file: string; text: string }[],
+      model?: string,
+      intent?: string,
+    ) =>
+      rerank(
+        query,
+        documents,
+        model ?? store.llm?.rerankModelName ?? DEFAULT_RERANK_MODEL,
+        db,
+        intent,
+        store.llm,
+      ),
 
     // Document retrieval
-    findDocument: (filename: string, options?: { includeBody?: boolean }) => findDocument(db, filename, options),
-    getDocumentBody: (doc: DocumentResult | { filepath: string }, fromLine?: number, maxLines?: number) => getDocumentBody(db, doc, fromLine, maxLines),
-    findDocuments: (pattern: string, options?: { includeBody?: boolean; maxBytes?: number }) => findDocuments(db, pattern, options),
+    findDocument: (filename: string, options?: { includeBody?: boolean }) =>
+      findDocument(db, filename, options),
+    getDocumentBody: (
+      doc: DocumentResult | { filepath: string },
+      fromLine?: number,
+      maxLines?: number,
+    ) => getDocumentBody(db, doc, fromLine, maxLines),
+    findDocuments: (
+      pattern: string,
+      options?: { includeBody?: boolean; maxBytes?: number },
+    ) => findDocuments(db, pattern, options),
 
     // Fuzzy matching and docid lookup
-    findSimilarFiles: (query: string, maxDistance?: number, limit?: number) => findSimilarFiles(db, query, maxDistance, limit),
+    findSimilarFiles: (query: string, maxDistance?: number, limit?: number) =>
+      findSimilarFiles(db, query, maxDistance, limit),
     matchFilesByGlob: (pattern: string) => matchFilesByGlob(db, pattern),
     findDocumentByDocid: (docid: string) => findDocumentByDocid(db, docid),
 
     // Document indexing operations
-    insertContent: (hash: string, content: string, createdAt: string) => insertContent(db, hash, content, createdAt),
-    insertDocument: (collectionName: string, path: string, title: string, hash: string, createdAt: string, modifiedAt: string) => insertDocument(db, collectionName, path, title, hash, createdAt, modifiedAt),
-    findActiveDocument: (collectionName: string, path: string) => findActiveDocument(db, collectionName, path),
-    findOrMigrateLegacyDocument: (collectionName: string, path: string) => findOrMigrateLegacyDocument(db, collectionName, path),
-    updateDocumentTitle: (documentId: number, title: string, modifiedAt: string) => updateDocumentTitle(db, documentId, title, modifiedAt),
-    updateDocument: (documentId: number, title: string, hash: string, modifiedAt: string) => updateDocument(db, documentId, title, hash, modifiedAt),
-    deactivateDocument: (collectionName: string, path: string) => deactivateDocument(db, collectionName, path),
-    getActiveDocumentPaths: (collectionName: string) => getActiveDocumentPaths(db, collectionName),
+    insertContent: (hash: string, content: string, createdAt: string) =>
+      insertContent(db, hash, content, createdAt),
+    insertDocument: (
+      collectionName: string,
+      path: string,
+      title: string,
+      hash: string,
+      createdAt: string,
+      modifiedAt: string,
+    ) =>
+      insertDocument(
+        db,
+        collectionName,
+        path,
+        title,
+        hash,
+        createdAt,
+        modifiedAt,
+      ),
+    findActiveDocument: (collectionName: string, path: string) =>
+      findActiveDocument(db, collectionName, path),
+    findOrMigrateLegacyDocument: (collectionName: string, path: string) =>
+      findOrMigrateLegacyDocument(db, collectionName, path),
+    updateDocumentTitle: (
+      documentId: number,
+      title: string,
+      modifiedAt: string,
+    ) => updateDocumentTitle(db, documentId, title, modifiedAt),
+    updateDocument: (
+      documentId: number,
+      title: string,
+      hash: string,
+      modifiedAt: string,
+    ) => updateDocument(db, documentId, title, hash, modifiedAt),
+    deactivateDocument: (collectionName: string, path: string) =>
+      deactivateDocument(db, collectionName, path),
+    getActiveDocumentPaths: (collectionName: string) =>
+      getActiveDocumentPaths(db, collectionName),
 
     // Vector/embedding operations
     getHashesForEmbedding: () => getHashesForEmbedding(db),
     clearAllEmbeddings: () => clearAllEmbeddings(db),
-    insertEmbedding: (hash: string, seq: number, pos: number, embedding: Float32Array, model: string, embeddedAt: string, totalChunks?: number, fingerprint?: string) => insertEmbedding(db, hash, seq, pos, embedding, model, embeddedAt, totalChunks, fingerprint),
+    insertEmbedding: (
+      hash: string,
+      seq: number,
+      pos: number,
+      embedding: Float32Array,
+      model: string,
+      embeddedAt: string,
+      totalChunks?: number,
+      fingerprint?: string,
+    ) =>
+      insertEmbedding(
+        db,
+        hash,
+        seq,
+        pos,
+        embedding,
+        model,
+        embeddedAt,
+        totalChunks,
+        fingerprint,
+      ),
   };
 
   return store;
@@ -2035,16 +2573,16 @@ export function createStore(dbPath?: string): Store {
  * Body is optional - use getDocumentBody() to load it separately if needed.
  */
 export type DocumentResult = {
-  filepath: string;           // Full filesystem path
-  displayPath: string;        // Short display path (e.g., "docs/readme.md")
-  title: string;              // Document title (from first heading or filename)
-  context: string | null;     // Folder context description if configured
-  hash: string;               // Content hash for caching/change detection
-  docid: string;              // Short docid (first 6 chars of hash) for quick reference
-  collectionName: string;     // Parent collection name
-  modifiedAt: string;         // Last modification timestamp
-  bodyLength: number;         // Body length in bytes (useful before loading)
-  body?: string;              // Document body (optional, load with getDocumentBody)
+  filepath: string; // Full filesystem path
+  displayPath: string; // Short display path (e.g., "docs/readme.md")
+  title: string; // Document title (from first heading or filename)
+  context: string | null; // Folder context description if configured
+  hash: string; // Content hash for caching/change detection
+  docid: string; // Short docid (first 6 chars of hash) for quick reference
+  collectionName: string; // Parent collection name
+  modifiedAt: string; // Last modification timestamp
+  bodyLength: number; // Body length in bytes (useful before loading)
+  body?: string; // Document body (optional, load with getDocumentBody)
 };
 
 /**
@@ -2067,29 +2605,31 @@ export function getDocid(hash: string): string {
 function emojiToHex(str: string): string {
   return str.replace(/(?:\p{So}\p{Mn}?|\p{Sk})+/gu, (run) => {
     // Split the run into individual emoji and convert each to hex, dash-separated
-    return [...run].filter(c => /\p{So}|\p{Sk}/u.test(c))
-      .map(c => c.codePointAt(0)!.toString(16)).join('-');
+    return [...run]
+      .filter((c) => /\p{So}|\p{Sk}/u.test(c))
+      .map((c) => c.codePointAt(0)!.toString(16))
+      .join("-");
   });
 }
 
 export function handelize(path: string): string {
-  if (!path || path.trim() === '') {
-    throw new Error('handelize: path cannot be empty');
+  if (!path || path.trim() === "") {
+    throw new Error("handelize: path cannot be empty");
   }
 
   // Allow route-style "$" filenames while still rejecting paths with no usable content.
   // Emoji (\p{So}) counts as valid content — they get converted to hex codepoints below.
-  const segments = path.split('/').filter(Boolean);
-  const lastSegment = segments[segments.length - 1] || '';
-  const filenameWithoutExt = lastSegment.replace(/\.[^.]+$/, '');
+  const segments = path.split("/").filter(Boolean);
+  const lastSegment = segments[segments.length - 1] || "";
+  const filenameWithoutExt = lastSegment.replace(/\.[^.]+$/, "");
   const hasValidContent = /[\p{L}\p{N}\p{So}\p{Sk}$]/u.test(filenameWithoutExt);
   if (!hasValidContent) {
     throw new Error(`handelize: path "${path}" has no valid filename content`);
   }
 
   const result = path
-    .replace(/___/g, '/')       // Triple underscore becomes folder separator
-    .split('/')
+    .replace(/___/g, "/") // Triple underscore becomes folder separator
+    .split("/")
     .map((segment, idx, arr) => {
       const isLastSegment = idx === arr.length - 1;
 
@@ -2099,26 +2639,28 @@ export function handelize(path: string): string {
       if (isLastSegment) {
         // For the filename (last segment), preserve the extension
         const extMatch = segment.match(/(\.[a-z0-9]+)$/i);
-        const ext = extMatch ? extMatch[1] : '';
+        const ext = extMatch ? extMatch[1] : "";
         const nameWithoutExt = ext ? segment.slice(0, -ext.length) : segment;
 
         const cleanedName = nameWithoutExt
-          .replace(/[^\p{L}\p{N}$]+/gu, '-')  // Keep letters, numbers, "$"; dash-separate rest (including dots)
-          .replace(/^-+|-+$/g, ''); // Remove leading/trailing dashes
+          .replace(/[^\p{L}\p{N}$]+/gu, "-") // Keep letters, numbers, "$"; dash-separate rest (including dots)
+          .replace(/^-+|-+$/g, ""); // Remove leading/trailing dashes
 
         return cleanedName + ext;
       } else {
         // For directories, just clean normally
         return segment
-          .replace(/[^\p{L}\p{N}$]+/gu, '-')
-          .replace(/^-+|-+$/g, '');
+          .replace(/[^\p{L}\p{N}$]+/gu, "-")
+          .replace(/^-+|-+$/g, "");
       }
     })
     .filter(Boolean)
-    .join('/');
+    .join("/");
 
   if (!result) {
-    throw new Error(`handelize: path "${path}" resulted in empty string after processing`);
+    throw new Error(
+      `handelize: path "${path}" resulted in empty string after processing`,
+    );
   }
 
   return result;
@@ -2128,9 +2670,9 @@ export function handelize(path: string): string {
  * Search result extends DocumentResult with score and source info
  */
 export type SearchResult = DocumentResult & {
-  score: number;              // Relevance score (0-1)
-  source: "fts" | "vec";      // Search source (full-text or vector)
-  chunkPos?: number;          // Character position of matching chunk (for vector search)
+  score: number; // Relevance score (0-1)
+  source: "fts" | "vec"; // Search source (full-text or vector)
+  chunkPos?: number; // Character position of matching chunk (for vector search)
 };
 
 /**
@@ -2149,27 +2691,27 @@ export type RRFContributionTrace = {
   source: "fts" | "vec";
   queryType: "original" | "lex" | "vec" | "hyde";
   query: string;
-  rank: number;            // 1-indexed rank within list
+  rank: number; // 1-indexed rank within list
   weight: number;
-  backendScore: number;    // Backend-normalized score before fusion
+  backendScore: number; // Backend-normalized score before fusion
   rrfContribution: number; // weight / (k + rank)
 };
 
 export type RRFScoreTrace = {
   contributions: RRFContributionTrace[];
-  baseScore: number;       // Sum of reciprocal-rank contributions
-  topRank: number;         // Best (lowest) rank seen across lists
-  topRankBonus: number;    // +0.05 for rank 1, +0.02 for rank 2-3
-  totalScore: number;      // baseScore + topRankBonus
+  baseScore: number; // Sum of reciprocal-rank contributions
+  topRank: number; // Best (lowest) rank seen across lists
+  topRankBonus: number; // +0.05 for rank 1, +0.02 for rank 2-3
+  totalScore: number; // baseScore + topRankBonus
 };
 
 export type HybridQueryExplain = {
   ftsScores: number[];
   vectorScores: number[];
   rrf: {
-    rank: number;          // Rank after RRF fusion (1-indexed)
+    rank: number; // Rank after RRF fusion (1-indexed)
     positionScore: number; // 1 / rank used in position-aware blending
-    weight: number;        // Position-aware RRF weight (0.75 / 0.60 / 0.40)
+    weight: number; // Position-aware RRF weight (0.75 / 0.60 / 0.40)
     baseScore: number;
     topRankBonus: number;
     totalScore: number;
@@ -2201,19 +2743,21 @@ export type DocumentLookupError = DocumentNotFound | DocumentExcludedByIgnore;
 /**
  * Result from multi-get operations
  */
-export type MultiGetResult = {
-  doc: DocumentResult;
-  skipped: false;
-} | {
-  doc: Pick<DocumentResult, "filepath" | "displayPath">;
-  skipped: true;
-  skipReason: string;
-};
+export type MultiGetResult =
+  | {
+      doc: DocumentResult;
+      skipped: false;
+    }
+  | {
+      doc: Pick<DocumentResult, "filepath" | "displayPath">;
+      skipped: true;
+      skipReason: string;
+    };
 
 export type CollectionInfo = {
   name: string;
   path: string | null;
-  pattern: string | null;
+  pattern: string | string[] | null;
   documents: number;
   lastUpdated: string;
 };
@@ -2229,7 +2773,11 @@ export type IndexStatus = {
 // Index health
 // =============================================================================
 
-export function getHashesNeedingEmbedding(db: Database, collection?: string, model: string = DEFAULT_EMBED_MODEL): number {
+export function getHashesNeedingEmbedding(
+  db: Database,
+  collection?: string,
+  model: string = DEFAULT_EMBED_MODEL,
+): number {
   const collectionFilter = collection ? `AND d.collection = ?` : ``;
   const fingerprint = getEmbeddingFingerprint(model);
   return withLazyContentVectorMigration(db, () => {
@@ -2246,7 +2794,11 @@ export function getHashesNeedingEmbedding(db: Database, collection?: string, mod
         AND (v.hash IS NULL OR v.chunk_count < v.expected_chunks)
         ${collectionFilter}
     `);
-    const result = (collection ? stmt.get(model, fingerprint, collection) : stmt.get(model, fingerprint)) as { count: number };
+    const result = (
+      collection
+        ? stmt.get(model, fingerprint, collection)
+        : stmt.get(model, fingerprint)
+    ) as { count: number };
     return result.count;
   });
 }
@@ -2263,18 +2815,34 @@ export type LegacyFingerprintAdoptionResult = {
   reason: string;
 };
 
-export async function maybeAdoptLegacyEmbeddingFingerprint(store: Store, model: string = DEFAULT_EMBED_MODEL): Promise<LegacyFingerprintAdoptionResult> {
+export async function maybeAdoptLegacyEmbeddingFingerprint(
+  store: Store,
+  model: string = DEFAULT_EMBED_MODEL,
+): Promise<LegacyFingerprintAdoptionResult> {
   const db = store.db;
   const fingerprint = getEmbeddingFingerprint(model);
   const legacyCount = withLazyContentVectorMigration(db, () => {
-    const row = db.prepare(`SELECT COUNT(DISTINCT hash) AS count FROM content_vectors WHERE model = ? AND embed_fingerprint = ''`).get(model) as { count: number };
+    const row = db
+      .prepare(
+        `SELECT COUNT(DISTINCT hash) AS count FROM content_vectors WHERE model = ? AND embed_fingerprint = ''`,
+      )
+      .get(model) as { count: number };
     return row.count;
   });
   if (legacyCount === 0) {
-    return { checked: false, adopted: 0, reason: "no legacy empty-fingerprint embeddings" };
+    return {
+      checked: false,
+      adopted: 0,
+      reason: "no legacy empty-fingerprint embeddings",
+    };
   }
 
-  const sample = withLazyContentVectorMigration(db, () => db.prepare(`
+  const sample = withLazyContentVectorMigration(
+    db,
+    () =>
+      db
+        .prepare(
+          `
     SELECT cv.hash, cv.seq, cv.pos, cv.total_chunks, c.doc AS body, MIN(d.path) AS path
     FROM content_vectors cv
     JOIN documents d ON d.hash = cv.hash AND d.active = 1
@@ -2283,15 +2851,39 @@ export async function maybeAdoptLegacyEmbeddingFingerprint(store: Store, model: 
     GROUP BY cv.hash, cv.seq, cv.pos, cv.total_chunks, c.doc
     ORDER BY cv.hash, cv.seq
     LIMIT 1
-  `).get(model) as { hash: string; seq: number; pos: number; total_chunks: number; body: string; path: string } | undefined);
+  `,
+        )
+        .get(model) as
+        | {
+            hash: string;
+            seq: number;
+            pos: number;
+            total_chunks: number;
+            body: string;
+            path: string;
+          }
+        | undefined,
+  );
 
   if (!sample) {
-    return { checked: false, adopted: 0, reason: `${legacyCount} legacy docs have no active sample` };
+    return {
+      checked: false,
+      adopted: 0,
+      reason: `${legacyCount} legacy docs have no active sample`,
+    };
   }
 
-  const tableExists = db.prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name='vectors_vec'`).get();
+  const tableExists = db
+    .prepare(
+      `SELECT name FROM sqlite_master WHERE type='table' AND name='vectors_vec'`,
+    )
+    .get();
   if (!tableExists) {
-    return { checked: false, adopted: 0, reason: "vectors_vec table is missing" };
+    return {
+      checked: false,
+      adopted: 0,
+      reason: "vectors_vec table is missing",
+    };
   }
 
   const expectedHashSeq = `${sample.hash}_${sample.seq}`;
@@ -2299,46 +2891,101 @@ export async function maybeAdoptLegacyEmbeddingFingerprint(store: Store, model: 
   const llm = getLlm(store);
 
   return await withLLMSessionForLlm(llm, async (session) => {
-    const chunks = await chunkDocumentByTokens(sample.body, undefined, undefined, undefined, sample.path, undefined, session.signal);
+    const chunks = await chunkDocumentByTokens(
+      sample.body,
+      undefined,
+      undefined,
+      undefined,
+      sample.path,
+      undefined,
+      session.signal,
+    );
     const chunk = chunks[sample.seq];
     if (!chunk) {
-      return { checked: true, adopted: 0, reason: `sample chunk ${expectedHashSeq} no longer exists` };
+      return {
+        checked: true,
+        adopted: 0,
+        reason: `sample chunk ${expectedHashSeq} no longer exists`,
+      };
     }
 
-    const result = await session.embed(formatDocForEmbedding(chunk.text, title, model), { model });
+    const result = await session.embed(
+      formatDocForEmbedding(chunk.text, title, model),
+      { model },
+    );
     if (!result) {
-      return { checked: true, adopted: 0, reason: "failed to embed legacy sample" };
+      return {
+        checked: true,
+        adopted: 0,
+        reason: "failed to embed legacy sample",
+      };
     }
 
-    const nearest = db.prepare(`
+    const nearest = db
+      .prepare(
+        `
       SELECT hash_seq, distance
       FROM vectors_vec
       WHERE embedding MATCH ? AND k = 1
-    `).get(new Float32Array(result.embedding)) as { hash_seq: string; distance: number } | undefined;
+    `,
+      )
+      .get(new Float32Array(result.embedding)) as
+      { hash_seq: string; distance: number } | undefined;
 
     if (!nearest) {
-      return { checked: true, adopted: 0, reason: "legacy sample vector not found" };
+      return {
+        checked: true,
+        adopted: 0,
+        reason: "legacy sample vector not found",
+      };
     }
 
     const threshold = 0.0001;
     if (nearest.hash_seq !== expectedHashSeq || nearest.distance > threshold) {
-      return { checked: true, adopted: 0, reason: `legacy sample differs from current fingerprint (nearest ${nearest.hash_seq}, distance ${nearest.distance.toFixed(6)})` };
+      return {
+        checked: true,
+        adopted: 0,
+        reason: `legacy sample differs from current fingerprint (nearest ${nearest.hash_seq}, distance ${nearest.distance.toFixed(6)})`,
+      };
     }
 
-    const update = withLazyContentVectorMigration(db, () => db.prepare(`UPDATE content_vectors SET embed_fingerprint = ? WHERE model = ? AND embed_fingerprint = ''`).run(fingerprint, model));
-    return { checked: true, adopted: update.changes, reason: `sample ${expectedHashSeq} matched current fingerprint at distance ${nearest.distance.toFixed(6)}` };
+    const update = withLazyContentVectorMigration(db, () =>
+      db
+        .prepare(
+          `UPDATE content_vectors SET embed_fingerprint = ? WHERE model = ? AND embed_fingerprint = ''`,
+        )
+        .run(fingerprint, model),
+    );
+    return {
+      checked: true,
+      adopted: update.changes,
+      reason: `sample ${expectedHashSeq} matched current fingerprint at distance ${nearest.distance.toFixed(6)}`,
+    };
   });
 }
 
-export function getIndexHealth(db: Database, model: string = DEFAULT_EMBED_MODEL): IndexHealthInfo {
+export function getIndexHealth(
+  db: Database,
+  model: string = DEFAULT_EMBED_MODEL,
+): IndexHealthInfo {
   const needsEmbedding = getHashesNeedingEmbedding(db, undefined, model);
-  const totalDocs = (db.prepare(`SELECT COUNT(*) as count FROM documents WHERE active = 1`).get() as { count: number }).count;
+  const totalDocs = (
+    db
+      .prepare(`SELECT COUNT(*) as count FROM documents WHERE active = 1`)
+      .get() as { count: number }
+  ).count;
 
-  const mostRecent = db.prepare(`SELECT MAX(modified_at) as latest FROM documents WHERE active = 1`).get() as { latest: string | null };
+  const mostRecent = db
+    .prepare(
+      `SELECT MAX(modified_at) as latest FROM documents WHERE active = 1`,
+    )
+    .get() as { latest: string | null };
   let daysStale: number | null = null;
   if (mostRecent?.latest) {
     const lastUpdate = new Date(mostRecent.latest);
-    daysStale = Math.floor((Date.now() - lastUpdate.getTime()) / (24 * 60 * 60 * 1000));
+    daysStale = Math.floor(
+      (Date.now() - lastUpdate.getTime()) / (24 * 60 * 60 * 1000),
+    );
   }
 
   return { needsEmbedding, totalDocs, daysStale };
@@ -2356,15 +3003,25 @@ export function getCacheKey(url: string, body: object): string {
 }
 
 export function getCachedResult(db: Database, cacheKey: string): string | null {
-  const row = db.prepare(`SELECT result FROM llm_cache WHERE hash = ?`).get(cacheKey) as { result: string } | null;
+  const row = db
+    .prepare(`SELECT result FROM llm_cache WHERE hash = ?`)
+    .get(cacheKey) as { result: string } | null;
   return row?.result || null;
 }
 
-export function setCachedResult(db: Database, cacheKey: string, result: string): void {
+export function setCachedResult(
+  db: Database,
+  cacheKey: string,
+  result: string,
+): void {
   const now = new Date().toISOString();
-  db.prepare(`INSERT OR REPLACE INTO llm_cache (hash, result, created_at) VALUES (?, ?, ?)`).run(cacheKey, result, now);
+  db.prepare(
+    `INSERT OR REPLACE INTO llm_cache (hash, result, created_at) VALUES (?, ?, ?)`,
+  ).run(cacheKey, result, now);
   if (Math.random() < 0.01) {
-    db.exec(`DELETE FROM llm_cache WHERE hash NOT IN (SELECT hash FROM llm_cache ORDER BY created_at DESC LIMIT 1000)`);
+    db.exec(
+      `DELETE FROM llm_cache WHERE hash NOT IN (SELECT hash FROM llm_cache ORDER BY created_at DESC LIMIT 1000)`,
+    );
   }
 }
 
@@ -2401,10 +3058,14 @@ export function deleteInactiveDocuments(db: Database): number {
  * Returns the number of orphaned content hashes deleted.
  */
 export function cleanupOrphanedContent(db: Database): number {
-  const result = db.prepare(`
+  const result = db
+    .prepare(
+      `
     DELETE FROM content
     WHERE hash NOT IN (SELECT DISTINCT hash FROM documents)
-  `).run();
+  `,
+    )
+    .run();
   return result.changes;
 }
 
@@ -2432,12 +3093,16 @@ export function cleanupOrphanedVectors(db: Database): number {
 
   return withLazyContentVectorMigration(db, () => {
     // Count orphaned vectors first
-    const countResult = db.prepare(`
+    const countResult = db
+      .prepare(
+        `
       SELECT COUNT(*) as c FROM content_vectors cv
       WHERE NOT EXISTS (
         SELECT 1 FROM documents d WHERE d.hash = cv.hash AND d.active = 1
       )
-    `).get() as { c: number };
+    `,
+      )
+      .get() as { c: number };
 
     if (countResult.c === 0) {
       return 0;
@@ -2483,7 +3148,7 @@ export async function hashContent(content: string): Promise<string> {
 }
 
 const titleExtractors: Record<string, (content: string) => string | null> = {
-  '.md': (content) => {
+  ".md": (content) => {
     const match = content.match(/^##?\s+(.+)$/m);
     if (match) {
       const title = (match[1] ?? "").trim();
@@ -2495,7 +3160,7 @@ const titleExtractors: Record<string, (content: string) => string | null> = {
     }
     return null;
   },
-  '.org': (content) => {
+  ".org": (content) => {
     const titleProp = content.match(/^#\+TITLE:\s*(.+)$/im);
     if (titleProp?.[1]) return titleProp[1].trim();
     const heading = content.match(/^\*+\s+(.+)$/m);
@@ -2505,13 +3170,18 @@ const titleExtractors: Record<string, (content: string) => string | null> = {
 };
 
 export function extractTitle(content: string, filename: string): string {
-  const ext = filename.slice(filename.lastIndexOf('.')).toLowerCase();
+  const ext = filename.slice(filename.lastIndexOf(".")).toLowerCase();
   const extractor = titleExtractors[ext];
   if (extractor) {
     const title = extractor(content);
     if (title) return title;
   }
-  return filename.replace(/\.[^.]+$/, "").split("/").pop() || filename;
+  return (
+    filename
+      .replace(/\.[^.]+$/, "")
+      .split("/")
+      .pop() || filename
+  );
 }
 
 // =============================================================================
@@ -2522,30 +3192,50 @@ export function extractTitle(content: string, filename: string): string {
  * Insert content into the content table (content-addressable storage).
  * Uses INSERT OR IGNORE so duplicate hashes are skipped.
  */
-export function insertContent(db: Database, hash: string, content: string, createdAt: string): void {
-  db.prepare(`INSERT OR IGNORE INTO content (hash, doc, created_at) VALUES (?, ?, ?)`)
-    .run(hash, content, createdAt);
+export function insertContent(
+  db: Database,
+  hash: string,
+  content: string,
+  createdAt: string,
+): void {
+  db.prepare(
+    `INSERT OR IGNORE INTO content (hash, doc, created_at) VALUES (?, ?, ?)`,
+  ).run(hash, content, createdAt);
 }
 
 function rebuildDocumentFTS(db: Database, documentId: number): void {
-  const row = db.prepare(`
+  const row = db
+    .prepare(
+      `
     SELECT d.id, d.collection, d.path, d.title, content.doc as body
     FROM documents d
     JOIN content ON content.hash = d.hash
     WHERE d.id = ? AND d.active = 1
-  `).get(documentId) as { id: number; collection: string; path: string; title: string; body: string } | undefined;
+  `,
+    )
+    .get(documentId) as
+    | {
+        id: number;
+        collection: string;
+        path: string;
+        title: string;
+        body: string;
+      }
+    | undefined;
 
   db.prepare(`DELETE FROM documents_fts WHERE rowid = ?`).run(documentId);
   if (!row) return;
 
-  db.prepare(`
+  db.prepare(
+    `
     INSERT INTO documents_fts(rowid, filepath, title, body)
     VALUES (?, ?, ?, ?)
-  `).run(
+  `,
+  ).run(
     row.id,
     normalizeCjkForFTS(`${row.collection}/${row.path}`),
     normalizeCjkForFTS(row.title),
-    normalizeCjkForFTS(row.body)
+    normalizeCjkForFTS(row.body),
   );
 }
 
@@ -2559,9 +3249,10 @@ export function insertDocument(
   title: string,
   hash: string,
   createdAt: string,
-  modifiedAt: string
+  modifiedAt: string,
 ): void {
-  db.prepare(`
+  db.prepare(
+    `
     INSERT INTO documents (collection, path, title, hash, created_at, modified_at, active)
     VALUES (?, ?, ?, ?, ?, ?, 1)
     ON CONFLICT(collection, path) DO UPDATE SET
@@ -2569,9 +3260,12 @@ export function insertDocument(
       hash = excluded.hash,
       modified_at = excluded.modified_at,
       active = 1
-  `).run(collectionName, path, title, hash, createdAt, modifiedAt);
+  `,
+  ).run(collectionName, path, title, hash, createdAt, modifiedAt);
 
-  const row = db.prepare(`SELECT id FROM documents WHERE collection = ? AND path = ?`).get(collectionName, path) as { id: number } | undefined;
+  const row = db
+    .prepare(`SELECT id FROM documents WHERE collection = ? AND path = ?`)
+    .get(collectionName, path) as { id: number } | undefined;
   if (row) rebuildDocumentFTS(db, row.id);
 }
 
@@ -2581,12 +3275,17 @@ export function insertDocument(
 export function findActiveDocument(
   db: Database,
   collectionName: string,
-  path: string
+  path: string,
 ): { id: number; hash: string; title: string } | null {
-  const row = db.prepare(`
+  const row = db
+    .prepare(
+      `
     SELECT id, hash, title FROM documents
     WHERE collection = ? AND path = ? AND active = 1
-  `).get(collectionName, path) as { id: number; hash: string; title: string } | undefined;
+  `,
+    )
+    .get(collectionName, path) as
+    { id: number; hash: string; title: string } | undefined;
   return row ?? null;
 }
 
@@ -2602,18 +3301,23 @@ export function findActiveDocument(
 export function findOrMigrateLegacyDocument(
   db: Database,
   collectionName: string,
-  path: string
+  path: string,
 ): { id: number; hash: string; title: string } | null {
   const existing = findActiveDocument(db, collectionName, path);
   if (existing) return existing;
 
   // Case-insensitive match (legacy normalization: e.g. "README.md" → "readme.md").
-  const legacyCase = db.prepare(`
+  const legacyCase = db
+    .prepare(
+      `
     SELECT id, hash, title FROM documents
     WHERE collection = ? AND path COLLATE NOCASE = ? AND active = 1
     ORDER BY id
     LIMIT 1
-  `).get(collectionName, path) as { id: number; hash: string; title: string } | undefined;
+  `,
+    )
+    .get(collectionName, path) as
+    { id: number; hash: string; title: string } | undefined;
 
   // Handalized-path match: existing DBs indexed with handelize() stored slugged paths
   // like "Budget-Revenue-Q4-2024.md" for a raw path like "Budget & Revenue (Q4) [2024].md".
@@ -2623,12 +3327,17 @@ export function findOrMigrateLegacyDocument(
   try {
     const handleized = handelize(path);
     if (handleized !== path) {
-      legacyHandalized = db.prepare(`
+      legacyHandalized = db
+        .prepare(
+          `
         SELECT id, hash, title FROM documents
         WHERE collection = ? AND path = ? AND active = 1
         ORDER BY id
         LIMIT 1
-      `).get(collectionName, handleized) as { id: number; hash: string; title: string } | undefined;
+      `,
+        )
+        .get(collectionName, handleized) as
+        { id: number; hash: string; title: string } | undefined;
     }
   } catch {
     // handelize throws on invalid paths; just skip
@@ -2641,9 +3350,11 @@ export function findOrMigrateLegacyDocument(
   const migrate = db.transaction(() => {
     // Use OR IGNORE so a UNIQUE conflict (e.g. both "readme.md" and
     // "README.md" already exist) is a no-op rather than crashing.
-    const result = db.prepare(
-      `UPDATE OR IGNORE documents SET path = ? WHERE id = ? AND active = 1`
-    ).run(path, legacy.id);
+    const result = db
+      .prepare(
+        `UPDATE OR IGNORE documents SET path = ? WHERE id = ? AND active = 1`,
+      )
+      .run(path, legacy.id);
 
     if (result.changes === 0) return false;
 
@@ -2664,10 +3375,11 @@ export function updateDocumentTitle(
   db: Database,
   documentId: number,
   title: string,
-  modifiedAt: string
+  modifiedAt: string,
 ): void {
-  db.prepare(`UPDATE documents SET title = ?, modified_at = ? WHERE id = ?`)
-    .run(title, modifiedAt, documentId);
+  db.prepare(
+    `UPDATE documents SET title = ?, modified_at = ? WHERE id = ?`,
+  ).run(title, modifiedAt, documentId);
   rebuildDocumentFTS(db, documentId);
 }
 
@@ -2680,29 +3392,42 @@ export function updateDocument(
   documentId: number,
   title: string,
   hash: string,
-  modifiedAt: string
+  modifiedAt: string,
 ): void {
-  db.prepare(`UPDATE documents SET title = ?, hash = ?, modified_at = ? WHERE id = ?`)
-    .run(title, hash, modifiedAt, documentId);
+  db.prepare(
+    `UPDATE documents SET title = ?, hash = ?, modified_at = ? WHERE id = ?`,
+  ).run(title, hash, modifiedAt, documentId);
   rebuildDocumentFTS(db, documentId);
 }
 
 /**
  * Deactivate a document (mark as inactive but don't delete).
  */
-export function deactivateDocument(db: Database, collectionName: string, path: string): void {
-  db.prepare(`UPDATE documents SET active = 0 WHERE collection = ? AND path = ? AND active = 1`)
-    .run(collectionName, path);
+export function deactivateDocument(
+  db: Database,
+  collectionName: string,
+  path: string,
+): void {
+  db.prepare(
+    `UPDATE documents SET active = 0 WHERE collection = ? AND path = ? AND active = 1`,
+  ).run(collectionName, path);
 }
 
 /**
  * Get all active document paths for a collection.
  */
-export function getActiveDocumentPaths(db: Database, collectionName: string): string[] {
-  const rows = db.prepare(`
+export function getActiveDocumentPaths(
+  db: Database,
+  collectionName: string,
+): string[] {
+  const rows = db
+    .prepare(
+      `
     SELECT path FROM documents WHERE collection = ? AND active = 1
-  `).all(collectionName) as { path: string }[];
-  return rows.map(r => r.path);
+  `,
+    )
+    .all(collectionName) as { path: string }[];
+  return rows.map((r) => r.path);
 }
 
 export { formatQueryForEmbedding, formatDocForEmbedding };
@@ -2715,11 +3440,18 @@ export function chunkDocument(
   content: string,
   maxChars: number = CHUNK_SIZE_CHARS,
   overlapChars: number = CHUNK_OVERLAP_CHARS,
-  windowChars: number = CHUNK_WINDOW_CHARS
+  windowChars: number = CHUNK_WINDOW_CHARS,
 ): { text: string; pos: number }[] {
   const breakPoints = scanBreakPoints(content);
   const codeFences = findCodeFences(content);
-  return chunkDocumentWithBreakPoints(content, breakPoints, codeFences, maxChars, overlapChars, windowChars);
+  return chunkDocumentWithBreakPoints(
+    content,
+    breakPoints,
+    codeFences,
+    maxChars,
+    overlapChars,
+    windowChars,
+  );
 }
 
 /**
@@ -2750,7 +3482,14 @@ export async function chunkDocumentAsync(
     }
   }
 
-  return chunkDocumentWithBreakPoints(content, breakPoints, codeFences, maxChars, overlapChars, windowChars);
+  return chunkDocumentWithBreakPoints(
+    content,
+    breakPoints,
+    codeFences,
+    maxChars,
+    overlapChars,
+    windowChars,
+  );
 }
 
 /**
@@ -2767,7 +3506,7 @@ export async function chunkDocumentByTokens(
   windowTokens: number = CHUNK_WINDOW_TOKENS,
   filepath?: string,
   chunkStrategy: ChunkStrategy = "regex",
-  signal?: AbortSignal
+  signal?: AbortSignal,
 ): Promise<{ text: string; pos: number; tokens: number }[]> {
   const llm = getDefaultLlamaCpp();
 
@@ -2780,7 +3519,14 @@ export async function chunkDocumentByTokens(
 
   // Chunk in character space with conservative estimate
   // Use AST-aware chunking for the first pass when filepath/strategy provided
-  let charChunks = await chunkDocumentAsync(content, maxChars, overlapChars, windowChars, filepath, chunkStrategy);
+  let charChunks = await chunkDocumentAsync(
+    content,
+    maxChars,
+    overlapChars,
+    windowChars,
+    filepath,
+    chunkStrategy,
+  );
 
   // Tokenize and split any chunks that still exceed limit
   const results: { text: string; pos: number; tokens: number }[] = [];
@@ -2789,7 +3535,10 @@ export async function chunkDocumentByTokens(
     return Math.max(0, Math.min(maxChars - 1, Math.floor(value)));
   };
 
-  const pushChunkWithinTokenLimit = async (text: string, pos: number): Promise<void> => {
+  const pushChunkWithinTokenLimit = async (
+    text: string,
+    pos: number,
+  ): Promise<void> => {
     if (signal?.aborted) return;
 
     const tokens = await llm.tokenize(text);
@@ -2806,28 +3555,35 @@ export async function chunkDocumentByTokens(
     safeMaxChars = Math.max(1, Math.min(text.length - 1, safeMaxChars));
 
     let nextOverlapChars = clampOverlapChars(
-      overlapChars * actualCharsPerToken / 2,
+      (overlapChars * actualCharsPerToken) / 2,
       safeMaxChars,
     );
-    let nextWindowChars = Math.max(0, Math.floor(windowChars * actualCharsPerToken / 2));
-    let subChunks = chunkDocument(text, safeMaxChars, nextOverlapChars, nextWindowChars);
+    let nextWindowChars = Math.max(
+      0,
+      Math.floor((windowChars * actualCharsPerToken) / 2),
+    );
+    let subChunks = chunkDocument(
+      text,
+      safeMaxChars,
+      nextOverlapChars,
+      nextWindowChars,
+    );
 
     // Pathological single-line blobs can produce no meaningful breakpoint progress.
     // Fall back to a simple half split so every recursion step strictly shrinks.
-    if (
-      subChunks.length <= 1
-      || subChunks[0]?.text.length === text.length
-    ) {
+    if (subChunks.length <= 1 || subChunks[0]?.text.length === text.length) {
       safeMaxChars = Math.max(1, Math.floor(text.length / 2));
       nextOverlapChars = 0;
       nextWindowChars = 0;
-      subChunks = chunkDocument(text, safeMaxChars, nextOverlapChars, nextWindowChars);
+      subChunks = chunkDocument(
+        text,
+        safeMaxChars,
+        nextOverlapChars,
+        nextWindowChars,
+      );
     }
 
-    if (
-      subChunks.length <= 1
-      || subChunks[0]?.text.length === text.length
-    ) {
+    if (subChunks.length <= 1 || subChunks[0]?.text.length === text.length) {
       const fallbackTokens = tokens.slice(0, Math.max(1, maxTokens));
       const truncatedText = await llm.detokenize(fallbackTokens);
       results.push({
@@ -2839,7 +3595,10 @@ export async function chunkDocumentByTokens(
     }
 
     for (const subChunk of subChunks) {
-      await pushChunkWithinTokenLimit(text.slice(subChunk.pos, subChunk.pos + subChunk.text.length), pos + subChunk.pos);
+      await pushChunkWithinTokenLimit(
+        text.slice(subChunk.pos, subChunk.pos + subChunk.text.length),
+        pos + subChunk.pos,
+      );
     }
   };
 
@@ -2855,10 +3614,13 @@ export async function chunkDocumentByTokens(
 // =============================================================================
 
 function levenshtein(a: string, b: string): number {
-  const m = a.length, n = b.length;
+  const m = a.length,
+    n = b.length;
   if (m === 0) return n;
   if (n === 0) return m;
-  const dp: number[][] = Array.from({ length: m + 1 }, () => Array(n + 1).fill(0));
+  const dp: number[][] = Array.from({ length: m + 1 }, () =>
+    Array(n + 1).fill(0),
+  );
   for (let i = 0; i <= m; i++) dp[i]![0] = i;
   for (let j = 0; j <= n; j++) dp[0]![j] = j;
   for (let i = 1; i <= m; i++) {
@@ -2867,7 +3629,7 @@ function levenshtein(a: string, b: string): number {
       dp[i]![j] = Math.min(
         dp[i - 1]![j]! + 1,
         dp[i]![j - 1]! + 1,
-        dp[i - 1]![j - 1]! + cost
+        dp[i - 1]![j - 1]! + cost,
       );
     }
   }
@@ -2883,13 +3645,15 @@ export function normalizeDocid(docid: string): string {
   let normalized = docid.trim();
 
   // Strip surrounding quotes (single or double)
-  if ((normalized.startsWith('"') && normalized.endsWith('"')) ||
-      (normalized.startsWith("'") && normalized.endsWith("'"))) {
+  if (
+    (normalized.startsWith('"') && normalized.endsWith('"')) ||
+    (normalized.startsWith("'") && normalized.endsWith("'"))
+  ) {
     normalized = normalized.slice(1, -1);
   }
 
   // Strip leading # if present
-  if (normalized.startsWith('#')) {
+  if (normalized.startsWith("#")) {
     normalized = normalized.slice(1);
   }
 
@@ -2914,39 +3678,63 @@ export function isDocid(input: string): boolean {
  *
  * Accepts lenient input: #abc123, abc123, "#abc123", "abc123"
  */
-export function findDocumentByDocid(db: Database, docid: string): { filepath: string; hash: string } | null {
+export function findDocumentByDocid(
+  db: Database,
+  docid: string,
+): { filepath: string; hash: string } | null {
   const shortHash = normalizeDocid(docid);
 
   if (shortHash.length < 1) return null;
 
   // Look up documents where hash starts with the short hash
-  const doc = db.prepare(`
+  const doc = db
+    .prepare(
+      `
     SELECT 'qmd://' || d.collection || '/' || d.path as filepath, d.hash
     FROM documents d
     WHERE d.hash LIKE ? AND d.active = 1
     LIMIT 1
-  `).get(`${shortHash}%`) as { filepath: string; hash: string } | null;
+  `,
+    )
+    .get(`${shortHash}%`) as { filepath: string; hash: string } | null;
 
   return doc;
 }
 
-export function findSimilarFiles(db: Database, query: string, maxDistance: number = 3, limit: number = 5): string[] {
-  const allFiles = db.prepare(`
+export function findSimilarFiles(
+  db: Database,
+  query: string,
+  maxDistance: number = 3,
+  limit: number = 5,
+): string[] {
+  const allFiles = db
+    .prepare(
+      `
     SELECT d.path
     FROM documents d
     WHERE d.active = 1
-  `).all() as { path: string }[];
+  `,
+    )
+    .all() as { path: string }[];
   const queryLower = query.toLowerCase();
   const scored = allFiles
-    .map(f => ({ path: f.path, dist: levenshtein(f.path.toLowerCase(), queryLower) }))
-    .filter(f => f.dist <= maxDistance)
+    .map((f) => ({
+      path: f.path,
+      dist: levenshtein(f.path.toLowerCase(), queryLower),
+    }))
+    .filter((f) => f.dist <= maxDistance)
     .sort((a, b) => a.dist - b.dist)
     .slice(0, limit);
-  return scored.map(f => f.path);
+  return scored.map((f) => f.path);
 }
 
-export function matchFilesByGlob(db: Database, pattern: string): { filepath: string; displayPath: string; bodyLength: number }[] {
-  const allFiles = db.prepare(`
+export function matchFilesByGlob(
+  db: Database,
+  pattern: string,
+): { filepath: string; displayPath: string; bodyLength: number }[] {
+  const allFiles = db
+    .prepare(
+      `
     SELECT
       'qmd://' || d.collection || '/' || d.path as virtual_path,
       LENGTH(content.doc) as body_length,
@@ -2955,15 +3743,27 @@ export function matchFilesByGlob(db: Database, pattern: string): { filepath: str
     FROM documents d
     JOIN content ON content.hash = d.hash
     WHERE d.active = 1
-  `).all() as { virtual_path: string; body_length: number; path: string; collection: string }[];
+  `,
+    )
+    .all() as {
+    virtual_path: string;
+    body_length: number;
+    path: string;
+    collection: string;
+  }[];
 
   const isMatch = picomatch(pattern);
   return allFiles
-    .filter(f => isMatch(f.virtual_path) || isMatch(f.path) || isMatch(f.collection + '/' + f.path))
-    .map(f => ({
-      filepath: f.virtual_path,  // Virtual path for precise lookup
-      displayPath: f.path,        // Relative path for display
-      bodyLength: f.body_length
+    .filter(
+      (f) =>
+        isMatch(f.virtual_path) ||
+        isMatch(f.path) ||
+        isMatch(f.collection + "/" + f.path),
+    )
+    .map((f) => ({
+      filepath: f.virtual_path, // Virtual path for precise lookup
+      displayPath: f.path, // Relative path for display
+      bodyLength: f.body_length,
     }));
 }
 
@@ -2981,7 +3781,11 @@ export function matchFilesByGlob(db: Database, pattern: string): { filepath: str
  * @param path Relative path within the collection
  * @returns Context string or null if no context is defined
  */
-export function getContextForPath(db: Database, collectionName: string, path: string): string | null {
+export function getContextForPath(
+  db: Database,
+  collectionName: string,
+  path: string,
+): string | null {
   const coll = getStoreCollection(db, collectionName);
 
   if (!coll) return null;
@@ -3018,14 +3822,17 @@ export function getContextForPath(db: Database, collectionName: string, path: st
   }
 
   // Join all contexts with double newline
-  return contexts.length > 0 ? contexts.join('\n\n') : null;
+  return contexts.length > 0 ? contexts.join("\n\n") : null;
 }
 
 /**
  * Get context for a file path (virtual or filesystem).
  * Resolves the collection and relative path from the DB store_collections table.
  */
-export function getContextForFile(db: Database, filepath: string): string | null {
+export function getContextForFile(
+  db: Database,
+  filepath: string,
+): string | null {
   // Handle undefined or null filepath
   if (!filepath) return null;
 
@@ -3036,7 +3843,9 @@ export function getContextForFile(db: Database, filepath: string): string | null
   let collectionName: string | null = null;
   let relativePath: string | null = null;
 
-  const parsedVirtual = filepath.startsWith('qmd://') ? parseVirtualPath(filepath) : null;
+  const parsedVirtual = filepath.startsWith("qmd://")
+    ? parseVirtualPath(filepath)
+    : null;
   if (parsedVirtual) {
     collectionName = parsedVirtual.collectionName;
     relativePath = parsedVirtual.path;
@@ -3046,12 +3855,12 @@ export function getContextForFile(db: Database, filepath: string): string | null
       // Skip collections with missing paths
       if (!coll || !coll.path) continue;
 
-      if (filepath.startsWith(coll.path + '/') || filepath === coll.path) {
+      if (filepath.startsWith(coll.path + "/") || filepath === coll.path) {
         collectionName = coll.name;
         // Extract relative path
-        relativePath = filepath.startsWith(coll.path + '/')
+        relativePath = filepath.startsWith(coll.path + "/")
           ? filepath.slice(coll.path.length + 1)
-          : '';
+          : "";
         break;
       }
     }
@@ -3064,12 +3873,16 @@ export function getContextForFile(db: Database, filepath: string): string | null
   if (!coll) return null;
 
   // Verify this document exists in the database
-  const doc = db.prepare(`
+  const doc = db
+    .prepare(
+      `
     SELECT d.path
     FROM documents d
     WHERE d.collection = ? AND d.path = ? AND d.active = 1
     LIMIT 1
-  `).get(collectionName, relativePath) as { path: string } | null;
+  `,
+    )
+    .get(collectionName, relativePath) as { path: string } | null;
 
   if (!doc) return null;
 
@@ -3084,7 +3897,9 @@ export function getContextForFile(db: Database, filepath: string): string | null
 
   // Add all matching path contexts (from most general to most specific)
   if (coll.context) {
-    const normalizedPath = relativePath.startsWith("/") ? relativePath : `/${relativePath}`;
+    const normalizedPath = relativePath.startsWith("/")
+      ? relativePath
+      : `/${relativePath}`;
 
     // Collect all matching prefixes
     const matchingContexts: { prefix: string; context: string }[] = [];
@@ -3105,13 +3920,16 @@ export function getContextForFile(db: Database, filepath: string): string | null
   }
 
   // Join all contexts with double newline
-  return contexts.length > 0 ? contexts.join('\n\n') : null;
+  return contexts.length > 0 ? contexts.join("\n\n") : null;
 }
 
 /**
  * Get collection by name from DB store_collections table.
  */
-export function getCollectionByName(db: Database, name: string): { name: string; pwd: string; glob_pattern: string } | null {
+export function getCollectionByName(
+  db: Database,
+  name: string,
+): { name: string; pwd: string; glob_pattern: string | string[] } | null {
   const collection = getStoreCollection(db, name);
   if (!collection) return null;
 
@@ -3126,19 +3944,37 @@ export function getCollectionByName(db: Database, name: string): { name: string;
  * List all collections with document counts from database.
  * Merges store_collections config with database statistics.
  */
-export function listCollections(db: Database): { name: string; pwd: string; glob_pattern: string; doc_count: number; active_count: number; last_modified: string | null; includeByDefault: boolean }[] {
+export function listCollections(
+  db: Database,
+): {
+  name: string;
+  pwd: string;
+  glob_pattern: string | string[];
+  doc_count: number;
+  active_count: number;
+  last_modified: string | null;
+  includeByDefault: boolean;
+}[] {
   const collections = getStoreCollections(db);
 
   // Get document counts from database for each collection
-  const result = collections.map(coll => {
-    const stats = db.prepare(`
+  const result = collections.map((coll) => {
+    const stats = db
+      .prepare(
+        `
       SELECT
         COUNT(d.id) as doc_count,
         SUM(CASE WHEN d.active = 1 THEN 1 ELSE 0 END) as active_count,
         MAX(d.modified_at) as last_modified
       FROM documents d
       WHERE d.collection = ?
-    `).get(coll.name) as { doc_count: number; active_count: number; last_modified: string | null } | null;
+    `,
+      )
+      .get(coll.name) as {
+      doc_count: number;
+      active_count: number;
+      last_modified: string | null;
+    } | null;
 
     return {
       name: coll.name,
@@ -3158,22 +3994,31 @@ export function listCollections(db: Database): { name: string; pwd: string; glob
  * Remove a collection and clean up its documents.
  * Uses collections.ts to remove from YAML config and cleans up database.
  */
-export function removeCollection(db: Database, collectionName: string): { deletedDocs: number; cleanedHashes: number } {
+export function removeCollection(
+  db: Database,
+  collectionName: string,
+): { deletedDocs: number; cleanedHashes: number } {
   // Delete documents from database
-  const docResult = db.prepare(`DELETE FROM documents WHERE collection = ?`).run(collectionName);
+  const docResult = db
+    .prepare(`DELETE FROM documents WHERE collection = ?`)
+    .run(collectionName);
 
   // Clean up orphaned content hashes
-  const cleanupResult = db.prepare(`
+  const cleanupResult = db
+    .prepare(
+      `
     DELETE FROM content
     WHERE hash NOT IN (SELECT DISTINCT hash FROM documents WHERE active = 1)
-  `).run();
+  `,
+    )
+    .run();
 
   // Remove from store_collections
   deleteStoreCollection(db, collectionName);
 
   return {
     deletedDocs: docResult.changes,
-    cleanedHashes: cleanupResult.changes
+    cleanedHashes: cleanupResult.changes,
   };
 }
 
@@ -3181,10 +4026,16 @@ export function removeCollection(db: Database, collectionName: string): { delete
  * Rename a collection.
  * Updates both YAML config and database documents table.
  */
-export function renameCollection(db: Database, oldName: string, newName: string): void {
+export function renameCollection(
+  db: Database,
+  oldName: string,
+  newName: string,
+): void {
   // Update all documents with the new collection name in database
-  db.prepare(`UPDATE documents SET collection = ? WHERE collection = ?`)
-    .run(newName, oldName);
+  db.prepare(`UPDATE documents SET collection = ? WHERE collection = ?`).run(
+    newName,
+    oldName,
+  );
 
   // Rename in store_collections
   renameStoreCollection(db, oldName, newName);
@@ -3197,9 +4048,16 @@ export function renameCollection(db: Database, oldName: string, newName: string)
 /**
  * Insert or update a context for a specific collection and path prefix.
  */
-export function insertContext(db: Database, collectionId: number, pathPrefix: string, context: string): void {
+export function insertContext(
+  db: Database,
+  collectionId: number,
+  pathPrefix: string,
+  context: string,
+): void {
   // Get collection name from ID
-  const coll = db.prepare(`SELECT name FROM collections WHERE id = ?`).get(collectionId) as { name: string } | null;
+  const coll = db
+    .prepare(`SELECT name FROM collections WHERE id = ?`)
+    .get(collectionId) as { name: string } | null;
   if (!coll) {
     throw new Error(`Collection with id ${collectionId} not found`);
   }
@@ -3212,7 +4070,11 @@ export function insertContext(db: Database, collectionId: number, pathPrefix: st
  * Delete a context for a specific collection and path prefix.
  * Returns the number of contexts deleted.
  */
-export function deleteContext(db: Database, collectionName: string, pathPrefix: string): number {
+export function deleteContext(
+  db: Database,
+  collectionName: string,
+  pathPrefix: string,
+): number {
   // Remove context from store_collections
   const success = removeStoreContext(db, collectionName, pathPrefix);
   return success ? 1 : 0;
@@ -3232,7 +4094,7 @@ export function deleteGlobalContexts(db: Database): number {
   // Remove root context (empty string) from all collections
   const collections = getStoreCollections(db);
   for (const coll of collections) {
-    const success = removeStoreContext(db, coll.name, '');
+    const success = removeStoreContext(db, coll.name, "");
     if (success) {
       deletedCount++;
     }
@@ -3245,26 +4107,30 @@ export function deleteGlobalContexts(db: Database): number {
  * List all contexts, grouped by collection.
  * Returns contexts ordered by collection name, then by path prefix length (longest first).
  */
-export function listPathContexts(db: Database): { collection_name: string; path_prefix: string; context: string }[] {
+export function listPathContexts(
+  db: Database,
+): { collection_name: string; path_prefix: string; context: string }[] {
   const allContexts = getStoreContexts(db);
 
   // Convert to expected format and sort
-  return allContexts.map(ctx => ({
-    collection_name: ctx.collection,
-    path_prefix: ctx.path,
-    context: ctx.context,
-  })).sort((a, b) => {
-    // Sort by collection name first
-    if (a.collection_name !== b.collection_name) {
-      return a.collection_name.localeCompare(b.collection_name);
-    }
-    // Then by path prefix length (longest first)
-    if (a.path_prefix.length !== b.path_prefix.length) {
-      return b.path_prefix.length - a.path_prefix.length;
-    }
-    // Then alphabetically
-    return a.path_prefix.localeCompare(b.path_prefix);
-  });
+  return allContexts
+    .map((ctx) => ({
+      collection_name: ctx.collection,
+      path_prefix: ctx.path,
+      context: ctx.context,
+    }))
+    .sort((a, b) => {
+      // Sort by collection name first
+      if (a.collection_name !== b.collection_name) {
+        return a.collection_name.localeCompare(b.collection_name);
+      }
+      // Then by path prefix length (longest first)
+      if (a.path_prefix.length !== b.path_prefix.length) {
+        return b.path_prefix.length - a.path_prefix.length;
+      }
+      // Then alphabetically
+      return a.path_prefix.localeCompare(b.path_prefix);
+    });
 }
 
 /**
@@ -3272,29 +4138,39 @@ export function listPathContexts(db: Database): { collection_name: string; path_
  */
 export function getAllCollections(db: Database): { name: string }[] {
   const collections = getStoreCollections(db);
-  return collections.map(c => ({ name: c.name }));
+  return collections.map((c) => ({ name: c.name }));
 }
 
 /**
  * Check which collections don't have any context defined.
  * Returns collections that have no context entries at all (not even root context).
  */
-export function getCollectionsWithoutContext(db: Database): { name: string; pwd: string; doc_count: number }[] {
+export function getCollectionsWithoutContext(
+  db: Database,
+): { name: string; pwd: string; doc_count: number }[] {
   // Get all collections from DB
   const allCollections = getStoreCollections(db);
 
   // Filter to those without context
-  const collectionsWithoutContext: { name: string; pwd: string; doc_count: number }[] = [];
+  const collectionsWithoutContext: {
+    name: string;
+    pwd: string;
+    doc_count: number;
+  }[] = [];
 
   for (const coll of allCollections) {
     // Check if collection has any context
     if (!coll.context || Object.keys(coll.context).length === 0) {
       // Get doc count from database
-      const stats = db.prepare(`
+      const stats = db
+        .prepare(
+          `
         SELECT COUNT(d.id) as doc_count
         FROM documents d
         WHERE d.collection = ? AND d.active = 1
-      `).get(coll.name) as { doc_count: number } | null;
+      `,
+        )
+        .get(coll.name) as { doc_count: number } | null;
 
       collectionsWithoutContext.push({
         name: coll.name,
@@ -3311,12 +4187,19 @@ export function getCollectionsWithoutContext(db: Database): { name: string; pwd:
  * Get top-level directories in a collection that don't have context.
  * Useful for suggesting where context might be needed.
  */
-export function getTopLevelPathsWithoutContext(db: Database, collectionName: string): string[] {
+export function getTopLevelPathsWithoutContext(
+  db: Database,
+  collectionName: string,
+): string[] {
   // Get all paths in the collection from database
-  const paths = db.prepare(`
+  const paths = db
+    .prepare(
+      `
     SELECT DISTINCT path FROM documents
     WHERE collection = ? AND active = 1
-  `).all(collectionName) as { path: string }[];
+  `,
+    )
+    .all(collectionName) as { path: string }[];
 
   // Get existing contexts for this collection from DB
   const dbColl = getStoreCollection(db, collectionName);
@@ -3332,7 +4215,7 @@ export function getTopLevelPathsWithoutContext(db: Database, collectionName: str
   // Extract top-level directories (first path component)
   const topLevelDirs = new Set<string>();
   for (const { path } of paths) {
-    const parts = path.split('/').filter(Boolean);
+    const parts = path.split("/").filter(Boolean);
     if (parts.length > 1) {
       const dir = parts[0];
       if (dir) topLevelDirs.add(dir);
@@ -3346,7 +4229,7 @@ export function getTopLevelPathsWithoutContext(db: Database, collectionName: str
 
     // Check if this dir or any parent has context
     for (const prefix of contextPrefixes) {
-      if (prefix === '' || prefix === dir || dir.startsWith(prefix + '/')) {
+      if (prefix === "" || prefix === dir || dir.startsWith(prefix + "/")) {
         hasContext = true;
         break;
       }
@@ -3365,7 +4248,7 @@ export function getTopLevelPathsWithoutContext(db: Database, collectionName: str
 // =============================================================================
 
 export function sanitizeFTS5Term(term: string): string {
-  return term.replace(/[^\p{L}\p{N}'_]/gu, '').toLowerCase();
+  return term.replace(/[^\p{L}\p{N}'_]/gu, "").toLowerCase();
 }
 
 /**
@@ -3373,7 +4256,9 @@ export function sanitizeFTS5Term(term: string): string {
  * Returns true if the token contains internal hyphens between word/digit characters.
  */
 function isHyphenatedToken(token: string): boolean {
-  return /^[\p{L}\p{N}][\p{L}\p{N}'-]*-[\p{L}\p{N}][\p{L}\p{N}'-]*$/u.test(token);
+  return /^[\p{L}\p{N}][\p{L}\p{N}'-]*-[\p{L}\p{N}][\p{L}\p{N}'-]*$/u.test(
+    token,
+  );
 }
 
 /**
@@ -3382,7 +4267,11 @@ function isHyphenatedToken(token: string): boolean {
  * inside FTS5 quotes: "multi agent" matches "multi-agent" in porter tokenizer.
  */
 function sanitizeHyphenatedTerm(term: string): string {
-  return term.split('-').map(t => sanitizeFTS5Term(t)).filter(t => t).join(' ');
+  return term
+    .split("-")
+    .map((t) => sanitizeFTS5Term(t))
+    .filter((t) => t)
+    .join(" ");
 }
 
 /**
@@ -3392,8 +4281,11 @@ function sanitizeHyphenatedTerm(term: string): string {
  * trailing dots. Version strings like "2026.4.10" split into ["2026","4","10"] (3 parts).
  */
 function isDottedToken(token: string): boolean {
-  const parts = token.split('.');
-  return parts.length >= 2 && parts.every(p => p.length > 0 && /^[\p{L}\p{N}_]+$/u.test(p));
+  const parts = token.split(".");
+  return (
+    parts.length >= 2 &&
+    parts.every((p) => p.length > 0 && /^[\p{L}\p{N}_]+$/u.test(p))
+  );
 }
 
 /**
@@ -3403,7 +4295,12 @@ function isDottedToken(token: string): boolean {
  * indexes dotted strings.
  */
 function sanitizeDottedTerm(term: string): string {
-  return term.split('.').map(t => sanitizeFTS5Term(t)).filter(t => t).map(t => `"${t}"*`).join(' AND ');
+  return term
+    .split(".")
+    .map((t) => sanitizeFTS5Term(t))
+    .filter((t) => t)
+    .map((t) => `"${t}"*`)
+    .join(" AND ");
 }
 
 /**
@@ -3443,7 +4340,7 @@ function buildFTS5Query(query: string): string | null {
     if (i >= s.length) break;
 
     // Check for negation prefix
-    const negated = s[i] === '-';
+    const negated = s[i] === "-";
     if (negated) i++;
 
     // Check for quoted phrase
@@ -3456,7 +4353,7 @@ function buildFTS5Query(query: string): string | null {
       if (phrase.length > 0) {
         const sanitized = sanitizeFTS5Phrase(phrase);
         if (sanitized) {
-          const ftsPhrase = `"${sanitized}"`;  // Exact phrase, no prefix match
+          const ftsPhrase = `"${sanitized}"`; // Exact phrase, no prefix match
           if (negated) {
             negative.push(ftsPhrase);
           } else {
@@ -3475,7 +4372,7 @@ function buildFTS5Query(query: string): string | null {
       if (isHyphenatedToken(term)) {
         const sanitized = sanitizeHyphenatedTerm(term);
         if (sanitized) {
-          const ftsPhrase = `"${sanitized}"`;  // Phrase match (no prefix)
+          const ftsPhrase = `"${sanitized}"`; // Phrase match (no prefix)
           if (negated) {
             negative.push(ftsPhrase);
           } else {
@@ -3495,7 +4392,7 @@ function buildFTS5Query(query: string): string | null {
           } else {
             // Flatten individual AND'd terms into the positive list so they combine
             // correctly with other terms (avoids double-wrapping in outer AND).
-            for (const part of sanitized.split(' AND ')) {
+            for (const part of sanitized.split(" AND ")) {
               positive.push(part.trim());
             }
           }
@@ -3503,7 +4400,7 @@ function buildFTS5Query(query: string): string | null {
       } else if (containsCjk(term)) {
         const sanitized = sanitizeFTS5Phrase(term);
         if (sanitized) {
-          const ftsPhrase = `"${sanitized}"`;  // CJK phrase over character tokens
+          const ftsPhrase = `"${sanitized}"`; // CJK phrase over character tokens
           if (negated) {
             negative.push(ftsPhrase);
           } else {
@@ -3513,7 +4410,7 @@ function buildFTS5Query(query: string): string | null {
       } else {
         const sanitized = sanitizeFTS5Term(term);
         if (sanitized) {
-          const ftsTerm = `"${sanitized}"*`;  // Prefix match
+          const ftsTerm = `"${sanitized}"*`; // Prefix match
           if (negated) {
             negative.push(ftsTerm);
           } else {
@@ -3530,7 +4427,7 @@ function buildFTS5Query(query: string): string | null {
   if (positive.length === 0) return null;
 
   // Join positive terms with AND
-  let result = positive.join(' AND ');
+  let result = positive.join(" AND ");
 
   // Add NOT clause for negative terms
   for (const neg of negative) {
@@ -3548,14 +4445,14 @@ export function validateSemanticQuery(query: string): string | null {
   // Check for negation syntax — only at token boundaries (start of string or after whitespace).
   // Hyphenated words like "real-time" or "write-ahead" must not trigger this.
   if (/(^|\s)-[\w"]/.test(query)) {
-    return 'Negation (-term) is not supported in vec/hyde queries. Use lex for exclusions.';
+    return "Negation (-term) is not supported in vec/hyde queries. Use lex for exclusions.";
   }
   return null;
 }
 
 export function validateLexQuery(query: string): string | null {
   if (/[\r\n]/.test(query)) {
-    return 'Lex queries must be a single line. Remove newline characters or split into separate lex: lines.';
+    return "Lex queries must be a single line. Remove newline characters or split into separate lex: lines.";
   }
   const quoteCount = (query.match(/"/g) ?? []).length;
   if (quoteCount % 2 === 1) {
@@ -3564,7 +4461,12 @@ export function validateLexQuery(query: string): string | null {
   return null;
 }
 
-export function searchFTS(db: Database, query: string, limit: number = 20, collectionName?: string): SearchResult[] {
+export function searchFTS(
+  db: Database,
+  query: string,
+  limit: number = 20,
+  collectionName?: string,
+): SearchResult[] {
   const ftsQuery = buildFTS5Query(query);
   if (!ftsQuery) return [];
 
@@ -3610,9 +4512,16 @@ export function searchFTS(db: Database, query: string, limit: number = 20, colle
   sql += ` ORDER BY fm.bm25_score ASC LIMIT ?`;
   params.push(limit);
 
-  const rows = db.prepare(sql).all(...params) as { filepath: string; display_path: string; title: string; body: string; hash: string; bm25_score: number }[];
-  return rows.map(row => {
-    const collectionName = row.filepath.split('//')[1]?.split('/')[0] || "";
+  const rows = db.prepare(sql).all(...params) as {
+    filepath: string;
+    display_path: string;
+    title: string;
+    body: string;
+    hash: string;
+    bm25_score: number;
+  }[];
+  return rows.map((row) => {
+    const collectionName = row.filepath.split("//")[1]?.split("/")[0] || "";
     // Convert bm25 (negative, lower is better) into a stable [0..1) score where higher is better.
     // FTS5 BM25 scores are negative (e.g., -10 is strong, -2 is weak).
     // |x| / (1 + |x|) maps: strong(-10)→0.91, medium(-2)→0.67, weak(-0.5)→0.33, none(0)→0.
@@ -3625,7 +4534,7 @@ export function searchFTS(db: Database, query: string, limit: number = 20, colle
       hash: row.hash,
       docid: getDocid(row.hash),
       collectionName,
-      modifiedAt: "",  // Not available in FTS query
+      modifiedAt: "", // Not available in FTS query
       bodyLength: row.body.length,
       body: row.body,
       context: getContextForFile(db, row.filepath),
@@ -3639,11 +4548,24 @@ export function searchFTS(db: Database, query: string, limit: number = 20, colle
 // Vector Search
 // =============================================================================
 
-export async function searchVec(db: Database, query: string, model: string, limit: number = 20, collectionName?: string, session?: ILLMSession, precomputedEmbedding?: number[]): Promise<SearchResult[]> {
-  const tableExists = db.prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name='vectors_vec'`).get();
+export async function searchVec(
+  db: Database,
+  query: string,
+  model: string,
+  limit: number = 20,
+  collectionName?: string,
+  session?: ILLMSession,
+  precomputedEmbedding?: number[],
+): Promise<SearchResult[]> {
+  const tableExists = db
+    .prepare(
+      `SELECT name FROM sqlite_master WHERE type='table' AND name='vectors_vec'`,
+    )
+    .get();
   if (!tableExists) return [];
 
-  const embedding = precomputedEmbedding ?? await getEmbedding(query, model, true, session);
+  const embedding =
+    precomputedEmbedding ?? (await getEmbedding(query, model, true, session));
   if (!embedding) return [];
 
   // IMPORTANT: We use a two-step query approach here because sqlite-vec virtual tables
@@ -3652,20 +4574,27 @@ export async function searchVec(db: Database, query: string, model: string, limi
   // See: https://github.com/tobi/qmd/pull/23
 
   // Step 1: Get vector matches from sqlite-vec (no JOINs allowed)
-  const vecResults = db.prepare(`
+  const vecResults = db
+    .prepare(
+      `
     SELECT hash_seq, distance
     FROM vectors_vec
     WHERE embedding MATCH ? AND k = ?
-  `).all(new Float32Array(embedding), limit * 3) as { hash_seq: string; distance: number }[];
+  `,
+    )
+    .all(new Float32Array(embedding), limit * 3) as {
+    hash_seq: string;
+    distance: number;
+  }[];
 
   if (vecResults.length === 0) return [];
 
   // Step 2: Get chunk info and document data
-  const hashSeqs = vecResults.map(r => r.hash_seq);
-  const distanceMap = new Map(vecResults.map(r => [r.hash_seq, r.distance]));
+  const hashSeqs = vecResults.map((r) => r.hash_seq);
+  const distanceMap = new Map(vecResults.map((r) => [r.hash_seq, r.distance]));
 
   // Build query for document lookup
-  const placeholders = hashSeqs.map(() => '?').join(',');
+  const placeholders = hashSeqs.map(() => "?").join(",");
   let docSql = `
     SELECT
       cv.hash || '_' || cv.seq as hash_seq,
@@ -3687,13 +4616,25 @@ export async function searchVec(db: Database, query: string, model: string, limi
     params.push(collectionName);
   }
 
-  const docRows = withLazyContentVectorMigration(db, () => db.prepare(docSql).all(...params) as {
-    hash_seq: string; hash: string; pos: number; filepath: string;
-    display_path: string; title: string; body: string;
-  }[]);
+  const docRows = withLazyContentVectorMigration(
+    db,
+    () =>
+      db.prepare(docSql).all(...params) as {
+        hash_seq: string;
+        hash: string;
+        pos: number;
+        filepath: string;
+        display_path: string;
+        title: string;
+        body: string;
+      }[],
+  );
 
   // Combine with distances and dedupe by filepath
-  const seen = new Map<string, { row: typeof docRows[0]; bestDist: number }>();
+  const seen = new Map<
+    string,
+    { row: (typeof docRows)[0]; bestDist: number }
+  >();
   for (const row of docRows) {
     const distance = distanceMap.get(row.hash_seq) ?? 1;
     const existing = seen.get(row.filepath);
@@ -3706,7 +4647,7 @@ export async function searchVec(db: Database, query: string, model: string, limi
     .sort((a, b) => a.bestDist - b.bestDist)
     .slice(0, limit)
     .map(({ row, bestDist }) => {
-      const collectionName = row.filepath.split('//')[1]?.split('/')[0] || "";
+      const collectionName = row.filepath.split("//")[1]?.split("/")[0] || "";
       return {
         filepath: row.filepath,
         displayPath: row.display_path,
@@ -3714,11 +4655,11 @@ export async function searchVec(db: Database, query: string, model: string, limi
         hash: row.hash,
         docid: getDocid(row.hash),
         collectionName,
-        modifiedAt: "",  // Not available in vec query
+        modifiedAt: "", // Not available in vec query
         bodyLength: row.body.length,
         body: row.body,
         context: getContextForFile(db, row.filepath),
-        score: 1 - bestDist,  // Cosine similarity = 1 - cosine distance
+        score: 1 - bestDist, // Cosine similarity = 1 - cosine distance
         source: "vec" as const,
         chunkPos: row.pos,
       };
@@ -3729,12 +4670,23 @@ export async function searchVec(db: Database, query: string, model: string, limi
 // Embeddings
 // =============================================================================
 
-async function getEmbedding(text: string, model: string, isQuery: boolean, session?: ILLMSession, llmOverride?: LlamaCpp): Promise<number[] | null> {
+async function getEmbedding(
+  text: string,
+  model: string,
+  isQuery: boolean,
+  session?: ILLMSession,
+  llmOverride?: LlamaCpp,
+): Promise<number[] | null> {
   // Format text using the appropriate prompt template
-  const formattedText = isQuery ? formatQueryForEmbedding(text, model) : formatDocForEmbedding(text, undefined, model);
+  const formattedText = isQuery
+    ? formatQueryForEmbedding(text, model)
+    : formatDocForEmbedding(text, undefined, model);
   const result = session
     ? await session.embed(formattedText, { model, isQuery })
-    : await (llmOverride ?? getDefaultLlamaCpp()).embed(formattedText, { model, isQuery });
+    : await (llmOverride ?? getDefaultLlamaCpp()).embed(formattedText, {
+        model,
+        isQuery,
+      });
   return result?.embedding || null;
 }
 
@@ -3742,9 +4694,17 @@ async function getEmbedding(text: string, model: string, isQuery: boolean, sessi
  * Get all unique content hashes that need embeddings (from active documents).
  * Returns hash, document body, and a sample path for display purposes.
  */
-export function getHashesForEmbedding(db: Database, model: string = DEFAULT_EMBED_MODEL): { hash: string; body: string; path: string }[] {
+export function getHashesForEmbedding(
+  db: Database,
+  model: string = DEFAULT_EMBED_MODEL,
+): { hash: string; body: string; path: string }[] {
   const fingerprint = getEmbeddingFingerprint(model);
-  return withLazyContentVectorMigration(db, () => db.prepare(`
+  return withLazyContentVectorMigration(
+    db,
+    () =>
+      db
+        .prepare(
+          `
     SELECT d.hash, c.doc as body, MIN(d.path) as path
     FROM documents d
     JOIN content c ON d.hash = c.hash
@@ -3757,7 +4717,14 @@ export function getHashesForEmbedding(db: Database, model: string = DEFAULT_EMBE
     WHERE d.active = 1
       AND (v.hash IS NULL OR v.chunk_count < v.expected_chunks)
     GROUP BY d.hash
-  `).all(model, fingerprint) as { hash: string; body: string; path: string }[]);
+  `,
+        )
+        .all(model, fingerprint) as {
+        hash: string;
+        body: string;
+        path: string;
+      }[],
+  );
 }
 
 /**
@@ -3796,16 +4763,22 @@ export function clearAllEmbeddings(db: Database, collection?: string): void {
   `;
 
   const vecTableExists = db
-    .prepare(`SELECT 1 FROM sqlite_master WHERE type='table' AND name='vectors_vec'`)
+    .prepare(
+      `SELECT 1 FROM sqlite_master WHERE type='table' AND name='vectors_vec'`,
+    )
     .get();
 
   withLazyContentVectorMigration(db, () => {
     if (vecTableExists) {
-      const hashSeqRows = db.prepare(`
+      const hashSeqRows = db
+        .prepare(
+          `
         SELECT cv.hash, cv.seq
         FROM content_vectors cv
         WHERE cv.hash IN (${exclusiveHashesQuery})
-      `).all(collection) as { hash: string; seq: number }[];
+      `,
+        )
+        .all(collection) as { hash: string; seq: number }[];
 
       const delVec = db.prepare(`DELETE FROM vectors_vec WHERE hash_seq = ?`);
       for (const row of hashSeqRows) {
@@ -3813,10 +4786,12 @@ export function clearAllEmbeddings(db: Database, collection?: string): void {
       }
     }
 
-    db.prepare(`
+    db.prepare(
+      `
       DELETE FROM content_vectors
       WHERE hash IN (${exclusiveHashesQuery})
-    `).run(collection);
+    `,
+    ).run(collection);
 
     const remaining = db
       .prepare(`SELECT COUNT(*) AS n FROM content_vectors`)
@@ -3846,29 +4821,53 @@ export function insertEmbedding(
   model: string,
   embeddedAt: string,
   totalChunks: number = 1,
-  fingerprint: string = getEmbeddingFingerprint(model)
+  fingerprint: string = getEmbeddingFingerprint(model),
 ): void {
   const hashSeq = `${hash}_${seq}`;
 
   withLazyContentVectorMigration(db, () => {
     // Insert content_vectors first — crash-safe ordering (see getHashesForEmbedding)
-    const insertContentVectorStmt = db.prepare(`INSERT OR REPLACE INTO content_vectors (hash, seq, pos, model, embed_fingerprint, total_chunks, embedded_at) VALUES (?, ?, ?, ?, ?, ?, ?)`);
-    insertContentVectorStmt.run(hash, seq, pos, model, fingerprint, totalChunks, embeddedAt);
+    const insertContentVectorStmt = db.prepare(
+      `INSERT OR REPLACE INTO content_vectors (hash, seq, pos, model, embed_fingerprint, total_chunks, embedded_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    );
+    insertContentVectorStmt.run(
+      hash,
+      seq,
+      pos,
+      model,
+      fingerprint,
+      totalChunks,
+      embeddedAt,
+    );
 
     // vec0 virtual tables don't support OR REPLACE — use DELETE + INSERT
-    const deleteVecStmt = db.prepare(`DELETE FROM vectors_vec WHERE hash_seq = ?`);
-    const insertVecStmt = db.prepare(`INSERT INTO vectors_vec (hash_seq, embedding) VALUES (?, ?)`);
+    const deleteVecStmt = db.prepare(
+      `DELETE FROM vectors_vec WHERE hash_seq = ?`,
+    );
+    const insertVecStmt = db.prepare(
+      `INSERT INTO vectors_vec (hash_seq, embedding) VALUES (?, ?)`,
+    );
     deleteVecStmt.run(hashSeq);
     insertVecStmt.run(hashSeq, embedding);
   });
 }
 
-function removeIncompleteEmbeddings(db: Database, expectedChunksByHash: Map<string, number>, model: string): number {
+function removeIncompleteEmbeddings(
+  db: Database,
+  expectedChunksByHash: Map<string, number>,
+  model: string,
+): number {
   return withLazyContentVectorMigration(db, () => {
     let removed = 0;
-    const rowsStmt = db.prepare(`SELECT seq FROM content_vectors WHERE hash = ? AND model = ?`);
-    const deleteContentStmt = db.prepare(`DELETE FROM content_vectors WHERE hash = ? AND model = ?`);
-    const deleteVecStmt = db.prepare(`DELETE FROM vectors_vec WHERE hash_seq = ?`);
+    const rowsStmt = db.prepare(
+      `SELECT seq FROM content_vectors WHERE hash = ? AND model = ?`,
+    );
+    const deleteContentStmt = db.prepare(
+      `DELETE FROM content_vectors WHERE hash = ? AND model = ?`,
+    );
+    const deleteVecStmt = db.prepare(
+      `DELETE FROM vectors_vec WHERE hash_seq = ?`,
+    );
 
     for (const [hash, expectedChunks] of expectedChunksByHash) {
       const rows = rowsStmt.all(hash, model) as { seq: number }[];
@@ -3889,9 +4888,19 @@ function removeIncompleteEmbeddings(db: Database, expectedChunksByHash: Map<stri
 // Query expansion
 // =============================================================================
 
-export async function expandQuery(query: string, model: string = DEFAULT_QUERY_MODEL, db: Database, intent?: string, llmOverride?: LlamaCpp): Promise<ExpandedQuery[]> {
+export async function expandQuery(
+  query: string,
+  model: string = DEFAULT_QUERY_MODEL,
+  db: Database,
+  intent?: string,
+  llmOverride?: LlamaCpp,
+): Promise<ExpandedQuery[]> {
   // Check cache first — stored as JSON preserving types
-  const cacheKey = getCacheKey("expandQuery", { query, model, ...(intent && { intent }) });
+  const cacheKey = getCacheKey("expandQuery", {
+    query,
+    model,
+    ...(intent && { intent }),
+  });
   const cached = getCachedResult(db, cacheKey);
   if (cached) {
     try {
@@ -3900,9 +4909,15 @@ export async function expandQuery(query: string, model: string = DEFAULT_QUERY_M
       const rows = parsed as Array<Record<string, unknown>>;
       // Migrate old cache format: { type, text } → { type, query }
       if (rows.length > 0 && typeof rows[0]?.query === "string") {
-        return rows.map((r) => ({ type: r.type as ExpandedQuery["type"], query: String(r.query) }));
+        return rows.map((r) => ({
+          type: r.type as ExpandedQuery["type"],
+          query: String(r.query),
+        }));
       } else if (rows.length > 0 && typeof rows[0]?.text === "string") {
-        return rows.map((r) => ({ type: r.type as ExpandedQuery["type"], query: String(r.text) }));
+        return rows.map((r) => ({
+          type: r.type as ExpandedQuery["type"],
+          query: String(r.text),
+        }));
       }
     } catch {
       // Old cache format (pre-typed, newline-separated text) — re-expand
@@ -3916,8 +4931,8 @@ export async function expandQuery(query: string, model: string = DEFAULT_QUERY_M
   // Map Queryable[] → ExpandedQuery[] (same shape, decoupled from llm.ts internals).
   // Filter out entries that duplicate the original query text.
   const expanded: ExpandedQuery[] = results
-    .filter(r => r.text !== query)
-    .map(r => ({ type: r.type, query: r.text }));
+    .filter((r) => r.text !== query)
+    .map((r) => ({ type: r.type, query: r.text }));
 
   if (expanded.length > 0) {
     setCachedResult(db, cacheKey, JSON.stringify(expanded));
@@ -3930,7 +4945,14 @@ export async function expandQuery(query: string, model: string = DEFAULT_QUERY_M
 // Reranking
 // =============================================================================
 
-export async function rerank(query: string, documents: { file: string; text: string }[], model: string = DEFAULT_RERANK_MODEL, db: Database, intent?: string, llmOverride?: LlamaCpp): Promise<{ file: string; score: number }[]> {
+export async function rerank(
+  query: string,
+  documents: { file: string; text: string }[],
+  model: string = DEFAULT_RERANK_MODEL,
+  db: Database,
+  intent?: string,
+  llmOverride?: LlamaCpp,
+): Promise<{ file: string; score: number }[]> {
   // Prepend intent to rerank query so the reranker scores with domain context
   const rerankQuery = intent ? `${intent}\n\n${query}` : query;
 
@@ -3943,9 +4965,19 @@ export async function rerank(query: string, documents: { file: string; text: str
   // File path is excluded from the new cache key because the reranker score
   // depends on the chunk content, not where it came from.
   for (const doc of documents) {
-    const cacheKey = getCacheKey("rerank", { query: rerankQuery, model, chunk: doc.text });
-    const legacyCacheKey = getCacheKey("rerank", { query, file: doc.file, model, chunk: doc.text });
-    const cached = getCachedResult(db, cacheKey) ?? getCachedResult(db, legacyCacheKey);
+    const cacheKey = getCacheKey("rerank", {
+      query: rerankQuery,
+      model,
+      chunk: doc.text,
+    });
+    const legacyCacheKey = getCacheKey("rerank", {
+      query,
+      file: doc.file,
+      model,
+      chunk: doc.text,
+    });
+    const cached =
+      getCachedResult(db, cacheKey) ?? getCachedResult(db, legacyCacheKey);
     if (cached !== null) {
       cachedResults.set(doc.text, parseFloat(cached));
     } else {
@@ -3960,10 +4992,14 @@ export async function rerank(query: string, documents: { file: string; text: str
     const rerankResult = await llm.rerank(rerankQuery, uncachedDocs, { model });
 
     // Cache results by chunk text so identical chunks across files are scored once.
-    const textByFile = new Map(uncachedDocs.map(d => [d.file, d.text]));
+    const textByFile = new Map(uncachedDocs.map((d) => [d.file, d.text]));
     for (const result of rerankResult.results) {
       const chunk = textByFile.get(result.file) || "";
-      const cacheKey = getCacheKey("rerank", { query: rerankQuery, model, chunk });
+      const cacheKey = getCacheKey("rerank", {
+        query: rerankQuery,
+        model,
+        chunk,
+      });
       setCachedResult(db, cacheKey, result.score.toString());
       cachedResults.set(chunk, result.score);
     }
@@ -3971,7 +5007,7 @@ export async function rerank(query: string, documents: { file: string; text: str
 
   // Return all results sorted by score
   return documents
-    .map(doc => ({ file: doc.file, score: cachedResults.get(doc.text) || 0 }))
+    .map((doc) => ({ file: doc.file, score: cachedResults.get(doc.text) || 0 }))
     .sort((a, b) => b.score - a.score);
 }
 
@@ -3982,9 +5018,12 @@ export async function rerank(query: string, documents: { file: string; text: str
 export function reciprocalRankFusion(
   resultLists: RankedResult[][],
   weights: number[] = [],
-  k: number = 60
+  k: number = 60,
 ): RankedResult[] {
-  const scores = new Map<string, { result: RankedResult; rrfScore: number; topRank: number }>();
+  const scores = new Map<
+    string,
+    { result: RankedResult; rrfScore: number; topRank: number }
+  >();
 
   for (let listIdx = 0; listIdx < resultLists.length; listIdx++) {
     const list = resultLists[listIdx];
@@ -4021,7 +5060,7 @@ export function reciprocalRankFusion(
 
   return Array.from(scores.values())
     .sort((a, b) => b.rrfScore - a.rrfScore)
-    .map(e => ({ ...e.result, score: e.rrfScore }));
+    .map((e) => ({ ...e.result, score: e.rrfScore }));
 }
 
 /**
@@ -4031,7 +5070,7 @@ export function buildRrfTrace(
   resultLists: RankedResult[][],
   weights: number[] = [],
   listMeta: RankedListMeta[] = [],
-  k: number = 60
+  k: number = 60,
 ): Map<string, RRFScoreTrace> {
   const traces = new Map<string, RRFScoreTrace>();
 
@@ -4039,11 +5078,13 @@ export function buildRrfTrace(
     const list = resultLists[listIdx];
     if (!list) continue;
     const weight = weights[listIdx] ?? 1.0;
-    const meta = listMeta[listIdx] ?? {
-      source: "fts",
-      queryType: "original",
-      query: "",
-    } as const;
+    const meta =
+      listMeta[listIdx] ??
+      ({
+        source: "fts",
+        queryType: "original",
+        query: "",
+      } as const);
 
     for (let rank0 = 0; rank0 < list.length; rank0++) {
       const result = list[rank0];
@@ -4107,23 +5148,28 @@ type DbDocRow = {
 };
 
 function normalizeLookupPathForIgnore(path: string): string {
-  let normalized = path.replace(/\\/g, '/').trim();
-  if (normalized.startsWith('~/')) {
+  let normalized = path.replace(/\\/g, "/").trim();
+  if (normalized.startsWith("~/")) {
     normalized = homedir() + normalized.slice(1);
   }
   return normalized;
 }
 
 function matchesIgnoreRule(relativePath: string, rule: string): boolean {
-  const normalizedPath = relativePath.replace(/\\/g, '/').replace(/^\/+/, '');
-  const normalizedRule = rule.replace(/\\/g, '/').replace(/^\/+/, '');
+  const normalizedPath = relativePath.replace(/\\/g, "/").replace(/^\/+/, "");
+  const normalizedRule = rule.replace(/\\/g, "/").replace(/^\/+/, "");
   const isMatch = picomatch(normalizedRule, { dot: true });
   return isMatch(normalizedPath);
 }
 
-function getIgnoredLookupMatch(db: Database, query: string): DocumentExcludedByIgnore | null {
+function getIgnoredLookupMatch(
+  db: Database,
+  query: string,
+): DocumentExcludedByIgnore | null {
   const normalizedQuery = normalizeLookupPathForIgnore(query);
-  const parsedVirtual = isVirtualPath(normalizedQuery) ? parseVirtualPath(normalizedQuery) : null;
+  const parsedVirtual = isVirtualPath(normalizedQuery)
+    ? parseVirtualPath(normalizedQuery)
+    : null;
   const collections = getStoreCollections(db);
 
   for (const coll of collections) {
@@ -4134,9 +5180,9 @@ function getIgnoredLookupMatch(db: Database, query: string): DocumentExcludedByI
     if (parsedVirtual) {
       if (parsedVirtual.collectionName !== coll.name) continue;
       candidates.push(parsedVirtual.path);
-    } else if (normalizedQuery.startsWith(coll.path + '/')) {
+    } else if (normalizedQuery.startsWith(coll.path + "/")) {
       candidates.push(normalizedQuery.slice(coll.path.length + 1));
-    } else if (!normalizedQuery.startsWith('/')) {
+    } else if (!normalizedQuery.startsWith("/")) {
       const collectionPrefix = `${coll.name}/`;
       if (normalizedQuery.startsWith(collectionPrefix)) {
         candidates.push(normalizedQuery.slice(collectionPrefix.length));
@@ -4173,7 +5219,11 @@ function getIgnoredLookupMatch(db: Database, query: string): DocumentExcludedByI
  * - Relative paths: path/to/file.md
  * - Short docid: #abc123 (first 6 chars of hash)
  */
-export function findDocument(db: Database, filename: string, options: { includeBody?: boolean } = {}): DocumentResult | DocumentLookupError {
+export function findDocument(
+  db: Database,
+  filename: string,
+  options: { includeBody?: boolean } = {},
+): DocumentResult | DocumentLookupError {
   let filepath = filename;
   const colonMatch = filepath.match(/:(\d+)$/);
   if (colonMatch) {
@@ -4190,7 +5240,7 @@ export function findDocument(db: Database, filename: string, options: { includeB
     }
   }
 
-  if (filepath.startsWith('~/')) {
+  if (filepath.startsWith("~/")) {
     filepath = homedir() + filepath.slice(1);
   }
 
@@ -4210,46 +5260,58 @@ export function findDocument(db: Database, filename: string, options: { includeB
   `;
 
   // Try to match by virtual path first
-  let doc = db.prepare(`
+  let doc = db
+    .prepare(
+      `
     SELECT ${selectCols}
     FROM documents d
     JOIN content ON content.hash = d.hash
     WHERE 'qmd://' || d.collection || '/' || d.path = ? AND d.active = 1
-  `).get(filepath) as DbDocRow | null;
+  `,
+    )
+    .get(filepath) as DbDocRow | null;
 
   // Try fuzzy match by virtual path
   if (!doc) {
-    doc = db.prepare(`
+    doc = db
+      .prepare(
+        `
       SELECT ${selectCols}
       FROM documents d
       JOIN content ON content.hash = d.hash
       WHERE 'qmd://' || d.collection || '/' || d.path LIKE ? AND d.active = 1
       LIMIT 1
-    `).get(`%${filepath}`) as DbDocRow | null;
+    `,
+      )
+      .get(`%${filepath}`) as DbDocRow | null;
   }
 
   // Try to match by absolute path (requires looking up collection paths from DB)
-  if (!doc && !filepath.startsWith('qmd://')) {
+  if (!doc && !filepath.startsWith("qmd://")) {
     const collections = getStoreCollections(db);
     for (const coll of collections) {
       let relativePath: string | null = null;
 
       // If filepath is absolute and starts with collection path, extract relative part
-      if (filepath.startsWith(coll.path + '/')) {
+      if (filepath.startsWith(coll.path + "/")) {
         relativePath = filepath.slice(coll.path.length + 1);
       }
       // Otherwise treat filepath as relative to collection
-      else if (!filepath.startsWith('/')) {
+      else if (!filepath.startsWith("/")) {
         relativePath = filepath;
       }
 
       if (relativePath) {
-        doc = db.prepare(`
+        doc = db
+          .prepare(
+            `
           SELECT ${selectCols}
           FROM documents d
           JOIN content ON content.hash = d.hash
           WHERE d.collection = ? AND d.path = ? AND d.active = 1
-        `).get(coll.name, relativePath) as DbDocRow | null;
+        `,
+          )
+          .get(coll.name, relativePath) as DbDocRow | null;
         if (doc) break;
       }
     }
@@ -4264,7 +5326,8 @@ export function findDocument(db: Database, filename: string, options: { includeB
   }
 
   // Get context using virtual path
-  const virtualPath = doc.virtual_path || `qmd://${doc.collection}/${doc.display_path}`;
+  const virtualPath =
+    doc.virtual_path || `qmd://${doc.collection}/${doc.display_path}`;
   const context = getContextForFile(db, virtualPath);
 
   return {
@@ -4285,34 +5348,47 @@ export function findDocument(db: Database, filename: string, options: { includeB
  * Get the body content for a document
  * Optionally slice by line range
  */
-export function getDocumentBody(db: Database, doc: DocumentResult | { filepath: string }, fromLine?: number, maxLines?: number): string | null {
+export function getDocumentBody(
+  db: Database,
+  doc: DocumentResult | { filepath: string },
+  fromLine?: number,
+  maxLines?: number,
+): string | null {
   const filepath = doc.filepath;
 
   // Try to resolve document by filepath (absolute or virtual)
   let row: { body: string } | null = null;
 
   // Try virtual path first
-  if (filepath.startsWith('qmd://')) {
-    row = db.prepare(`
+  if (filepath.startsWith("qmd://")) {
+    row = db
+      .prepare(
+        `
       SELECT content.doc as body
       FROM documents d
       JOIN content ON content.hash = d.hash
       WHERE 'qmd://' || d.collection || '/' || d.path = ? AND d.active = 1
-    `).get(filepath) as { body: string } | null;
+    `,
+      )
+      .get(filepath) as { body: string } | null;
   }
 
   // Try absolute path by looking up in DB store_collections
   if (!row) {
     const collections = getStoreCollections(db);
     for (const coll of collections) {
-      if (filepath.startsWith(coll.path + '/')) {
+      if (filepath.startsWith(coll.path + "/")) {
         const relativePath = filepath.slice(coll.path.length + 1);
-        row = db.prepare(`
+        row = db
+          .prepare(
+            `
           SELECT content.doc as body
           FROM documents d
           JOIN content ON content.hash = d.hash
           WHERE d.collection = ? AND d.path = ? AND d.active = 1
-        `).get(coll.name, relativePath) as { body: string } | null;
+        `,
+          )
+          .get(coll.name, relativePath) as { body: string } | null;
         if (row) break;
       }
     }
@@ -4322,10 +5398,10 @@ export function getDocumentBody(db: Database, doc: DocumentResult | { filepath: 
 
   let body = row.body;
   if (fromLine !== undefined || maxLines !== undefined) {
-    const lines = body.split('\n');
+    const lines = body.split("\n");
     const start = Math.max(0, (fromLine || 1) - 1);
     const end = maxLines !== undefined ? start + maxLines : lines.length;
-    body = lines.slice(start, end).join('\n');
+    body = lines.slice(start, end).join("\n");
   }
 
   return body;
@@ -4338,9 +5414,13 @@ export function getDocumentBody(db: Database, doc: DocumentResult | { filepath: 
 export function findDocuments(
   db: Database,
   pattern: string,
-  options: { includeBody?: boolean; maxBytes?: number } = {}
+  options: { includeBody?: boolean; maxBytes?: number } = {},
 ): { docs: MultiGetResult[]; errors: string[] } {
-  const isCommaSeparated = pattern.includes(',') && !pattern.includes('*') && !pattern.includes('?') && !pattern.includes('{');
+  const isCommaSeparated =
+    pattern.includes(",") &&
+    !pattern.includes("*") &&
+    !pattern.includes("?") &&
+    !pattern.includes("{");
   const errors: string[] = [];
   const maxBytes = options.maxBytes ?? DEFAULT_MULTI_GET_MAX_BYTES;
 
@@ -4359,23 +5439,34 @@ export function findDocuments(
   let fileRows: DbDocRow[];
 
   if (isCommaSeparated) {
-    const names = pattern.split(',').map(s => s.trim()).filter(Boolean);
+    const names = pattern
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean);
     fileRows = [];
     for (const name of names) {
-      let doc = db.prepare(`
+      let doc = db
+        .prepare(
+          `
         SELECT ${selectCols}
         FROM documents d
         JOIN content ON content.hash = d.hash
         WHERE 'qmd://' || d.collection || '/' || d.path = ? AND d.active = 1
-      `).get(name) as DbDocRow | null;
+      `,
+        )
+        .get(name) as DbDocRow | null;
       if (!doc) {
-        doc = db.prepare(`
+        doc = db
+          .prepare(
+            `
           SELECT ${selectCols}
           FROM documents d
           JOIN content ON content.hash = d.hash
           WHERE 'qmd://' || d.collection || '/' || d.path LIKE ? AND d.active = 1
           LIMIT 1
-        `).get(`%${name}`) as DbDocRow | null;
+        `,
+          )
+          .get(`%${name}`) as DbDocRow | null;
       }
       if (doc) {
         fileRows.push(doc);
@@ -4383,7 +5474,7 @@ export function findDocuments(
         const similar = findSimilarFiles(db, name, 5, 3);
         let msg = `File not found: ${name}`;
         if (similar.length > 0) {
-          msg += ` (did you mean: ${similar.join(', ')}?)`;
+          msg += ` (did you mean: ${similar.join(", ")}?)`;
         }
         errors.push(msg);
       }
@@ -4395,21 +5486,26 @@ export function findDocuments(
       errors.push(`No files matched pattern: ${pattern}`);
       return { docs: [], errors };
     }
-    const virtualPaths = matched.map(m => m.filepath);
-    const placeholders = virtualPaths.map(() => '?').join(',');
-    fileRows = db.prepare(`
+    const virtualPaths = matched.map((m) => m.filepath);
+    const placeholders = virtualPaths.map(() => "?").join(",");
+    fileRows = db
+      .prepare(
+        `
       SELECT ${selectCols}
       FROM documents d
       JOIN content ON content.hash = d.hash
       WHERE 'qmd://' || d.collection || '/' || d.path IN (${placeholders}) AND d.active = 1
-    `).all(...virtualPaths) as DbDocRow[];
+    `,
+      )
+      .all(...virtualPaths) as DbDocRow[];
   }
 
   const results: MultiGetResult[] = [];
 
   for (const row of fileRows) {
     // Get context using virtual path
-    const virtualPath = row.virtual_path || `qmd://${row.collection}/${row.display_path}`;
+    const virtualPath =
+      row.virtual_path || `qmd://${row.collection}/${row.display_path}`;
     const context = getContextForFile(db, virtualPath);
 
     if (row.body_length > maxBytes) {
@@ -4425,14 +5521,16 @@ export function findDocuments(
       doc: {
         filepath: virtualPath,
         displayPath: row.display_path,
-        title: row.title || row.display_path.split('/').pop() || row.display_path,
+        title:
+          row.title || row.display_path.split("/").pop() || row.display_path,
         context,
         hash: row.hash,
         docid: getDocid(row.hash),
         collectionName: row.collection,
         modifiedAt: row.modified_at,
         bodyLength: row.body_length,
-        ...(options.includeBody && row.body !== undefined && { body: row.body }),
+        ...(options.includeBody &&
+          row.body !== undefined && { body: row.body }),
       },
       skipped: false,
     });
@@ -4445,9 +5543,14 @@ export function findDocuments(
 // Status
 // =============================================================================
 
-export function getStatus(db: Database, model: string = DEFAULT_EMBED_MODEL): IndexStatus {
+export function getStatus(
+  db: Database,
+  model: string = DEFAULT_EMBED_MODEL,
+): IndexStatus {
   // DB is source of truth for collections — config provides supplementary metadata
-  const dbCollections = db.prepare(`
+  const dbCollections = db
+    .prepare(
+      `
     SELECT
       collection as name,
       COUNT(*) as active_count,
@@ -4455,13 +5558,21 @@ export function getStatus(db: Database, model: string = DEFAULT_EMBED_MODEL): In
     FROM documents
     WHERE active = 1
     GROUP BY collection
-  `).all() as { name: string; active_count: number; last_doc_update: string | null }[];
+  `,
+    )
+    .all() as {
+    name: string;
+    active_count: number;
+    last_doc_update: string | null;
+  }[];
 
   // Build a lookup from store_collections for path/pattern metadata
   const storeCollections = getStoreCollections(db);
-  const configLookup = new Map(storeCollections.map(c => [c.name, { path: c.path, pattern: c.pattern }]));
+  const configLookup = new Map(
+    storeCollections.map((c) => [c.name, { path: c.path, pattern: c.pattern }]),
+  );
 
-  const collections: CollectionInfo[] = dbCollections.map(row => {
+  const collections: CollectionInfo[] = dbCollections.map((row) => {
     const config = configLookup.get(row.name);
     return {
       name: row.name,
@@ -4476,12 +5587,22 @@ export function getStatus(db: Database, model: string = DEFAULT_EMBED_MODEL): In
   collections.sort((a, b) => {
     if (!a.lastUpdated) return 1;
     if (!b.lastUpdated) return -1;
-    return new Date(b.lastUpdated).getTime() - new Date(a.lastUpdated).getTime();
+    return (
+      new Date(b.lastUpdated).getTime() - new Date(a.lastUpdated).getTime()
+    );
   });
 
-  const totalDocs = (db.prepare(`SELECT COUNT(*) as c FROM documents WHERE active = 1`).get() as { c: number }).c;
+  const totalDocs = (
+    db
+      .prepare(`SELECT COUNT(*) as c FROM documents WHERE active = 1`)
+      .get() as { c: number }
+  ).c;
   const needsEmbedding = getHashesNeedingEmbedding(db, undefined, model);
-  const hasVectors = !!db.prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name='vectors_vec'`).get();
+  const hasVectors = !!db
+    .prepare(
+      `SELECT name FROM sqlite_master WHERE type='table' AND name='vectors_vec'`,
+    )
+    .get();
 
   return {
     totalDocuments: totalDocs,
@@ -4496,11 +5617,11 @@ export function getStatus(db: Database, model: string = DEFAULT_EMBED_MODEL): In
 // =============================================================================
 
 export type SnippetResult = {
-  line: number;           // 1-indexed line number of best match
-  snippet: string;        // The snippet text with diff-style header
-  linesBefore: number;    // Lines in document before snippet
-  linesAfter: number;     // Lines in document after snippet
-  snippetLines: number;   // Number of lines in snippet
+  line: number; // 1-indexed line number of best match
+  snippet: string; // The snippet text with diff-style header
+  linesBefore: number; // Lines in document before snippet
+  linesAfter: number; // Lines in document after snippet
+  snippetLines: number; // Number of lines in snippet
 };
 
 /** Weight for intent terms relative to query terms (1.0) in snippet scoring */
@@ -4515,19 +5636,84 @@ export const INTENT_WEIGHT_CHUNK = 0.5;
 // short domain terms (API, SQL, LLM, CPU, CDN, …) survive.
 const INTENT_STOP_WORDS = new Set([
   // 2-char function words
-  "am", "an", "as", "at", "be", "by", "do", "he", "if",
-  "in", "is", "it", "me", "my", "no", "of", "on", "or", "so",
-  "to", "up", "us", "we",
+  "am",
+  "an",
+  "as",
+  "at",
+  "be",
+  "by",
+  "do",
+  "he",
+  "if",
+  "in",
+  "is",
+  "it",
+  "me",
+  "my",
+  "no",
+  "of",
+  "on",
+  "or",
+  "so",
+  "to",
+  "up",
+  "us",
+  "we",
   // 3-char function words
-  "all", "and", "any", "are", "but", "can", "did", "for", "get",
-  "has", "her", "him", "his", "how", "its", "let", "may", "not",
-  "our", "out", "the", "too", "was", "who", "why", "you",
+  "all",
+  "and",
+  "any",
+  "are",
+  "but",
+  "can",
+  "did",
+  "for",
+  "get",
+  "has",
+  "her",
+  "him",
+  "his",
+  "how",
+  "its",
+  "let",
+  "may",
+  "not",
+  "our",
+  "out",
+  "the",
+  "too",
+  "was",
+  "who",
+  "why",
+  "you",
   // 4+ char common words
-  "also", "does", "find", "from", "have", "into", "more", "need",
-  "show", "some", "tell", "that", "them", "this", "want", "what",
-  "when", "will", "with", "your",
+  "also",
+  "does",
+  "find",
+  "from",
+  "have",
+  "into",
+  "more",
+  "need",
+  "show",
+  "some",
+  "tell",
+  "that",
+  "them",
+  "this",
+  "want",
+  "what",
+  "when",
+  "will",
+  "with",
+  "your",
   // Search-context noise
-  "about", "looking", "notes", "search", "where", "which",
+  "about",
+  "looking",
+  "notes",
+  "search",
+  "where",
+  "which",
 ]);
 
 /**
@@ -4536,13 +5722,22 @@ const INTENT_STOP_WORDS = new Set([
  * Returns lowercase terms suitable for text matching.
  */
 export function extractIntentTerms(intent: string): string[] {
-  return intent.toLowerCase().split(/\s+/)
-    .map(t => t.replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, ""))
-    .filter(t => t.length > 1 && !INTENT_STOP_WORDS.has(t));
+  return intent
+    .toLowerCase()
+    .split(/\s+/)
+    .map((t) => t.replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, ""))
+    .filter((t) => t.length > 1 && !INTENT_STOP_WORDS.has(t));
 }
 
-export function extractSnippet(body: string, query: string, maxLen = 500, chunkPos?: number, chunkLen?: number, intent?: string): SnippetResult {
-  const totalLines = body.split('\n').length;
+export function extractSnippet(
+  body: string,
+  query: string,
+  maxLen = 500,
+  chunkPos?: number,
+  chunkLen?: number,
+  intent?: string,
+): SnippetResult {
+  const totalLines = body.split("\n").length;
   let searchBody = body;
   let lineOffset = 0;
 
@@ -4554,14 +5749,18 @@ export function extractSnippet(body: string, query: string, maxLen = 500, chunkP
     const contextEnd = Math.min(body.length, chunkPos + searchLen + 100);
     searchBody = body.slice(contextStart, contextEnd);
     if (contextStart > 0) {
-      lineOffset = body.slice(0, contextStart).split('\n').length - 1;
+      lineOffset = body.slice(0, contextStart).split("\n").length - 1;
     }
   }
 
-  const lines = searchBody.split('\n');
-  const queryTerms = query.toLowerCase().split(/\s+/).filter(t => t.length > 0);
+  const lines = searchBody.split("\n");
+  const queryTerms = query
+    .toLowerCase()
+    .split(/\s+/)
+    .filter((t) => t.length > 0);
   const intentTerms = intent ? extractIntentTerms(intent) : [];
-  let bestLine = 0, bestScore = -1;
+  let bestLine = 0,
+    bestScore = -1;
 
   for (let i = 0; i < lines.length; i++) {
     const lineLower = (lines[i] ?? "").toLowerCase();
@@ -4590,15 +5789,16 @@ export function extractSnippet(body: string, query: string, maxLen = 500, chunkP
     // syntax, HYDE passages, semantic hits), so anchor on the chunk start rather
     // than disregarding the reranker's pick.
     const contextStart = Math.max(0, chunkPos - 100);
-    bestLine = chunkPos > contextStart
-      ? searchBody.slice(0, chunkPos - contextStart).split('\n').length - 1
-      : 0;
+    bestLine =
+      chunkPos > contextStart
+        ? searchBody.slice(0, chunkPos - contextStart).split("\n").length - 1
+        : 0;
   }
 
   const start = Math.max(0, bestLine - 1);
   const end = Math.min(lines.length, bestLine + 3);
   const snippetLines = lines.slice(start, end);
-  let snippetText = snippetLines.join('\n');
+  let snippetText = snippetLines.join("\n");
 
   // If we focused on a chunk window and it produced an empty/whitespace-only snippet,
   // fall back to a full-document snippet so we always show something useful.
@@ -4606,7 +5806,8 @@ export function extractSnippet(body: string, query: string, maxLen = 500, chunkP
     return extractSnippet(body, query, maxLen, undefined, undefined, intent);
   }
 
-  if (snippetText.length > maxLen) snippetText = snippetText.substring(0, maxLen - 3) + "...";
+  if (snippetText.length > maxLen)
+    snippetText = snippetText.substring(0, maxLen - 3) + "...";
 
   const absoluteStart = lineOffset + start + 1; // 1-indexed
   const snippetLineCount = snippetLines.length;
@@ -4635,8 +5836,8 @@ export function extractSnippet(body: string, query: string, maxLen = 500, chunkP
  * Each line becomes: "{lineNum}: {content}"
  */
 export function addLineNumbers(text: string, startLine: number = 1): string {
-  const lines = text.split('\n');
-  return lines.map((line, i) => `${startLine + i}: ${line}`).join('\n');
+  const lines = text.split("\n");
+  return lines.map((line, i) => `${startLine + i}: ${line}`).join("\n");
 }
 
 // =============================================================================
@@ -4658,7 +5859,11 @@ export interface SearchHooks {
   /** Query expansion starting */
   onExpandStart?: () => void;
   /** Query expansion complete. Empty array = strong signal skip. elapsedMs = time taken. */
-  onExpand?: (original: string, expanded: ExpandedQuery[], elapsedMs: number) => void;
+  onExpand?: (
+    original: string,
+    expanded: ExpandedQuery[],
+    elapsedMs: number,
+  ) => void;
   /** Embedding starting (vec/hyde queries) */
   onEmbedStart?: (count: number) => void;
   /** Embedding complete */
@@ -4671,26 +5876,26 @@ export interface SearchHooks {
 
 export interface HybridQueryOptions {
   collection?: string;
-  limit?: number;           // default 10
-  minScore?: number;        // default 0
-  candidateLimit?: number;  // default RERANK_CANDIDATE_LIMIT
-  explain?: boolean;        // include backend/RRF/rerank score traces
-  intent?: string;          // domain intent hint for disambiguation
-  skipRerank?: boolean;     // skip LLM reranking, use only RRF scores
+  limit?: number; // default 10
+  minScore?: number; // default 0
+  candidateLimit?: number; // default RERANK_CANDIDATE_LIMIT
+  explain?: boolean; // include backend/RRF/rerank score traces
+  intent?: string; // domain intent hint for disambiguation
+  skipRerank?: boolean; // skip LLM reranking, use only RRF scores
   chunkStrategy?: ChunkStrategy;
   hooks?: SearchHooks;
 }
 
 export interface HybridQueryResult {
-  file: string;             // internal filepath (qmd://collection/path)
+  file: string; // internal filepath (qmd://collection/path)
   displayPath: string;
   title: string;
-  body: string;             // full document body (for snippet extraction)
-  bestChunk: string;        // best chunk text
-  bestChunkPos: number;     // char offset of best chunk in body
-  score: number;            // blended score (full precision)
-  context: string | null;   // user-set context
-  docid: string;            // content hash prefix (6 chars)
+  body: string; // full document body (for snippet extraction)
+  bestChunk: string; // best chunk text
+  bestChunkPos: number; // char offset of best chunk in body
+  score: number; // blended score (full precision)
+  context: string | null; // user-set context
+  docid: string; // content hash prefix (6 chars)
   explain?: HybridQueryExplain;
 }
 
@@ -4711,8 +5916,12 @@ export type RankedListMeta = {
  * so a lex expansion inserted before original vector search cannot steal the
  * original vector boost.
  */
-export function getHybridRrfWeights(rankedListMeta: RankedListMeta[]): number[] {
-  return rankedListMeta.map(meta => meta.queryType === "original" ? 2.0 : 1.0);
+export function getHybridRrfWeights(
+  rankedListMeta: RankedListMeta[],
+): number[] {
+  return rankedListMeta.map((meta) =>
+    meta.queryType === "original" ? 2.0 : 1.0,
+  );
 }
 
 /**
@@ -4731,7 +5940,7 @@ export function getHybridRrfWeights(rankedListMeta: RankedListMeta[]): number[] 
 export async function hybridQuery(
   store: Store,
   query: string,
-  options?: HybridQueryOptions
+  options?: HybridQueryOptions,
 ): Promise<HybridQueryResult[]> {
   const limit = options?.limit ?? 10;
   const minScore = options?.minScore ?? 0;
@@ -4745,9 +5954,11 @@ export async function hybridQuery(
   const rankedLists: RankedResult[][] = [];
   const rankedListMeta: RankedListMeta[] = [];
   const docidMap = new Map<string, string>(); // filepath -> docid
-  const hasVectors = !!store.db.prepare(
-    `SELECT name FROM sqlite_master WHERE type='table' AND name='vectors_vec'`
-  ).get();
+  const hasVectors = !!store.db
+    .prepare(
+      `SELECT name FROM sqlite_master WHERE type='table' AND name='vectors_vec'`,
+    )
+    .get();
 
   // Step 1: BM25 probe — strong signal skips expensive LLM expansion
   // When intent is provided, disable strong-signal bypass — the obvious BM25
@@ -4757,9 +5968,11 @@ export async function hybridQuery(
   const initialFts = store.searchFTS(query, 20, collection);
   const topScore = initialFts[0]?.score ?? 0;
   const secondScore = initialFts[1]?.score ?? 0;
-  const hasStrongSignal = !intent && initialFts.length > 0
-    && topScore >= STRONG_SIGNAL_MIN_SCORE
-    && (topScore - secondScore) >= STRONG_SIGNAL_MIN_GAP;
+  const hasStrongSignal =
+    !intent &&
+    initialFts.length > 0 &&
+    topScore >= STRONG_SIGNAL_MIN_SCORE &&
+    topScore - secondScore >= STRONG_SIGNAL_MIN_GAP;
 
   if (hasStrongSignal) hooks?.onStrongSignal?.(topScore);
 
@@ -4775,10 +5988,15 @@ export async function hybridQuery(
   // Seed with initial FTS results (avoid re-running original query FTS)
   if (initialFts.length > 0) {
     for (const r of initialFts) docidMap.set(r.filepath, r.docid);
-    rankedLists.push(initialFts.map(r => ({
-      file: r.filepath, displayPath: r.displayPath,
-      title: r.title, body: r.body || "", score: r.score,
-    })));
+    rankedLists.push(
+      initialFts.map((r) => ({
+        file: r.filepath,
+        displayPath: r.displayPath,
+        title: r.title,
+        body: r.body || "",
+        score: r.score,
+      })),
+    );
     rankedListMeta.push({ source: "fts", queryType: "original", query });
   }
 
@@ -4790,26 +6008,36 @@ export async function hybridQuery(
 
   // 3a: Run FTS for all lex expansions right away (no LLM needed)
   for (const q of expanded) {
-    if (q.type === 'lex') {
+    if (q.type === "lex") {
       const ftsResults = store.searchFTS(q.query, 20, collection);
       if (ftsResults.length > 0) {
         for (const r of ftsResults) docidMap.set(r.filepath, r.docid);
-        rankedLists.push(ftsResults.map(r => ({
-          file: r.filepath, displayPath: r.displayPath,
-          title: r.title, body: r.body || "", score: r.score,
-        })));
-        rankedListMeta.push({ source: "fts", queryType: "lex", query: q.query });
+        rankedLists.push(
+          ftsResults.map((r) => ({
+            file: r.filepath,
+            displayPath: r.displayPath,
+            title: r.title,
+            body: r.body || "",
+            score: r.score,
+          })),
+        );
+        rankedListMeta.push({
+          source: "fts",
+          queryType: "lex",
+          query: q.query,
+        });
       }
     }
   }
 
   // 3b: Collect all texts that need vector search (original query + vec/hyde expansions)
   if (hasVectors) {
-    const vecQueries: { text: string; queryType: "original" | "vec" | "hyde" }[] = [
-      { text: query, queryType: "original" },
-    ];
+    const vecQueries: {
+      text: string;
+      queryType: "original" | "vec" | "hyde";
+    }[] = [{ text: query, queryType: "original" }];
     for (const q of expanded) {
-      if (q.type === 'vec' || q.type === 'hyde') {
+      if (q.type === "vec" || q.type === "hyde") {
         vecQueries.push({ text: q.query, queryType: q.type });
       }
     }
@@ -4817,7 +6045,9 @@ export async function hybridQuery(
     // Batch embed all vector queries in a single call
     const llm = getLlm(store);
     const embedModel = llm.embedModelName;
-    const textsToEmbed = vecQueries.map(q => formatQueryForEmbedding(q.text, embedModel));
+    const textsToEmbed = vecQueries.map((q) =>
+      formatQueryForEmbedding(q.text, embedModel),
+    );
     hooks?.onEmbedStart?.(textsToEmbed.length);
     const embedStart = Date.now();
     const embeddings = await llm.embedBatch(textsToEmbed);
@@ -4829,15 +6059,24 @@ export async function hybridQuery(
       if (!embedding) continue;
 
       const vecResults = await store.searchVec(
-        vecQueries[i]!.text, embedModel, 20, collection,
-        undefined, embedding
+        vecQueries[i]!.text,
+        embedModel,
+        20,
+        collection,
+        undefined,
+        embedding,
       );
       if (vecResults.length > 0) {
         for (const r of vecResults) docidMap.set(r.filepath, r.docid);
-        rankedLists.push(vecResults.map(r => ({
-          file: r.filepath, displayPath: r.displayPath,
-          title: r.title, body: r.body || "", score: r.score,
-        })));
+        rankedLists.push(
+          vecResults.map((r) => ({
+            file: r.filepath,
+            displayPath: r.displayPath,
+            title: r.title,
+            body: r.body || "",
+            score: r.score,
+          })),
+        );
         rankedListMeta.push({
           source: "vec",
           queryType: vecQueries[i]!.queryType,
@@ -4851,20 +6090,35 @@ export async function hybridQuery(
   // expansion-derived lists stay at 1x independent of insertion order.
   const weights = getHybridRrfWeights(rankedListMeta);
   const fused = reciprocalRankFusion(rankedLists, weights);
-  const rrfTraceByFile = explain ? buildRrfTrace(rankedLists, weights, rankedListMeta) : null;
+  const rrfTraceByFile = explain
+    ? buildRrfTrace(rankedLists, weights, rankedListMeta)
+    : null;
   const candidates = fused.slice(0, candidateLimit);
 
   if (candidates.length === 0) return [];
 
   // Step 5: Chunk documents, pick best chunk per doc for reranking.
   // Reranking full bodies is O(tokens) — the critical perf lesson that motivated this refactor.
-  const queryTerms = query.toLowerCase().split(/\s+/).filter(t => t.length > 2);
+  const queryTerms = query
+    .toLowerCase()
+    .split(/\s+/)
+    .filter((t) => t.length > 2);
   const intentTerms = intent ? extractIntentTerms(intent) : [];
-  const docChunkMap = new Map<string, { chunks: { text: string; pos: number }[]; bestIdx: number }>();
+  const docChunkMap = new Map<
+    string,
+    { chunks: { text: string; pos: number }[]; bestIdx: number }
+  >();
 
   const chunkStrategy = options?.chunkStrategy;
   for (const cand of candidates) {
-    const chunks = await chunkDocumentAsync(cand.body, undefined, undefined, undefined, cand.file, chunkStrategy);
+    const chunks = await chunkDocumentAsync(
+      cand.body,
+      undefined,
+      undefined,
+      undefined,
+      cand.file,
+      chunkStrategy,
+    );
     if (chunks.length === 0) continue;
 
     // Pick chunk with most keyword overlap (fallback: first chunk)
@@ -4873,11 +6127,17 @@ export async function hybridQuery(
     let bestScore = -1;
     for (let i = 0; i < chunks.length; i++) {
       const chunkLower = chunks[i]!.text.toLowerCase();
-      let score = queryTerms.reduce((acc, term) => acc + (chunkLower.includes(term) ? 1 : 0), 0);
+      let score = queryTerms.reduce(
+        (acc, term) => acc + (chunkLower.includes(term) ? 1 : 0),
+        0,
+      );
       for (const term of intentTerms) {
         if (chunkLower.includes(term)) score += INTENT_WEIGHT_CHUNK;
       }
-      if (score > bestScore) { bestScore = score; bestIdx = i; }
+      if (score > bestScore) {
+        bestScore = score;
+        bestIdx = i;
+      }
     }
 
     docChunkMap.set(cand.file, { chunks, bestIdx });
@@ -4895,21 +6155,29 @@ export async function hybridQuery(
         const rrfRank = i + 1;
         const rrfScore = 1 / rrfRank;
         const trace = rrfTraceByFile?.get(cand.file);
-        const explainData: HybridQueryExplain | undefined = explain ? {
-          ftsScores: trace?.contributions.filter(c => c.source === "fts").map(c => c.backendScore) ?? [],
-          vectorScores: trace?.contributions.filter(c => c.source === "vec").map(c => c.backendScore) ?? [],
-          rrf: {
-            rank: rrfRank,
-            positionScore: rrfScore,
-            weight: 1.0,
-            baseScore: trace?.baseScore ?? 0,
-            topRankBonus: trace?.topRankBonus ?? 0,
-            totalScore: trace?.totalScore ?? 0,
-            contributions: trace?.contributions ?? [],
-          },
-          rerankScore: 0,
-          blendedScore: rrfScore,
-        } : undefined;
+        const explainData: HybridQueryExplain | undefined = explain
+          ? {
+              ftsScores:
+                trace?.contributions
+                  .filter((c) => c.source === "fts")
+                  .map((c) => c.backendScore) ?? [],
+              vectorScores:
+                trace?.contributions
+                  .filter((c) => c.source === "vec")
+                  .map((c) => c.backendScore) ?? [],
+              rrf: {
+                rank: rrfRank,
+                positionScore: rrfScore,
+                weight: 1.0,
+                baseScore: trace?.baseScore ?? 0,
+                topRankBonus: trace?.topRankBonus ?? 0,
+                totalScore: trace?.totalScore ?? 0,
+                contributions: trace?.contributions ?? [],
+              },
+              rerankScore: 0,
+              blendedScore: rrfScore,
+            }
+          : undefined;
 
         return {
           file: cand.file,
@@ -4924,12 +6192,12 @@ export async function hybridQuery(
           ...(explainData ? { explain: explainData } : {}),
         };
       })
-      .filter(r => {
+      .filter((r) => {
         if (seenFiles.has(r.file)) return false;
         seenFiles.add(r.file);
         return true;
       })
-      .filter(r => r.score >= minScore)
+      .filter((r) => r.score >= minScore)
       .slice(0, limit);
   }
 
@@ -4938,7 +6206,10 @@ export async function hybridQuery(
   for (const cand of candidates) {
     const chunkInfo = docChunkMap.get(cand.file);
     if (chunkInfo) {
-      chunksToRerank.push({ file: cand.file, text: chunkInfo.chunks[chunkInfo.bestIdx]!.text });
+      chunksToRerank.push({
+        file: cand.file,
+        text: chunkInfo.chunks[chunkInfo.bestIdx]!.text,
+      });
     }
   }
 
@@ -4949,74 +6220,92 @@ export async function hybridQuery(
 
   // Step 7: Blend RRF position score with reranker score
   // Position-aware weights: top retrieval results get more protection from reranker disagreement
-  const candidateMap = new Map(candidates.map(c => [c.file, {
-    displayPath: c.displayPath, title: c.title, body: c.body,
-  }]));
+  const candidateMap = new Map(
+    candidates.map((c) => [
+      c.file,
+      {
+        displayPath: c.displayPath,
+        title: c.title,
+        body: c.body,
+      },
+    ]),
+  );
   const rrfRankMap = new Map(candidates.map((c, i) => [c.file, i + 1]));
 
-  const blended = reranked.map(r => {
-    const rrfRank = rrfRankMap.get(r.file) || candidateLimit;
-    let rrfWeight: number;
-    if (rrfRank <= 3) rrfWeight = 0.75;
-    else if (rrfRank <= 10) rrfWeight = 0.60;
-    else rrfWeight = 0.40;
-    const rrfScore = 1 / rrfRank;
-    const blendedScore = rrfWeight * rrfScore + (1 - rrfWeight) * r.score;
+  const blended = reranked
+    .map((r) => {
+      const rrfRank = rrfRankMap.get(r.file) || candidateLimit;
+      let rrfWeight: number;
+      if (rrfRank <= 3) rrfWeight = 0.75;
+      else if (rrfRank <= 10) rrfWeight = 0.6;
+      else rrfWeight = 0.4;
+      const rrfScore = 1 / rrfRank;
+      const blendedScore = rrfWeight * rrfScore + (1 - rrfWeight) * r.score;
 
-    const candidate = candidateMap.get(r.file);
-    const chunkInfo = docChunkMap.get(r.file);
-    const bestIdx = chunkInfo?.bestIdx ?? 0;
-    const bestChunk = chunkInfo?.chunks[bestIdx]?.text || candidate?.body || "";
-    const bestChunkPos = chunkInfo?.chunks[bestIdx]?.pos || 0;
-    const trace = rrfTraceByFile?.get(r.file);
-    const explainData: HybridQueryExplain | undefined = explain ? {
-      ftsScores: trace?.contributions.filter(c => c.source === "fts").map(c => c.backendScore) ?? [],
-      vectorScores: trace?.contributions.filter(c => c.source === "vec").map(c => c.backendScore) ?? [],
-      rrf: {
-        rank: rrfRank,
-        positionScore: rrfScore,
-        weight: rrfWeight,
-        baseScore: trace?.baseScore ?? 0,
-        topRankBonus: trace?.topRankBonus ?? 0,
-        totalScore: trace?.totalScore ?? 0,
-        contributions: trace?.contributions ?? [],
-      },
-      rerankScore: r.score,
-      blendedScore,
-    } : undefined;
+      const candidate = candidateMap.get(r.file);
+      const chunkInfo = docChunkMap.get(r.file);
+      const bestIdx = chunkInfo?.bestIdx ?? 0;
+      const bestChunk =
+        chunkInfo?.chunks[bestIdx]?.text || candidate?.body || "";
+      const bestChunkPos = chunkInfo?.chunks[bestIdx]?.pos || 0;
+      const trace = rrfTraceByFile?.get(r.file);
+      const explainData: HybridQueryExplain | undefined = explain
+        ? {
+            ftsScores:
+              trace?.contributions
+                .filter((c) => c.source === "fts")
+                .map((c) => c.backendScore) ?? [],
+            vectorScores:
+              trace?.contributions
+                .filter((c) => c.source === "vec")
+                .map((c) => c.backendScore) ?? [],
+            rrf: {
+              rank: rrfRank,
+              positionScore: rrfScore,
+              weight: rrfWeight,
+              baseScore: trace?.baseScore ?? 0,
+              topRankBonus: trace?.topRankBonus ?? 0,
+              totalScore: trace?.totalScore ?? 0,
+              contributions: trace?.contributions ?? [],
+            },
+            rerankScore: r.score,
+            blendedScore,
+          }
+        : undefined;
 
-    return {
-      file: r.file,
-      displayPath: candidate?.displayPath || "",
-      title: candidate?.title || "",
-      body: candidate?.body || "",
-      bestChunk,
-      bestChunkPos,
-      score: blendedScore,
-      context: store.getContextForFile(r.file),
-      docid: docidMap.get(r.file) || "",
-      ...(explainData ? { explain: explainData } : {}),
-    };
-  }).sort((a, b) => b.score - a.score);
+      return {
+        file: r.file,
+        displayPath: candidate?.displayPath || "",
+        title: candidate?.title || "",
+        body: candidate?.body || "",
+        bestChunk,
+        bestChunkPos,
+        score: blendedScore,
+        context: store.getContextForFile(r.file),
+        docid: docidMap.get(r.file) || "",
+        ...(explainData ? { explain: explainData } : {}),
+      };
+    })
+    .sort((a, b) => b.score - a.score);
 
   // Step 8: Dedup by file (safety net — prevents duplicate output)
   const seenFiles = new Set<string>();
   return blended
-    .filter(r => {
+    .filter((r) => {
       if (seenFiles.has(r.file)) return false;
       seenFiles.add(r.file);
       return true;
     })
-    .filter(r => r.score >= minScore)
+    .filter((r) => r.score >= minScore)
     .slice(0, limit);
 }
 
 export interface VectorSearchOptions {
   collection?: string;
-  limit?: number;           // default 10
-  minScore?: number;        // default 0.3
-  intent?: string;          // domain intent hint for disambiguation
-  hooks?: Pick<SearchHooks, 'onExpand'>;
+  limit?: number; // default 10
+  minScore?: number; // default 0.3
+  intent?: string; // domain intent hint for disambiguation
+  hooks?: Pick<SearchHooks, "onExpand">;
 }
 
 export interface VectorSearchResult {
@@ -5041,27 +6330,29 @@ export interface VectorSearchResult {
 export async function vectorSearchQuery(
   store: Store,
   query: string,
-  options?: VectorSearchOptions
+  options?: VectorSearchOptions,
 ): Promise<VectorSearchResult[]> {
   const limit = options?.limit ?? 10;
   const minScore = options?.minScore ?? 0.3;
   const collection = options?.collection;
   const intent = options?.intent;
 
-  const hasVectors = !!store.db.prepare(
-    `SELECT name FROM sqlite_master WHERE type='table' AND name='vectors_vec'`
-  ).get();
+  const hasVectors = !!store.db
+    .prepare(
+      `SELECT name FROM sqlite_master WHERE type='table' AND name='vectors_vec'`,
+    )
+    .get();
   if (!hasVectors) return [];
 
   // Expand query — filter to vec/hyde only (lex queries target FTS, not vector)
   const expandStart = Date.now();
   const allExpanded = await store.expandQuery(query, undefined, intent);
-  const vecExpanded = allExpanded.filter(q => q.type !== 'lex');
+  const vecExpanded = allExpanded.filter((q) => q.type !== "lex");
   options?.hooks?.onExpand?.(query, vecExpanded, Date.now() - expandStart);
 
   // Run original + vec/hyde expanded through vector, sequentially — concurrent embed() hangs
   const embedModel = getLlm(store).embedModelName;
-  const queryTexts = [query, ...vecExpanded.map(q => q.query)];
+  const queryTexts = [query, ...vecExpanded.map((q) => q.query)];
   const allResults = new Map<string, VectorSearchResult>();
   for (const q of queryTexts) {
     const vecResults = await store.searchVec(q, embedModel, limit, collection);
@@ -5083,7 +6374,7 @@ export async function vectorSearchQuery(
 
   return Array.from(allResults.values())
     .sort((a, b) => b.score - a.score)
-    .filter(r => r.score >= minScore)
+    .filter((r) => r.score >= minScore)
     .slice(0, limit);
 }
 
@@ -5096,11 +6387,11 @@ export async function vectorSearchQuery(
  * Matches the format used in QMD training data.
  */
 export interface StructuredSearchOptions {
-  collections?: string[];   // Filter to specific collections (OR match)
-  limit?: number;           // default 10
-  minScore?: number;        // default 0
-  candidateLimit?: number;  // default RERANK_CANDIDATE_LIMIT
-  explain?: boolean;        // include backend/RRF/rerank score traces
+  collections?: string[]; // Filter to specific collections (OR match)
+  limit?: number; // default 10
+  minScore?: number; // default 0
+  candidateLimit?: number; // default RERANK_CANDIDATE_LIMIT
+  explain?: boolean; // include backend/RRF/rerank score traces
   /** Domain intent hint for disambiguation — steers reranking and chunk selection */
   intent?: string;
   /** Skip LLM reranking, use only RRF scores */
@@ -5130,7 +6421,7 @@ export interface StructuredSearchOptions {
 export async function structuredSearch(
   store: Store,
   searches: ExpandedQuery[],
-  options?: StructuredSearchOptions
+  options?: StructuredSearchOptions,
 ): Promise<HybridQueryResult[]> {
   const limit = options?.limit ?? 10;
   const minScore = options?.minScore ?? 0;
@@ -5146,16 +6437,18 @@ export async function structuredSearch(
 
   // Validate queries before executing
   for (const search of searches) {
-    const location = search.line ? `Line ${search.line}` : 'Structured search';
+    const location = search.line ? `Line ${search.line}` : "Structured search";
     if (/[\r\n]/.test(search.query)) {
-      throw new Error(`${location} (${search.type}): queries must be single-line. Remove newline characters.`);
+      throw new Error(
+        `${location} (${search.type}): queries must be single-line. Remove newline characters.`,
+      );
     }
-    if (search.type === 'lex') {
+    if (search.type === "lex") {
       const error = validateLexQuery(search.query);
       if (error) {
         throw new Error(`${location} (lex): ${error}`);
       }
-    } else if (search.type === 'vec' || search.type === 'hyde') {
+    } else if (search.type === "vec" || search.type === "hyde") {
       const error = validateSemanticQuery(search.query);
       if (error) {
         throw new Error(`${location} (${search.type}): ${error}`);
@@ -5166,24 +6459,31 @@ export async function structuredSearch(
   const rankedLists: RankedResult[][] = [];
   const rankedListMeta: RankedListMeta[] = [];
   const docidMap = new Map<string, string>(); // filepath -> docid
-  const hasVectors = !!store.db.prepare(
-    `SELECT name FROM sqlite_master WHERE type='table' AND name='vectors_vec'`
-  ).get();
+  const hasVectors = !!store.db
+    .prepare(
+      `SELECT name FROM sqlite_master WHERE type='table' AND name='vectors_vec'`,
+    )
+    .get();
 
   // Helper to run search across collections (or all if undefined)
   const collectionList = collections ?? [undefined]; // undefined = all collections
 
   // Step 1: Run FTS for all lex searches (sync, instant)
   for (const search of searches) {
-    if (search.type === 'lex') {
+    if (search.type === "lex") {
       for (const coll of collectionList) {
         const ftsResults = store.searchFTS(search.query, 20, coll);
         if (ftsResults.length > 0) {
           for (const r of ftsResults) docidMap.set(r.filepath, r.docid);
-          rankedLists.push(ftsResults.map(r => ({
-            file: r.filepath, displayPath: r.displayPath,
-            title: r.title, body: r.body || "", score: r.score,
-          })));
+          rankedLists.push(
+            ftsResults.map((r) => ({
+              file: r.filepath,
+              displayPath: r.displayPath,
+              title: r.title,
+              body: r.body || "",
+              score: r.score,
+            })),
+          );
           rankedListMeta.push({
             source: "fts",
             queryType: "lex",
@@ -5197,13 +6497,15 @@ export async function structuredSearch(
   // Step 2: Batch embed and run vector searches for vec/hyde
   if (hasVectors) {
     const vecSearches = searches.filter(
-      (s): s is ExpandedQuery & { type: 'vec' | 'hyde' } =>
-        s.type === 'vec' || s.type === 'hyde'
+      (s): s is ExpandedQuery & { type: "vec" | "hyde" } =>
+        s.type === "vec" || s.type === "hyde",
     );
     if (vecSearches.length > 0) {
       const llm = getLlm(store);
       const embedModel = llm.embedModelName;
-      const textsToEmbed = vecSearches.map(s => formatQueryForEmbedding(s.query, embedModel));
+      const textsToEmbed = vecSearches.map((s) =>
+        formatQueryForEmbedding(s.query, embedModel),
+      );
       hooks?.onEmbedStart?.(textsToEmbed.length);
       const embedStart = Date.now();
       const embeddings = await llm.embedBatch(textsToEmbed);
@@ -5215,15 +6517,24 @@ export async function structuredSearch(
 
         for (const coll of collectionList) {
           const vecResults = await store.searchVec(
-            vecSearches[i]!.query, embedModel, 20, coll,
-            undefined, embedding
+            vecSearches[i]!.query,
+            embedModel,
+            20,
+            coll,
+            undefined,
+            embedding,
           );
           if (vecResults.length > 0) {
             for (const r of vecResults) docidMap.set(r.filepath, r.docid);
-            rankedLists.push(vecResults.map(r => ({
-              file: r.filepath, displayPath: r.displayPath,
-              title: r.title, body: r.body || "", score: r.score,
-            })));
+            rankedLists.push(
+              vecResults.map((r) => ({
+                file: r.filepath,
+                displayPath: r.displayPath,
+                title: r.title,
+                body: r.body || "",
+                score: r.score,
+              })),
+            );
             rankedListMeta.push({
               source: "vec",
               queryType: vecSearches[i]!.type,
@@ -5238,9 +6549,11 @@ export async function structuredSearch(
   if (rankedLists.length === 0) return [];
 
   // Step 3: RRF fusion — first list gets 2x weight (assume caller ordered by importance)
-  const weights = rankedLists.map((_, i) => i === 0 ? 2.0 : 1.0);
+  const weights = rankedLists.map((_, i) => (i === 0 ? 2.0 : 1.0));
   const fused = reciprocalRankFusion(rankedLists, weights);
-  const rrfTraceByFile = explain ? buildRrfTrace(rankedLists, weights, rankedListMeta) : null;
+  const rrfTraceByFile = explain
+    ? buildRrfTrace(rankedLists, weights, rankedListMeta)
+    : null;
   const candidates = fused.slice(0, candidateLimit);
 
   if (candidates.length === 0) return [];
@@ -5249,16 +6562,31 @@ export async function structuredSearch(
 
   // Step 4: Chunk documents, pick best chunk per doc for reranking
   // Use first lex query as the "query" for keyword matching, or first vec if no lex
-  const primaryQuery = searches.find(s => s.type === 'lex')?.query
-    || searches.find(s => s.type === 'vec')?.query
-    || searches[0]?.query || "";
-  const queryTerms = primaryQuery.toLowerCase().split(/\s+/).filter(t => t.length > 2);
+  const primaryQuery =
+    searches.find((s) => s.type === "lex")?.query ||
+    searches.find((s) => s.type === "vec")?.query ||
+    searches[0]?.query ||
+    "";
+  const queryTerms = primaryQuery
+    .toLowerCase()
+    .split(/\s+/)
+    .filter((t) => t.length > 2);
   const intentTerms = intent ? extractIntentTerms(intent) : [];
-  const docChunkMap = new Map<string, { chunks: { text: string; pos: number }[]; bestIdx: number }>();
+  const docChunkMap = new Map<
+    string,
+    { chunks: { text: string; pos: number }[]; bestIdx: number }
+  >();
   const ssChunkStrategy = options?.chunkStrategy;
 
   for (const cand of candidates) {
-    const chunks = await chunkDocumentAsync(cand.body, undefined, undefined, undefined, cand.file, ssChunkStrategy);
+    const chunks = await chunkDocumentAsync(
+      cand.body,
+      undefined,
+      undefined,
+      undefined,
+      cand.file,
+      ssChunkStrategy,
+    );
     if (chunks.length === 0) continue;
 
     // Pick chunk with most keyword overlap
@@ -5267,11 +6595,17 @@ export async function structuredSearch(
     let bestScore = -1;
     for (let i = 0; i < chunks.length; i++) {
       const chunkLower = chunks[i]!.text.toLowerCase();
-      let score = queryTerms.reduce((acc, term) => acc + (chunkLower.includes(term) ? 1 : 0), 0);
+      let score = queryTerms.reduce(
+        (acc, term) => acc + (chunkLower.includes(term) ? 1 : 0),
+        0,
+      );
       for (const term of intentTerms) {
         if (chunkLower.includes(term)) score += INTENT_WEIGHT_CHUNK;
       }
-      if (score > bestScore) { bestScore = score; bestIdx = i; }
+      if (score > bestScore) {
+        bestScore = score;
+        bestIdx = i;
+      }
     }
 
     docChunkMap.set(cand.file, { chunks, bestIdx });
@@ -5289,21 +6623,29 @@ export async function structuredSearch(
         const rrfRank = i + 1;
         const rrfScore = 1 / rrfRank;
         const trace = rrfTraceByFile?.get(cand.file);
-        const explainData: HybridQueryExplain | undefined = explain ? {
-          ftsScores: trace?.contributions.filter(c => c.source === "fts").map(c => c.backendScore) ?? [],
-          vectorScores: trace?.contributions.filter(c => c.source === "vec").map(c => c.backendScore) ?? [],
-          rrf: {
-            rank: rrfRank,
-            positionScore: rrfScore,
-            weight: 1.0,
-            baseScore: trace?.baseScore ?? 0,
-            topRankBonus: trace?.topRankBonus ?? 0,
-            totalScore: trace?.totalScore ?? 0,
-            contributions: trace?.contributions ?? [],
-          },
-          rerankScore: 0,
-          blendedScore: rrfScore,
-        } : undefined;
+        const explainData: HybridQueryExplain | undefined = explain
+          ? {
+              ftsScores:
+                trace?.contributions
+                  .filter((c) => c.source === "fts")
+                  .map((c) => c.backendScore) ?? [],
+              vectorScores:
+                trace?.contributions
+                  .filter((c) => c.source === "vec")
+                  .map((c) => c.backendScore) ?? [],
+              rrf: {
+                rank: rrfRank,
+                positionScore: rrfScore,
+                weight: 1.0,
+                baseScore: trace?.baseScore ?? 0,
+                topRankBonus: trace?.topRankBonus ?? 0,
+                totalScore: trace?.totalScore ?? 0,
+                contributions: trace?.contributions ?? [],
+              },
+              rerankScore: 0,
+              blendedScore: rrfScore,
+            }
+          : undefined;
 
         return {
           file: cand.file,
@@ -5318,12 +6660,12 @@ export async function structuredSearch(
           ...(explainData ? { explain: explainData } : {}),
         };
       })
-      .filter(r => {
+      .filter((r) => {
         if (seenFiles.has(r.file)) return false;
         seenFiles.add(r.file);
         return true;
       })
-      .filter(r => r.score >= minScore)
+      .filter((r) => r.score >= minScore)
       .slice(0, limit);
   }
 
@@ -5332,74 +6674,100 @@ export async function structuredSearch(
   for (const cand of candidates) {
     const chunkInfo = docChunkMap.get(cand.file);
     if (chunkInfo) {
-      chunksToRerank.push({ file: cand.file, text: chunkInfo.chunks[chunkInfo.bestIdx]!.text });
+      chunksToRerank.push({
+        file: cand.file,
+        text: chunkInfo.chunks[chunkInfo.bestIdx]!.text,
+      });
     }
   }
 
   hooks?.onRerankStart?.(chunksToRerank.length);
   const rerankStart2 = Date.now();
-  const reranked = await store.rerank(primaryQuery, chunksToRerank, undefined, intent);
+  const reranked = await store.rerank(
+    primaryQuery,
+    chunksToRerank,
+    undefined,
+    intent,
+  );
   hooks?.onRerankDone?.(Date.now() - rerankStart2);
 
   // Step 6: Blend RRF position score with reranker score
-  const candidateMap = new Map(candidates.map(c => [c.file, {
-    displayPath: c.displayPath, title: c.title, body: c.body,
-  }]));
+  const candidateMap = new Map(
+    candidates.map((c) => [
+      c.file,
+      {
+        displayPath: c.displayPath,
+        title: c.title,
+        body: c.body,
+      },
+    ]),
+  );
   const rrfRankMap = new Map(candidates.map((c, i) => [c.file, i + 1]));
 
-  const blended = reranked.map(r => {
-    const rrfRank = rrfRankMap.get(r.file) || candidateLimit;
-    let rrfWeight: number;
-    if (rrfRank <= 3) rrfWeight = 0.75;
-    else if (rrfRank <= 10) rrfWeight = 0.60;
-    else rrfWeight = 0.40;
-    const rrfScore = 1 / rrfRank;
-    const blendedScore = rrfWeight * rrfScore + (1 - rrfWeight) * r.score;
+  const blended = reranked
+    .map((r) => {
+      const rrfRank = rrfRankMap.get(r.file) || candidateLimit;
+      let rrfWeight: number;
+      if (rrfRank <= 3) rrfWeight = 0.75;
+      else if (rrfRank <= 10) rrfWeight = 0.6;
+      else rrfWeight = 0.4;
+      const rrfScore = 1 / rrfRank;
+      const blendedScore = rrfWeight * rrfScore + (1 - rrfWeight) * r.score;
 
-    const candidate = candidateMap.get(r.file);
-    const chunkInfo = docChunkMap.get(r.file);
-    const bestIdx = chunkInfo?.bestIdx ?? 0;
-    const bestChunk = chunkInfo?.chunks[bestIdx]?.text || candidate?.body || "";
-    const bestChunkPos = chunkInfo?.chunks[bestIdx]?.pos || 0;
-    const trace = rrfTraceByFile?.get(r.file);
-    const explainData: HybridQueryExplain | undefined = explain ? {
-      ftsScores: trace?.contributions.filter(c => c.source === "fts").map(c => c.backendScore) ?? [],
-      vectorScores: trace?.contributions.filter(c => c.source === "vec").map(c => c.backendScore) ?? [],
-      rrf: {
-        rank: rrfRank,
-        positionScore: rrfScore,
-        weight: rrfWeight,
-        baseScore: trace?.baseScore ?? 0,
-        topRankBonus: trace?.topRankBonus ?? 0,
-        totalScore: trace?.totalScore ?? 0,
-        contributions: trace?.contributions ?? [],
-      },
-      rerankScore: r.score,
-      blendedScore,
-    } : undefined;
+      const candidate = candidateMap.get(r.file);
+      const chunkInfo = docChunkMap.get(r.file);
+      const bestIdx = chunkInfo?.bestIdx ?? 0;
+      const bestChunk =
+        chunkInfo?.chunks[bestIdx]?.text || candidate?.body || "";
+      const bestChunkPos = chunkInfo?.chunks[bestIdx]?.pos || 0;
+      const trace = rrfTraceByFile?.get(r.file);
+      const explainData: HybridQueryExplain | undefined = explain
+        ? {
+            ftsScores:
+              trace?.contributions
+                .filter((c) => c.source === "fts")
+                .map((c) => c.backendScore) ?? [],
+            vectorScores:
+              trace?.contributions
+                .filter((c) => c.source === "vec")
+                .map((c) => c.backendScore) ?? [],
+            rrf: {
+              rank: rrfRank,
+              positionScore: rrfScore,
+              weight: rrfWeight,
+              baseScore: trace?.baseScore ?? 0,
+              topRankBonus: trace?.topRankBonus ?? 0,
+              totalScore: trace?.totalScore ?? 0,
+              contributions: trace?.contributions ?? [],
+            },
+            rerankScore: r.score,
+            blendedScore,
+          }
+        : undefined;
 
-    return {
-      file: r.file,
-      displayPath: candidate?.displayPath || "",
-      title: candidate?.title || "",
-      body: candidate?.body || "",
-      bestChunk,
-      bestChunkPos,
-      score: blendedScore,
-      context: store.getContextForFile(r.file),
-      docid: docidMap.get(r.file) || "",
-      ...(explainData ? { explain: explainData } : {}),
-    };
-  }).sort((a, b) => b.score - a.score);
+      return {
+        file: r.file,
+        displayPath: candidate?.displayPath || "",
+        title: candidate?.title || "",
+        body: candidate?.body || "",
+        bestChunk,
+        bestChunkPos,
+        score: blendedScore,
+        context: store.getContextForFile(r.file),
+        docid: docidMap.get(r.file) || "",
+        ...(explainData ? { explain: explainData } : {}),
+      };
+    })
+    .sort((a, b) => b.score - a.score);
 
   // Step 7: Dedup by file
   const seenFiles = new Set<string>();
   return blended
-    .filter(r => {
+    .filter((r) => {
       if (seenFiles.has(r.file)) return false;
       seenFiles.add(r.file);
       return true;
     })
-    .filter(r => r.score >= minScore)
+    .filter((r) => r.score >= minScore)
     .slice(0, limit);
 }
