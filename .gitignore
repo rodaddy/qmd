@@ -12,6 +12,10 @@ texts/
 !README.md
 !CLAUDE.md
 !CHANGELOG.md
+# Fork-local: records every downstream patch and why it exists. Must be tracked
+# or it does not survive a fresh clone -- which is how this fork previously
+# drifted 124 commits carrying a patch upstream had already fixed.
+!FORK.md
 !skills/**/*.md
 !finetune/*.md
 !docs/*.md
