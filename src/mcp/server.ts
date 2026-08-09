@@ -717,7 +717,7 @@ export type HttpServerHandle = {
 
 /**
  * Start MCP server over Streamable HTTP (JSON responses, no SSE).
- * Binds to localhost only. Returns a handle for shutdown and port discovery.
+ * Binds to 127.0.0.1 only. Returns a handle for shutdown and port discovery.
  */
 export async function startMcpHttpServer(
   port: number,
@@ -1106,7 +1106,12 @@ export async function startMcpHttpServer(
 
   await new Promise<void>((resolve, reject) => {
     httpServer.on("error", reject);
-    httpServer.listen(port, "localhost", () => resolve());
+    // Bind the loopback literal, not the name. "localhost" resolves via DNS and
+    // on macOS yields ::1 first, so the server ends up listening on [::1] ONLY
+    // with no IPv4 listener — every 127.0.0.1 client, including this branch's
+    // own scripts/check-mcp-2026-07-28.mjs on default args, gets ECONNREFUSED
+    // against an otherwise-conformant server.
+    httpServer.listen(port, "127.0.0.1", () => resolve());
   });
 
   const actualPort = (httpServer.address() as import("net").AddressInfo).port;
