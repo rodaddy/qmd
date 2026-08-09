@@ -46,6 +46,7 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.29.0",
+    "@modelcontextprotocol/server": "2.0.0",
     "better-sqlite3": "12.8.0",
     "fast-glob": "3.3.3",
     "node-llama-cpp": "3.18.1",

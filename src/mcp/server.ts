@@ -7,15 +7,21 @@
  * Follows MCP spec 2025-06-18 for proper response types.
  */
 
-import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import {
+  createServer,
+  type IncomingMessage,
+  type ServerResponse,
+} from "node:http";
 import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "url";
-import { McpServer, ResourceTemplate } from "@modelcontextprotocol/sdk/server/mcp.js";
+import {
+  McpServer,
+  ResourceTemplate,
+} from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { WebStandardStreamableHTTPServerTransport }
-  from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
+import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
 import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 import { existsSync } from "fs";
@@ -31,6 +37,11 @@ import {
 } from "../index.js";
 import { getConfigPath } from "../collections.js";
 import { enableProductionMode } from "../store.js";
+import {
+  createModernHandler,
+  isLegacyRequest,
+  isJsonContentType,
+} from "./server-v2.js";
 
 enableProductionMode();
 
@@ -39,7 +50,7 @@ enableProductionMode();
 // =============================================================================
 
 type SearchResultItem = {
-  docid: string;  // Short docid (#abc123) for quick reference
+  docid: string; // Short docid (#abc123) for quick reference
   file: string;
   title: string;
   score: number;
@@ -70,26 +81,39 @@ type StatusResult = {
  */
 function encodeQmdPath(path: string): string {
   // Encode each path segment separately to preserve slashes
-  return path.split('/').map(segment => encodeURIComponent(segment)).join('/');
+  return path
+    .split("/")
+    .map((segment) => encodeURIComponent(segment))
+    .join("/");
 }
 
 /**
  * Format search results as human-readable text summary
  */
-function formatSearchSummary(results: SearchResultItem[], query: string): string {
+function formatSearchSummary(
+  results: SearchResultItem[],
+  query: string,
+): string {
   if (results.length === 0) {
     return `No results found for "${query}"`;
   }
-  const lines = [`Found ${results.length} result${results.length === 1 ? '' : 's'} for "${query}":\n`];
+  const lines = [
+    `Found ${results.length} result${results.length === 1 ? "" : "s"} for "${query}":\n`,
+  ];
   for (const r of results) {
-    lines.push(`${r.docid} ${Math.round(r.score * 100)}% ${r.file} - ${r.title}`);
+    lines.push(
+      `${r.docid} ${Math.round(r.score * 100)}% ${r.file} - ${r.title}`,
+    );
   }
-  return lines.join('\n');
+  return lines.join("\n");
 }
 
 function getPackageVersion(): string {
   try {
-    const pkgPath = join(dirname(fileURLToPath(import.meta.url)), "../../package.json");
+    const pkgPath = join(
+      dirname(fileURLToPath(import.meta.url)),
+      "../../package.json",
+    );
     const pkg = JSON.parse(readFileSync(pkgPath, "utf-8"));
     return pkg.version ?? "unknown";
   } catch {
@@ -113,7 +137,9 @@ async function buildInstructions(store: QMDStore): Promise<string> {
   const lines: string[] = [];
 
   // --- What is this? ---
-  lines.push(`QMD is your local search engine over ${status.totalDocuments} markdown documents.`);
+  lines.push(
+    `QMD is your local search engine over ${status.totalDocuments} markdown documents.`,
+  );
   if (globalCtx) lines.push(`Context: ${globalCtx}`);
 
   // --- What's searchable? ---
@@ -122,7 +148,9 @@ async function buildInstructions(store: QMDStore): Promise<string> {
     lines.push("Collections (scope with `collection` parameter):");
     for (const col of status.collections) {
       // Find root context for this collection
-      const rootCtx = contexts.find(c => c.collection === col.name && (c.path === "" || c.path === "/"));
+      const rootCtx = contexts.find(
+        (c) => c.collection === col.name && (c.path === "" || c.path === "/"),
+      );
       const desc = rootCtx ? ` — ${rootCtx.context}` : "";
       lines.push(`  - "${col.name}" (${col.documents} docs)${desc}`);
     }
@@ -131,10 +159,14 @@ async function buildInstructions(store: QMDStore): Promise<string> {
   // --- Capability gaps ---
   if (!status.hasVectorIndex) {
     lines.push("");
-    lines.push("Note: No vector embeddings yet. Run `qmd embed` to enable semantic search (vec/hyde).");
+    lines.push(
+      "Note: No vector embeddings yet. Run `qmd embed` to enable semantic search (vec/hyde).",
+    );
   } else if (status.needsEmbedding > 0) {
     lines.push("");
-    lines.push(`Note: ${status.needsEmbedding} documents need embedding. Run \`qmd embed\` to update.`);
+    lines.push(
+      `Note: ${status.needsEmbedding} documents need embedding. Run \`qmd embed\` to update.`,
+    );
   }
 
   // --- Search tool ---
@@ -142,28 +174,44 @@ async function buildInstructions(store: QMDStore): Promise<string> {
   lines.push("Search: Use `query` with sub-queries (lex/vec/hyde):");
   lines.push("  - type:'lex' — BM25 keyword search (exact terms, fast)");
   lines.push("  - type:'vec' — semantic vector search (meaning-based)");
-  lines.push("  - type:'hyde' — hypothetical document (write what the answer looks like)");
+  lines.push(
+    "  - type:'hyde' — hypothetical document (write what the answer looks like)",
+  );
   lines.push("");
-  lines.push("  Always provide `intent` on every search call to disambiguate and improve snippets.");
+  lines.push(
+    "  Always provide `intent` on every search call to disambiguate and improve snippets.",
+  );
   lines.push("");
   lines.push("Examples:");
   lines.push("  Quick keyword lookup: [{type:'lex', query:'error handling'}]");
-  lines.push("  Semantic search: [{type:'vec', query:'how to handle errors gracefully'}]");
-  lines.push("  Best results: [{type:'lex', query:'error'}, {type:'vec', query:'error handling best practices'}]");
-  lines.push("  With intent: searches=[{type:'lex', query:'performance'}], intent='web page load times'");
+  lines.push(
+    "  Semantic search: [{type:'vec', query:'how to handle errors gracefully'}]",
+  );
+  lines.push(
+    "  Best results: [{type:'lex', query:'error'}, {type:'vec', query:'error handling best practices'}]",
+  );
+  lines.push(
+    "  With intent: searches=[{type:'lex', query:'performance'}], intent='web page load times'",
+  );
 
   // --- Retrieval workflow ---
   lines.push("");
   lines.push("Retrieval:");
-  lines.push("  - `get` — single document by path or docid (#abc123). Supports line offset (`file.md:100`).");
-  lines.push("  - `multi_get` — batch retrieve by glob (`journals/2025-05*.md`) or comma-separated list.");
+  lines.push(
+    "  - `get` — single document by path or docid (#abc123). Supports line offset (`file.md:100`).",
+  );
+  lines.push(
+    "  - `multi_get` — batch retrieve by glob (`journals/2025-05*.md`) or comma-separated list.",
+  );
 
   // --- Non-obvious things that prevent mistakes ---
   lines.push("");
   lines.push("Tips:");
   lines.push("  - File paths in results are relative to their collection.");
   lines.push("  - Use `minScore: 0.5` to filter low-confidence results.");
-  lines.push("  - Results include a `context` field describing the content type.");
+  lines.push(
+    "  - Results include a `context` field describing the content type.",
+  );
 
   return lines.join("\n");
 }
@@ -191,36 +239,43 @@ async function createMcpServer(store: QMDStore): Promise<McpServer> {
     new ResourceTemplate("qmd://{+path}", { list: undefined }),
     {
       title: "QMD Document",
-      description: "A markdown document from your QMD knowledge base. Use search tools to discover documents.",
+      description:
+        "A markdown document from your QMD knowledge base. Use search tools to discover documents.",
       mimeType: "text/markdown",
     },
     async (uri, { path }) => {
       // Decode URL-encoded path (MCP clients send encoded URIs)
-      const pathStr = Array.isArray(path) ? path.join('/') : (path || '');
+      const pathStr = Array.isArray(path) ? path.join("/") : path || "";
       const decodedPath = decodeURIComponent(pathStr);
 
       // Use SDK to find document — findDocument handles collection/path resolution
       const result = await store.get(decodedPath, { includeBody: true });
 
       if ("error" in result) {
-        return { contents: [{ uri: uri.href, text: `Document not found: ${decodedPath}` }] };
+        return {
+          contents: [
+            { uri: uri.href, text: `Document not found: ${decodedPath}` },
+          ],
+        };
       }
 
-      let text = addLineNumbers(result.body || "");  // Default to line numbers
+      let text = addLineNumbers(result.body || ""); // Default to line numbers
       if (result.context) {
         text = `<!-- Context: ${result.context} -->\n\n` + text;
       }
 
       return {
-        contents: [{
-          uri: uri.href,
-          name: result.displayPath,
-          title: result.title || result.displayPath,
-          mimeType: "text/markdown",
-          text,
-        }],
+        contents: [
+          {
+            uri: uri.href,
+            name: result.displayPath,
+            title: result.title || result.displayPath,
+            mimeType: "text/markdown",
+            text,
+          },
+        ],
       };
-    }
+    },
   );
 
   // ---------------------------------------------------------------------------
@@ -228,14 +283,18 @@ async function createMcpServer(store: QMDStore): Promise<McpServer> {
   // ---------------------------------------------------------------------------
 
   const subSearchSchema = z.object({
-    type: z.enum(['lex', 'vec', 'hyde']).describe(
-      "lex = BM25 keywords (supports \"phrase\" and -negation); " +
-      "vec = semantic question; hyde = hypothetical answer passage"
-    ),
-    query: z.string().describe(
-      "The query text. For lex: use keywords, \"quoted phrases\", and -negation. " +
-      "For vec: natural language question. For hyde: 50-100 word answer passage."
-    ),
+    type: z
+      .enum(["lex", "vec", "hyde"])
+      .describe(
+        'lex = BM25 keywords (supports "phrase" and -negation); ' +
+          "vec = semantic question; hyde = hypothetical answer passage",
+      ),
+    query: z
+      .string()
+      .describe(
+        'The query text. For lex: use keywords, "quoted phrases", and -negation. ' +
+          "For vec: natural language question. For hyde: 50-100 word answer passage.",
+      ),
   });
 
   server.registerTool(
@@ -301,26 +360,59 @@ Intent-aware lex (C++ performance, not sports):
 \`\`\``,
       annotations: { readOnlyHint: true, openWorldHint: false },
       inputSchema: {
-        searches: z.array(subSearchSchema).min(1).max(10).describe(
-          "Typed sub-queries to execute (lex/vec/hyde). First gets 2x weight."
-        ),
-        limit: z.number().optional().default(10).describe("Max results (default: 10)"),
-        minScore: z.number().optional().default(0).describe("Min relevance 0-1 (default: 0)"),
-        candidateLimit: z.number().optional().describe(
-          "Maximum candidates to rerank (default: 40, lower = faster but may miss results)"
-        ),
-        collections: z.array(z.string()).optional().describe("Filter to collections (OR match)"),
-        intent: z.string().optional().describe(
-          "Background context to disambiguate the query. Example: query='performance', intent='web page load times and Core Web Vitals'. Does not search on its own."
-        ),
-        rerank: z.boolean().optional().default(true).describe(
-          "Rerank results using LLM (default: true). Set to false for faster results on CPU-only machines."
-        ),
+        searches: z
+          .array(subSearchSchema)
+          .min(1)
+          .max(10)
+          .describe(
+            "Typed sub-queries to execute (lex/vec/hyde). First gets 2x weight.",
+          ),
+        limit: z
+          .number()
+          .optional()
+          .default(10)
+          .describe("Max results (default: 10)"),
+        minScore: z
+          .number()
+          .optional()
+          .default(0)
+          .describe("Min relevance 0-1 (default: 0)"),
+        candidateLimit: z
+          .number()
+          .optional()
+          .describe(
+            "Maximum candidates to rerank (default: 40, lower = faster but may miss results)",
+          ),
+        collections: z
+          .array(z.string())
+          .optional()
+          .describe("Filter to collections (OR match)"),
+        intent: z
+          .string()
+          .optional()
+          .describe(
+            "Background context to disambiguate the query. Example: query='performance', intent='web page load times and Core Web Vitals'. Does not search on its own.",
+          ),
+        rerank: z
+          .boolean()
+          .optional()
+          .default(true)
+          .describe(
+            "Rerank results using LLM (default: true). Set to false for faster results on CPU-only machines.",
+          ),
       },
     },
-    async ({ searches, limit, minScore, candidateLimit, collections, intent, rerank }) => {
+    async ({
+      searches,
+      limit,
+      minScore,
+      candidateLimit,
+      collections,
+      intent,
+      rerank,
+    }) => {
       // Map to internal format
-      const queries: ExpandedQuery[] = searches.map(s => ({
+      const queries: ExpandedQuery[] = searches.map((s) => ({
         type: s.type,
         query: s.query,
       }));
@@ -330,7 +422,8 @@ Intent-aware lex (C++ performance, not sports):
 
       const results = await store.search({
         queries,
-        collections: effectiveCollections.length > 0 ? effectiveCollections : undefined,
+        collections:
+          effectiveCollections.length > 0 ? effectiveCollections : undefined,
         limit,
         minScore,
         rerank,
@@ -338,12 +431,21 @@ Intent-aware lex (C++ performance, not sports):
       });
 
       // Use first lex or vec query for snippet extraction
-      const primaryQuery = searches.find(s => s.type === 'lex')?.query
-        || searches.find(s => s.type === 'vec')?.query
-        || searches[0]?.query || "";
+      const primaryQuery =
+        searches.find((s) => s.type === "lex")?.query ||
+        searches.find((s) => s.type === "vec")?.query ||
+        searches[0]?.query ||
+        "";
 
-      const filtered: SearchResultItem[] = results.map(r => {
-        const { line, snippet } = extractSnippet(r.bestChunk, primaryQuery, 300, undefined, undefined, intent);
+      const filtered: SearchResultItem[] = results.map((r) => {
+        const { line, snippet } = extractSnippet(
+          r.bestChunk,
+          primaryQuery,
+          300,
+          undefined,
+          undefined,
+          intent,
+        );
         return {
           docid: `#${r.docid}`,
           file: r.displayPath,
@@ -355,10 +457,12 @@ Intent-aware lex (C++ performance, not sports):
       });
 
       return {
-        content: [{ type: "text", text: formatSearchSummary(filtered, primaryQuery) }],
+        content: [
+          { type: "text", text: formatSearchSummary(filtered, primaryQuery) },
+        ],
         structuredContent: { results: filtered },
       };
-    }
+    },
   );
 
   // ---------------------------------------------------------------------------
@@ -369,13 +473,28 @@ Intent-aware lex (C++ performance, not sports):
     "get",
     {
       title: "Get Document",
-      description: "Retrieve the full content of a document by its file path or docid. Use paths or docids (#abc123) from search results. Suggests similar files if not found.",
+      description:
+        "Retrieve the full content of a document by its file path or docid. Use paths or docids (#abc123) from search results. Suggests similar files if not found.",
       annotations: { readOnlyHint: true, openWorldHint: false },
       inputSchema: {
-        file: z.string().describe("File path or docid from search results (e.g., 'pages/meeting.md', '#abc123', or 'pages/meeting.md:100' to start at line 100)"),
-        fromLine: z.number().optional().describe("Start from this line number (1-indexed)"),
-        maxLines: z.number().optional().describe("Maximum number of lines to return"),
-        lineNumbers: z.boolean().optional().default(false).describe("Add line numbers to output (format: 'N: content')"),
+        file: z
+          .string()
+          .describe(
+            "File path or docid from search results (e.g., 'pages/meeting.md', '#abc123', or 'pages/meeting.md:100' to start at line 100)",
+          ),
+        fromLine: z
+          .number()
+          .optional()
+          .describe("Start from this line number (1-indexed)"),
+        maxLines: z
+          .number()
+          .optional()
+          .describe("Maximum number of lines to return"),
+        lineNumbers: z
+          .boolean()
+          .optional()
+          .default(false)
+          .describe("Add line numbers to output (format: 'N: content')"),
       },
     },
     async ({ file, fromLine, maxLines, lineNumbers }) => {
@@ -393,7 +512,7 @@ Intent-aware lex (C++ performance, not sports):
       if ("error" in result) {
         let msg = `Document not found: ${file}`;
         if (result.similarFiles.length > 0) {
-          msg += `\n\nDid you mean one of these?\n${result.similarFiles.map(s => `  - ${s}`).join('\n')}`;
+          msg += `\n\nDid you mean one of these?\n${result.similarFiles.map((s) => `  - ${s}`).join("\n")}`;
         }
         return {
           content: [{ type: "text", text: msg }],
@@ -401,7 +520,11 @@ Intent-aware lex (C++ performance, not sports):
         };
       }
 
-      const body = await store.getDocumentBody(result.filepath, { fromLine: parsedFromLine, maxLines }) ?? "";
+      const body =
+        (await store.getDocumentBody(result.filepath, {
+          fromLine: parsedFromLine,
+          maxLines,
+        })) ?? "";
       let text = body;
       if (lineNumbers) {
         const startLine = parsedFromLine || 1;
@@ -412,18 +535,20 @@ Intent-aware lex (C++ performance, not sports):
       }
 
       return {
-        content: [{
-          type: "resource",
-          resource: {
-            uri: `qmd://${encodeQmdPath(result.displayPath)}`,
-            name: result.displayPath,
-            title: result.title,
-            mimeType: "text/markdown",
-            text,
+        content: [
+          {
+            type: "resource",
+            resource: {
+              uri: `qmd://${encodeQmdPath(result.displayPath)}`,
+              name: result.displayPath,
+              title: result.title,
+              mimeType: "text/markdown",
+              text,
+            },
           },
-        }],
+        ],
       };
-    }
+    },
   );
 
   // ---------------------------------------------------------------------------
@@ -434,29 +559,57 @@ Intent-aware lex (C++ performance, not sports):
     "multi_get",
     {
       title: "Multi-Get Documents",
-      description: "Retrieve multiple documents by glob pattern (e.g., 'journals/2025-05*.md') or comma-separated list. Skips files larger than maxBytes.",
+      description:
+        "Retrieve multiple documents by glob pattern (e.g., 'journals/2025-05*.md') or comma-separated list. Skips files larger than maxBytes.",
       annotations: { readOnlyHint: true, openWorldHint: false },
       inputSchema: {
-        pattern: z.string().describe("Glob pattern or comma-separated list of file paths"),
+        pattern: z
+          .string()
+          .describe("Glob pattern or comma-separated list of file paths"),
         maxLines: z.number().optional().describe("Maximum lines per file"),
-        maxBytes: z.number().optional().default(10240).describe("Skip files larger than this (default: 10240 = 10KB)"),
-        lineNumbers: z.boolean().optional().default(false).describe("Add line numbers to output (format: 'N: content')"),
+        maxBytes: z
+          .number()
+          .optional()
+          .default(10240)
+          .describe("Skip files larger than this (default: 10240 = 10KB)"),
+        lineNumbers: z
+          .boolean()
+          .optional()
+          .default(false)
+          .describe("Add line numbers to output (format: 'N: content')"),
       },
     },
     async ({ pattern, maxLines, maxBytes, lineNumbers }) => {
-      const { docs, errors } = await store.multiGet(pattern, { includeBody: true, maxBytes: maxBytes || DEFAULT_MULTI_GET_MAX_BYTES });
+      const { docs, errors } = await store.multiGet(pattern, {
+        includeBody: true,
+        maxBytes: maxBytes || DEFAULT_MULTI_GET_MAX_BYTES,
+      });
 
       if (docs.length === 0 && errors.length === 0) {
         return {
-          content: [{ type: "text", text: `No files matched pattern: ${pattern}` }],
+          content: [
+            { type: "text", text: `No files matched pattern: ${pattern}` },
+          ],
           isError: true,
         };
       }
 
-      const content: ({ type: "text"; text: string } | { type: "resource"; resource: { uri: string; name: string; title?: string; mimeType: string; text: string } })[] = [];
+      const content: (
+        | { type: "text"; text: string }
+        | {
+            type: "resource";
+            resource: {
+              uri: string;
+              name: string;
+              title?: string;
+              mimeType: string;
+              text: string;
+            };
+          }
+      )[] = [];
 
       if (errors.length > 0) {
-        content.push({ type: "text", text: `Errors:\n${errors.join('\n')}` });
+        content.push({ type: "text", text: `Errors:\n${errors.join("\n")}` });
       }
 
       for (const result of docs) {
@@ -496,7 +649,7 @@ Intent-aware lex (C++ performance, not sports):
       }
 
       return { content };
-    }
+    },
   );
 
   // ---------------------------------------------------------------------------
@@ -507,7 +660,8 @@ Intent-aware lex (C++ performance, not sports):
     "status",
     {
       title: "Index Status",
-      description: "Show the status of the QMD index: collections, document counts, and health information.",
+      description:
+        "Show the status of the QMD index: collections, document counts, and health information.",
       annotations: { readOnlyHint: true, openWorldHint: false },
       inputSchema: {},
     },
@@ -518,7 +672,7 @@ Intent-aware lex (C++ performance, not sports):
         `QMD Index Status:`,
         `  Total documents: ${status.totalDocuments}`,
         `  Needs embedding: ${status.needsEmbedding}`,
-        `  Vector index: ${status.hasVectorIndex ? 'yes' : 'no'}`,
+        `  Vector index: ${status.hasVectorIndex ? "yes" : "no"}`,
         `  Collections: ${status.collections.length}`,
       ];
 
@@ -527,10 +681,10 @@ Intent-aware lex (C++ performance, not sports):
       }
 
       return {
-        content: [{ type: "text", text: summary.join('\n') }],
+        content: [{ type: "text", text: summary.join("\n") }],
         structuredContent: status,
       };
-    }
+    },
   );
 
   return server;
@@ -565,7 +719,10 @@ export type HttpServerHandle = {
  * Start MCP server over Streamable HTTP (JSON responses, no SSE).
  * Binds to localhost only. Returns a handle for shutdown and port discovery.
  */
-export async function startMcpHttpServer(port: number, options?: { quiet?: boolean }): Promise<HttpServerHandle> {
+export async function startMcpHttpServer(
+  port: number,
+  options?: { quiet?: boolean },
+): Promise<HttpServerHandle> {
   const configPath = getConfigPath();
   const store = await createStore({
     dbPath: getDefaultDbPath(),
@@ -599,6 +756,28 @@ export async function startMcpHttpServer(port: number, options?: { quiet?: boole
 
     return transport;
   }
+
+  // ---------------------------------------------------------------------------
+  // 2026-07-28 leg (SDK v2, stateless per request).
+  //
+  // Built ONCE, outside the request handler: `createMcpHandler` runs the server
+  // factory per request itself, so constructing it per request would rebuild
+  // the whole entry on every call. The shared `store` above is closed over by
+  // both legs.
+  //
+  // Instructions are computed once here rather than per request — buildInstructions
+  // hits the store, and the modern factory must stay allocation-only.
+  // ---------------------------------------------------------------------------
+  const modernInstructions = await buildInstructions(store);
+  const modernHandler = createModernHandler(
+    store,
+    {
+      version: getPackageVersion(),
+      instructions: modernInstructions,
+      defaultCollections: defaultCollectionNames,
+    },
+    (err) => log(`${ts()} modern handler error: ${err.message}`),
+  );
 
   const startTime = Date.now();
   const quiet = options?.quiet ?? false;
@@ -637,164 +816,293 @@ export async function startMcpHttpServer(port: number, options?: { quiet?: boole
     return Buffer.concat(chunks).toString();
   }
 
-  const httpServer = createServer(async (nodeReq: IncomingMessage, nodeRes: ServerResponse) => {
-    const reqStart = Date.now();
-    const pathname = nodeReq.url || "/";
+  const httpServer = createServer(
+    async (nodeReq: IncomingMessage, nodeRes: ServerResponse) => {
+      const reqStart = Date.now();
+      const pathname = nodeReq.url || "/";
 
-    try {
-      if (pathname === "/health" && nodeReq.method === "GET") {
-        const body = JSON.stringify({ status: "ok", uptime: Math.floor((Date.now() - startTime) / 1000) });
-        nodeRes.writeHead(200, { "Content-Type": "application/json" });
-        nodeRes.end(body);
-        log(`${ts()} GET /health (${Date.now() - reqStart}ms)`);
-        return;
-      }
-
-      // REST endpoint: POST /search — structured search without MCP protocol
-      // REST endpoint: POST /query (alias: /search) — structured search without MCP protocol
-      if ((pathname === "/query" || pathname === "/search") && nodeReq.method === "POST") {
-        const rawBody = await collectBody(nodeReq);
-        const params = JSON.parse(rawBody);
-
-        // Validate required fields
-        if (!params.searches || !Array.isArray(params.searches)) {
-          nodeRes.writeHead(400, { "Content-Type": "application/json" });
-          nodeRes.end(JSON.stringify({ error: "Missing required field: searches (array)" }));
+      try {
+        if (pathname === "/health" && nodeReq.method === "GET") {
+          const body = JSON.stringify({
+            status: "ok",
+            uptime: Math.floor((Date.now() - startTime) / 1000),
+          });
+          nodeRes.writeHead(200, { "Content-Type": "application/json" });
+          nodeRes.end(body);
+          log(`${ts()} GET /health (${Date.now() - reqStart}ms)`);
           return;
         }
 
-        // Map to internal format
-        const queries: ExpandedQuery[] = params.searches.map((s: any) => ({
-          type: s.type as 'lex' | 'vec' | 'hyde',
-          query: String(s.query || ""),
-        }));
+        // REST endpoint: POST /search — structured search without MCP protocol
+        // REST endpoint: POST /query (alias: /search) — structured search without MCP protocol
+        if (
+          (pathname === "/query" || pathname === "/search") &&
+          nodeReq.method === "POST"
+        ) {
+          const rawBody = await collectBody(nodeReq);
+          const params = JSON.parse(rawBody);
 
-        // Use default collections if none specified
-        const effectiveCollections = params.collections ?? defaultCollectionNames;
-
-        const results = await store.search({
-          queries,
-          collections: effectiveCollections.length > 0 ? effectiveCollections : undefined,
-          limit: params.limit ?? 10,
-          minScore: params.minScore ?? 0,
-          intent: params.intent,
-        });
-
-        // Use first lex or vec query for snippet extraction
-        const primaryQuery = params.searches.find((s: any) => s.type === 'lex')?.query
-          || params.searches.find((s: any) => s.type === 'vec')?.query
-          || params.searches[0]?.query || "";
-
-        const formatted = results.map(r => {
-          const { line, snippet } = extractSnippet(r.bestChunk, primaryQuery, 300);
-          return {
-            docid: `#${r.docid}`,
-            file: r.displayPath,
-            title: r.title,
-            score: Math.round(r.score * 100) / 100,
-            context: r.context,
-            snippet: addLineNumbers(snippet, line),
-          };
-        });
-
-        nodeRes.writeHead(200, { "Content-Type": "application/json" });
-        nodeRes.end(JSON.stringify({ results: formatted }));
-        log(`${ts()} POST /query ${params.searches.length} queries (${Date.now() - reqStart}ms)`);
-        return;
-      }
-
-      if (pathname === "/mcp" && nodeReq.method === "POST") {
-        const rawBody = await collectBody(nodeReq);
-        const body = JSON.parse(rawBody);
-        const label = describeRequest(body);
-        const url = `http://localhost:${port}${pathname}`;
-        const headers: Record<string, string> = {};
-        for (const [k, v] of Object.entries(nodeReq.headers)) {
-          if (typeof v === "string") headers[k] = v;
-        }
-
-        // Route to existing session or create new one on initialize
-        const sessionId = headers["mcp-session-id"];
-        let transport: WebStandardStreamableHTTPServerTransport;
-
-        if (sessionId) {
-          const existing = sessions.get(sessionId);
-          if (!existing) {
-            nodeRes.writeHead(404, { "Content-Type": "application/json" });
-            nodeRes.end(JSON.stringify({
-              jsonrpc: "2.0",
-              error: { code: -32001, message: "Session not found" },
-              id: body?.id ?? null,
-            }));
+          // Validate required fields
+          if (!params.searches || !Array.isArray(params.searches)) {
+            nodeRes.writeHead(400, { "Content-Type": "application/json" });
+            nodeRes.end(
+              JSON.stringify({
+                error: "Missing required field: searches (array)",
+              }),
+            );
             return;
           }
-          transport = existing;
-        } else if (isInitializeRequest(body)) {
-          transport = await createSession();
-        } else {
-          nodeRes.writeHead(400, { "Content-Type": "application/json" });
-          nodeRes.end(JSON.stringify({
-            jsonrpc: "2.0",
-            error: { code: -32000, message: "Bad Request: Missing session ID" },
-            id: body?.id ?? null,
+
+          // Map to internal format
+          const queries: ExpandedQuery[] = params.searches.map((s: any) => ({
+            type: s.type as "lex" | "vec" | "hyde",
+            query: String(s.query || ""),
           }));
+
+          // Use default collections if none specified
+          const effectiveCollections =
+            params.collections ?? defaultCollectionNames;
+
+          const results = await store.search({
+            queries,
+            collections:
+              effectiveCollections.length > 0
+                ? effectiveCollections
+                : undefined,
+            limit: params.limit ?? 10,
+            minScore: params.minScore ?? 0,
+            intent: params.intent,
+          });
+
+          // Use first lex or vec query for snippet extraction
+          const primaryQuery =
+            params.searches.find((s: any) => s.type === "lex")?.query ||
+            params.searches.find((s: any) => s.type === "vec")?.query ||
+            params.searches[0]?.query ||
+            "";
+
+          const formatted = results.map((r) => {
+            const { line, snippet } = extractSnippet(
+              r.bestChunk,
+              primaryQuery,
+              300,
+            );
+            return {
+              docid: `#${r.docid}`,
+              file: r.displayPath,
+              title: r.title,
+              score: Math.round(r.score * 100) / 100,
+              context: r.context,
+              snippet: addLineNumbers(snippet, line),
+            };
+          });
+
+          nodeRes.writeHead(200, { "Content-Type": "application/json" });
+          nodeRes.end(JSON.stringify({ results: formatted }));
+          log(
+            `${ts()} POST /query ${params.searches.length} queries (${Date.now() - reqStart}ms)`,
+          );
           return;
         }
 
-        const request = new Request(url, { method: "POST", headers, body: rawBody });
-        const response = await transport.handleRequest(request, { parsedBody: body });
+        if (pathname === "/mcp" && nodeReq.method === "POST") {
+          const rawBody = await collectBody(nodeReq);
+          const body = JSON.parse(rawBody);
+          const label = describeRequest(body);
+          const url = `http://localhost:${port}${pathname}`;
+          const headers: Record<string, string> = {};
+          for (const [k, v] of Object.entries(nodeReq.headers)) {
+            if (typeof v === "string") headers[k] = v;
+          }
 
-        nodeRes.writeHead(response.status, Object.fromEntries(response.headers));
-        nodeRes.end(Buffer.from(await response.arrayBuffer()));
-        log(`${ts()} POST /mcp ${label} (${Date.now() - reqStart}ms)`);
-        return;
+          // -------------------------------------------------------------------
+          // ERA SPLIT. `isLegacyRequest` is the SDK's own classification step,
+          // exported as a predicate — it runs exactly the code `createMcpHandler`
+          // runs internally, so this branch can never disagree with the modern
+          // entry about which era a request belongs to.
+          //
+          // `false` covers the modern path's OWN error answers (unsupported
+          // version, malformed envelope, -32020 header mismatch), so it must go
+          // to the modern handler, never fall through to legacy.
+          //
+          // The predicate is given the already-parsed body: this request's bytes
+          // were drained by collectBody above, so the internal clone it would
+          // otherwise take is impossible and a single-argument call would reject.
+          // -------------------------------------------------------------------
+          const modernRequest = new Request(url, {
+            method: "POST",
+            headers,
+            body: rawBody,
+          });
+
+          if (!(await isLegacyRequest(modernRequest, body))) {
+            // A hand-wired modern leg gets no built-in media-type check.
+            if (!isJsonContentType(headers["content-type"] ?? "")) {
+              nodeRes.writeHead(415, { "Content-Type": "application/json" });
+              nodeRes.end(
+                JSON.stringify({
+                  jsonrpc: "2.0",
+                  error: {
+                    code: -32600,
+                    message:
+                      "Unsupported Media Type: expected application/json",
+                  },
+                  id: body?.id ?? null,
+                }),
+              );
+              return;
+            }
+
+            const response = await modernHandler.fetch(modernRequest, {
+              parsedBody: body,
+            });
+            nodeRes.writeHead(
+              response.status,
+              Object.fromEntries(response.headers),
+            );
+            nodeRes.end(Buffer.from(await response.arrayBuffer()));
+            log(
+              `${ts()} POST /mcp [2026-07-28] ${label} (${Date.now() - reqStart}ms)`,
+            );
+            return;
+          }
+
+          // Route to existing session or create new one on initialize
+          const sessionId = headers["mcp-session-id"];
+          let transport: WebStandardStreamableHTTPServerTransport;
+
+          if (sessionId) {
+            const existing = sessions.get(sessionId);
+            if (!existing) {
+              nodeRes.writeHead(404, { "Content-Type": "application/json" });
+              nodeRes.end(
+                JSON.stringify({
+                  jsonrpc: "2.0",
+                  error: { code: -32001, message: "Session not found" },
+                  id: body?.id ?? null,
+                }),
+              );
+              return;
+            }
+            transport = existing;
+          } else if (isInitializeRequest(body)) {
+            transport = await createSession();
+          } else {
+            nodeRes.writeHead(400, { "Content-Type": "application/json" });
+            nodeRes.end(
+              JSON.stringify({
+                jsonrpc: "2.0",
+                error: {
+                  code: -32000,
+                  message: "Bad Request: Missing session ID",
+                },
+                id: body?.id ?? null,
+              }),
+            );
+            return;
+          }
+
+          const request = new Request(url, {
+            method: "POST",
+            headers,
+            body: rawBody,
+          });
+          const response = await transport.handleRequest(request, {
+            parsedBody: body,
+          });
+
+          nodeRes.writeHead(
+            response.status,
+            Object.fromEntries(response.headers),
+          );
+          nodeRes.end(Buffer.from(await response.arrayBuffer()));
+          log(`${ts()} POST /mcp ${label} (${Date.now() - reqStart}ms)`);
+          return;
+        }
+
+        if (pathname === "/mcp") {
+          const headers: Record<string, string> = {};
+          for (const [k, v] of Object.entries(nodeReq.headers)) {
+            if (typeof v === "string") headers[k] = v;
+          }
+
+          // GET/DELETE must have a valid session
+          const sessionId = headers["mcp-session-id"];
+          if (!sessionId) {
+            // A session-less GET/DELETE naming a modern protocol version is a
+            // 2026-07-28 client reaching for a standalone stream that does not
+            // exist on this revision. The spec says answer 405, not 400 — a 400
+            // would read to a negotiating client as a malformed request and send
+            // it down the error-inspection path instead of simply accepting that
+            // there is no stream to open.
+            if (headers["mcp-protocol-version"] === "2026-07-28") {
+              nodeRes.writeHead(405, {
+                "Content-Type": "application/json",
+                Allow: "POST",
+              });
+              nodeRes.end(
+                JSON.stringify({
+                  jsonrpc: "2.0",
+                  error: { code: -32000, message: "Method not allowed." },
+                  id: null,
+                }),
+              );
+              return;
+            }
+            nodeRes.writeHead(400, { "Content-Type": "application/json" });
+            nodeRes.end(
+              JSON.stringify({
+                jsonrpc: "2.0",
+                error: {
+                  code: -32000,
+                  message: "Bad Request: Missing session ID",
+                },
+                id: null,
+              }),
+            );
+            return;
+          }
+          const transport = sessions.get(sessionId);
+          if (!transport) {
+            nodeRes.writeHead(404, { "Content-Type": "application/json" });
+            nodeRes.end(
+              JSON.stringify({
+                jsonrpc: "2.0",
+                error: { code: -32001, message: "Session not found" },
+                id: null,
+              }),
+            );
+            return;
+          }
+
+          const url = `http://localhost:${port}${pathname}`;
+          const rawBody =
+            nodeReq.method !== "GET" && nodeReq.method !== "HEAD"
+              ? await collectBody(nodeReq)
+              : undefined;
+          const request = new Request(url, {
+            method: nodeReq.method || "GET",
+            headers,
+            ...(rawBody ? { body: rawBody } : {}),
+          });
+          const response = await transport.handleRequest(request);
+          nodeRes.writeHead(
+            response.status,
+            Object.fromEntries(response.headers),
+          );
+          nodeRes.end(Buffer.from(await response.arrayBuffer()));
+          return;
+        }
+
+        nodeRes.writeHead(404);
+        nodeRes.end("Not Found");
+      } catch (err) {
+        console.error("HTTP handler error:", err);
+        nodeRes.writeHead(500);
+        nodeRes.end("Internal Server Error");
       }
-
-      if (pathname === "/mcp") {
-        const headers: Record<string, string> = {};
-        for (const [k, v] of Object.entries(nodeReq.headers)) {
-          if (typeof v === "string") headers[k] = v;
-        }
-
-        // GET/DELETE must have a valid session
-        const sessionId = headers["mcp-session-id"];
-        if (!sessionId) {
-          nodeRes.writeHead(400, { "Content-Type": "application/json" });
-          nodeRes.end(JSON.stringify({
-            jsonrpc: "2.0",
-            error: { code: -32000, message: "Bad Request: Missing session ID" },
-            id: null,
-          }));
-          return;
-        }
-        const transport = sessions.get(sessionId);
-        if (!transport) {
-          nodeRes.writeHead(404, { "Content-Type": "application/json" });
-          nodeRes.end(JSON.stringify({
-            jsonrpc: "2.0",
-            error: { code: -32001, message: "Session not found" },
-            id: null,
-          }));
-          return;
-        }
-
-        const url = `http://localhost:${port}${pathname}`;
-        const rawBody = nodeReq.method !== "GET" && nodeReq.method !== "HEAD" ? await collectBody(nodeReq) : undefined;
-        const request = new Request(url, { method: nodeReq.method || "GET", headers, ...(rawBody ? { body: rawBody } : {}) });
-        const response = await transport.handleRequest(request);
-        nodeRes.writeHead(response.status, Object.fromEntries(response.headers));
-        nodeRes.end(Buffer.from(await response.arrayBuffer()));
-        return;
-      }
-
-      nodeRes.writeHead(404);
-      nodeRes.end("Not Found");
-    } catch (err) {
-      console.error("HTTP handler error:", err);
-      nodeRes.writeHead(500);
-      nodeRes.end("Internal Server Error");
-    }
-  });
+    },
+  );
 
   await new Promise<void>((resolve, reject) => {
     httpServer.on("error", reject);
@@ -811,6 +1119,9 @@ export async function startMcpHttpServer(port: number, options?: { quiet?: boole
       await transport.close();
     }
     sessions.clear();
+    // Tears down the modern leg: aborts in-flight modern exchanges and closes
+    // their per-request instances. Legacy serving above is unaffected.
+    await modernHandler.close();
     httpServer.close();
     await store.close();
   };
@@ -831,6 +1142,10 @@ export async function startMcpHttpServer(port: number, options?: { quiet?: boole
 }
 
 // Run if this is the main module
-if (fileURLToPath(import.meta.url) === process.argv[1] || process.argv[1]?.endsWith("/server.ts") || process.argv[1]?.endsWith("/server.js")) {
+if (
+  fileURLToPath(import.meta.url) === process.argv[1] ||
+  process.argv[1]?.endsWith("/server.ts") ||
+  process.argv[1]?.endsWith("/server.js")
+) {
   startMcpServer().catch(console.error);
 }
