@@ -96,6 +96,8 @@ import {
   createStore,
   getDefaultDbPath,
   reindexCollection,
+  reindexPaths,
+  type ReindexTarget,
   generateEmbeddings,
   maybeAdoptLegacyEmbeddingFingerprint,
   syncConfigToDb,
@@ -949,6 +951,96 @@ async function updateCollections(only: string[] = []): Promise<void> {
   closeDb();
 
   console.log(`${c.green}✓ All collections updated.${c.reset}`);
+  if (needsEmbedding > 0) {
+    console.log(
+      `\nRun 'qmd embed' to update embeddings (${needsEmbedding} unique hashes need vectors)`,
+    );
+  }
+}
+
+/**
+ * Re-index specific files instead of whole collections.
+ *
+ * @param paths  File paths, relative or absolute. Each must live under a
+ *               configured collection root.
+ *
+ * `qmd update` walks every file of every collection it touches. When one file
+ * changed, that is entirely waste. This resolves each path to its owning
+ * collection and re-indexes exactly those documents.
+ *
+ * A path under no collection root is a hard error naming the roots that were
+ * checked, and nothing is written -- resolution happens for every path before
+ * any indexing starts, so a typo in the third argument cannot leave the first
+ * two half-applied.
+ */
+async function updatePaths(paths: string[]): Promise<void> {
+  const collectionRoots = yamlListCollections();
+
+  if (collectionRoots.length === 0) {
+    console.error(
+      `${c.yellow}No collections configured.${c.reset} Run 'qmd collection add .' first.`,
+    );
+    process.exit(1);
+  }
+
+  // Resolve everything up front: fail before touching the index, not midway.
+  const targets: ReindexTarget[] = [];
+  const rootByName = new Map(
+    collectionRoots.map((col) => [col.name, col.path]),
+  );
+
+  for (const input of paths) {
+    const absolute = pathResolve(getPwd(), input);
+    const match = detectCollectionFromPath(getDb(), absolute);
+
+    if (!match || !match.relativePath) {
+      const rootList = collectionRoots
+        .map((col) => `  ${col.name}  ${col.path}`)
+        .join("\n");
+      console.error(
+        `${c.yellow}Not inside any collection:${c.reset} ${absolute}\n` +
+          `Collection roots checked:\n${rootList}`,
+      );
+      closeDb();
+      process.exit(1);
+    }
+
+    targets.push({
+      collectionName: match.collectionName,
+      collectionPath: rootByName.get(match.collectionName) ?? "",
+      relativePath: match.relativePath,
+    });
+  }
+
+  const db = getDb();
+  const result = await reindexPaths(getStore(), targets);
+
+  for (const outcome of result.outcomes) {
+    const label =
+      outcome.action === "unchanged"
+        ? `${c.dim}unchanged${c.reset}`
+        : outcome.action === "removed"
+          ? `${c.yellow}removed${c.reset}`
+          : outcome.action === "skipped"
+            ? `${c.dim}skipped${c.reset}`
+            : `${c.green}${outcome.action}${c.reset}`;
+    console.log(
+      `  ${label}  ${c.dim}${outcome.collectionName}/${c.reset}${outcome.relativePath}`,
+    );
+  }
+
+  console.log(
+    `\nIndexed: ${result.indexed} new, ${result.updated} updated, ${result.unchanged} unchanged, ${result.removed} removed`,
+  );
+  if (result.orphanedCleaned > 0) {
+    console.log(
+      `Cleaned up ${result.orphanedCleaned} orphaned content hash(es)`,
+    );
+  }
+
+  const needsEmbedding = getHashesNeedingEmbedding(db);
+  closeDb();
+
   if (needsEmbedding > 0) {
     console.log(
       `\nRun 'qmd embed' to update embeddings (${needsEmbedding} unique hashes need vectors)`,
@@ -4064,6 +4156,9 @@ function showHelp(): void {
     "  qmd update [--pull] [-c <name>] - Re-index collections (optionally git pull first)",
   );
   console.log(
+    "  qmd update <path>...          - Re-index only those files (adds, updates, removes)",
+  );
+  console.log(
     "  qmd embed [-f] [-c <name>]    - Generate/refresh vector embeddings",
   );
   console.log(
@@ -5573,11 +5668,17 @@ if (isMain) {
       break;
 
     case "update":
-      // Validate -c up front so a typo errors with "Collection not found: X"
-      // rather than silently reporting success against no collections.
-      await updateCollections(
-        resolveCollectionFilter(cli.opts.collection, false),
-      );
+      // Positional paths scope the update to exactly those files. With none,
+      // this is the unchanged whole-collection walk.
+      if (cli.args.length > 0) {
+        await updatePaths(cli.args);
+      } else {
+        // Validate -c up front so a typo errors with "Collection not found: X"
+        // rather than silently reporting success against no collections.
+        await updateCollections(
+          resolveCollectionFilter(cli.opts.collection, false),
+        );
+      }
       break;
 
     case "embed":

@@ -2,6 +2,21 @@
 
 ## [Unreleased]
 
+### Added
+
+- `qmd update <path> [<path> ...]` re-indexes exactly the named files instead of
+  walking whole collections. Each path (relative or absolute) is resolved to its
+  owning collection by root match; a path under no root is a hard error naming
+  the roots consulted, and every path is resolved before any indexing starts so a
+  bad argument cannot leave earlier ones half-applied. A new file is added, a
+  changed file is updated, a file the index knows but disk no longer has is
+  removed, and an unchanged file (content-hash match) is skipped and reported as
+  such. Embedding staleness needs no new representation: pending state is already
+  derived from a content hash having no rows in `content_vectors`, so writing the
+  new hash is itself the stale mark and `qmd embed` then refreshes exactly those
+  docs. `qmd update` with no positional paths is unchanged, including `-c` and
+  `--pull`.
+
 ## [2.6.3] - 2026-06-24
 
 ### Added

@@ -15,7 +15,13 @@ import { openDatabase, loadSqliteVec } from "./db.js";
 import type { Database } from "./db.js";
 import picomatch from "picomatch";
 import { createHash } from "crypto";
-import { readFileSync, realpathSync, statSync, mkdirSync } from "node:fs";
+import {
+  readFileSync,
+  realpathSync,
+  statSync,
+  mkdirSync,
+  existsSync,
+} from "node:fs";
 // Note: node:path resolve is not imported — we export our own cross-platform resolve()
 import fastGlob from "fast-glob";
 import { qmdHomedir } from "./paths.js";
@@ -1612,6 +1618,77 @@ export type ReindexResult = {
   orphanedCleaned: number;
 };
 
+/** What re-indexing one file did to the index. */
+type ReindexDocumentOutcome = "indexed" | "updated" | "unchanged" | "skipped";
+
+/**
+ * Re-index exactly one file into a collection.
+ *
+ * This is the single per-file indexing path: both the whole-collection walk
+ * (`reindexCollection`) and the targeted path form (`reindexPaths`) go through
+ * it, so add/update/hash-skip semantics cannot drift between the two.
+ *
+ * `skipped` means the file was unreadable or blank — the caller decides whether
+ * that is benign (collection walk) or worth reporting (targeted update).
+ */
+async function reindexDocument(
+  db: Database,
+  collectionPath: string,
+  relativeFile: string,
+  collectionName: string,
+  now: string,
+): Promise<ReindexDocumentOutcome> {
+  const filepath = getRealPath(resolve(collectionPath, relativeFile));
+  const path = normalizePathSeparators(relativeFile);
+
+  let content: string;
+  try {
+    content = readFileSync(filepath, "utf-8");
+  } catch {
+    return "skipped";
+  }
+
+  if (!content.trim()) return "skipped";
+
+  const hash = await hashContent(content);
+  const title = extractTitle(content, relativeFile);
+
+  const existing = findOrMigrateLegacyDocument(db, collectionName, path);
+
+  if (existing) {
+    if (existing.hash === hash) {
+      if (existing.title !== title) {
+        updateDocumentTitle(db, existing.id, title, now);
+        return "updated";
+      }
+      return "unchanged";
+    }
+    insertContent(db, hash, content, now);
+    const stat = statSync(filepath);
+    updateDocument(
+      db,
+      existing.id,
+      title,
+      hash,
+      stat ? new Date(stat.mtime).toISOString() : now,
+    );
+    return "updated";
+  }
+
+  insertContent(db, hash, content, now);
+  const stat = statSync(filepath);
+  insertDocument(
+    db,
+    collectionName,
+    path,
+    title,
+    hash,
+    stat ? new Date(stat.birthtime).toISOString() : now,
+    stat ? new Date(stat.mtime).toISOString() : now,
+  );
+  return "indexed";
+}
+
 /**
  * Re-index a single collection by scanning the filesystem and updating the database.
  * Pure function — no console output, no db lifecycle management.
@@ -1663,66 +1740,21 @@ export async function reindexCollection(
   const seenPaths = new Set<string>();
 
   for (const relativeFile of files) {
-    const filepath = getRealPath(resolve(collectionPath, relativeFile));
     // Store the literal relative path so the filesystem path can always be
     // reconstructed as: resolve(collection.path, storedPath).
     // handelize() is NOT applied at index time — it is display-only.
-    const path = normalizePathSeparators(relativeFile);
-    seenPaths.add(path);
+    seenPaths.add(normalizePathSeparators(relativeFile));
 
-    let content: string;
-    try {
-      content = readFileSync(filepath, "utf-8");
-    } catch {
-      processed++;
-      options?.onProgress?.({ file: relativeFile, current: processed, total });
-      continue;
-    }
-
-    if (!content.trim()) {
-      processed++;
-      continue;
-    }
-
-    const hash = await hashContent(content);
-    const title = extractTitle(content, relativeFile);
-
-    const existing = findOrMigrateLegacyDocument(db, collectionName, path);
-
-    if (existing) {
-      if (existing.hash === hash) {
-        if (existing.title !== title) {
-          updateDocumentTitle(db, existing.id, title, now);
-          updated++;
-        } else {
-          unchanged++;
-        }
-      } else {
-        insertContent(db, hash, content, now);
-        const stat = statSync(filepath);
-        updateDocument(
-          db,
-          existing.id,
-          title,
-          hash,
-          stat ? new Date(stat.mtime).toISOString() : now,
-        );
-        updated++;
-      }
-    } else {
-      indexed++;
-      insertContent(db, hash, content, now);
-      const stat = statSync(filepath);
-      insertDocument(
-        db,
-        collectionName,
-        path,
-        title,
-        hash,
-        stat ? new Date(stat.birthtime).toISOString() : now,
-        stat ? new Date(stat.mtime).toISOString() : now,
-      );
-    }
+    const outcome = await reindexDocument(
+      db,
+      collectionPath,
+      relativeFile,
+      collectionName,
+      now,
+    );
+    if (outcome === "indexed") indexed++;
+    else if (outcome === "updated") updated++;
+    else if (outcome === "unchanged") unchanged++;
 
     processed++;
     options?.onProgress?.({ file: relativeFile, current: processed, total });
@@ -1741,6 +1773,132 @@ export async function reindexCollection(
   const orphanedCleaned = cleanupOrphanedContent(db);
 
   return { indexed, updated, unchanged, removed, orphanedCleaned };
+}
+
+/** One file to re-index, already resolved to its owning collection. */
+export type ReindexTarget = {
+  collectionName: string;
+  /** Absolute on-disk root of the collection. */
+  collectionPath: string;
+  /** Path relative to `collectionPath`, as stored in `documents.path`. */
+  relativePath: string;
+};
+
+/** What happened to one targeted file. */
+export type ReindexPathOutcome = {
+  collectionName: string;
+  relativePath: string;
+  action: "indexed" | "updated" | "unchanged" | "removed" | "skipped";
+};
+
+export type ReindexPathsResult = {
+  indexed: number;
+  updated: number;
+  unchanged: number;
+  removed: number;
+  skipped: number;
+  orphanedCleaned: number;
+  outcomes: ReindexPathOutcome[];
+};
+
+/**
+ * Re-index exactly the named files and nothing else.
+ *
+ * The collection-wide walk is what makes `qmd update` cost 30s-4min on a
+ * machine with a few dozen collections; when one file changed, re-globbing the
+ * whole tree is all waste. This touches only the given documents:
+ *
+ * - file present, new to the index  -> add
+ * - file present, content changed   -> update (new content hash)
+ * - file present, hash unchanged    -> skip
+ * - file gone, index still knows it -> remove (deactivate)
+ *
+ * Embedding staleness needs no separate flag. A document's pending-embedding
+ * state is derived from its content hash having no rows in `content_vectors`
+ * (see `getPendingEmbeddingDocs`), so writing a new hash is itself the stale
+ * mark, and `qmd embed` then refreshes exactly these docs. Adding a parallel
+ * flag would be a second source of truth for the same fact.
+ *
+ * Pure function — no console output, no db lifecycle management.
+ */
+export async function reindexPaths(
+  store: Store,
+  targets: ReindexTarget[],
+): Promise<ReindexPathsResult> {
+  const db = store.db;
+  const now = new Date().toISOString();
+
+  let indexed = 0,
+    updated = 0,
+    unchanged = 0,
+    removed = 0,
+    skipped = 0;
+  const outcomes: ReindexPathOutcome[] = [];
+
+  for (const target of targets) {
+    const relativePath = normalizePathSeparators(target.relativePath);
+    const filepath = getRealPath(
+      resolve(target.collectionPath, target.relativePath),
+    );
+
+    if (!existsSync(filepath)) {
+      // A path the index knows but the disk no longer has: deactivate it. A
+      // path neither side knows is nothing to do, not an error -- the caller
+      // already proved it sits under a collection root.
+      const known = findOrMigrateLegacyDocument(
+        db,
+        target.collectionName,
+        relativePath,
+      );
+      if (known) {
+        deactivateDocument(db, target.collectionName, relativePath);
+        removed++;
+        outcomes.push({
+          collectionName: target.collectionName,
+          relativePath,
+          action: "removed",
+        });
+      } else {
+        skipped++;
+        outcomes.push({
+          collectionName: target.collectionName,
+          relativePath,
+          action: "skipped",
+        });
+      }
+      continue;
+    }
+
+    const outcome = await reindexDocument(
+      db,
+      target.collectionPath,
+      target.relativePath,
+      target.collectionName,
+      now,
+    );
+    if (outcome === "indexed") indexed++;
+    else if (outcome === "updated") updated++;
+    else if (outcome === "unchanged") unchanged++;
+    else skipped++;
+
+    outcomes.push({
+      collectionName: target.collectionName,
+      relativePath,
+      action: outcome,
+    });
+  }
+
+  const orphanedCleaned = cleanupOrphanedContent(db);
+
+  return {
+    indexed,
+    updated,
+    unchanged,
+    removed,
+    skipped,
+    orphanedCleaned,
+    outcomes,
+  };
 }
 
 export type EmbedFailure = {
@@ -3944,9 +4102,7 @@ export function getCollectionByName(
  * List all collections with document counts from database.
  * Merges store_collections config with database statistics.
  */
-export function listCollections(
-  db: Database,
-): {
+export function listCollections(db: Database): {
   name: string;
   pwd: string;
   glob_pattern: string | string[];
