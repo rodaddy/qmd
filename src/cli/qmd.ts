@@ -116,6 +116,10 @@ import {
   resolveGenerateModel,
   resolveRerankModel,
   resolveModels,
+  setActiveModelConfig,
+  assertKnownModelScheme,
+  getLocalLlamaCpp,
+  isRemoteModelUri,
   inspectGgufFile,
   isDarwinMetalMitigationActive,
 } from "../llm.js";
@@ -167,15 +171,30 @@ function getStore(): ReturnType<typeof createStore> {
   if (!store) {
     store = createStore(storeDbPathOverride);
     // Sync YAML config into SQLite store_collections so store.ts reads from DB
+    // Validate the configured models BEFORE the catch below. A model field
+    // qmd cannot parse is a configuration error the user must see: swallowing
+    // it here is how a remote backend appeared to be configured while every
+    // embedding ran locally.
+    const activeModels = ensureModelsConfiguredForCli();
+    assertKnownModelScheme(activeModels.embed, "embed");
+    assertKnownModelScheme(activeModels.generate, "generate");
+    assertKnownModelScheme(activeModels.rerank, "rerank");
+
     try {
-      const activeModels = ensureModelsConfiguredForCli();
       const config = loadConfig();
       syncConfigToDb(store.db, config);
+      // The local backend backs only the roles whose model field named a local
+      // model. A URL must never reach LlamaCpp: it resolves model strings as
+      // HuggingFace refs or file paths, so it would try to DOWNLOAD the
+      // endpoint. Roles pointing at a URL are served by RemoteLLM via
+      // createLLM; undefined here means "keep the built-in default".
+      const localOnly = (uri: string): string | undefined =>
+        isRemoteModelUri(uri) ? undefined : uri;
       setDefaultLlamaCpp(
         new LlamaCpp({
-          embedModel: activeModels.embed,
-          generateModel: activeModels.generate,
-          rerankModel: activeModels.rerank,
+          embedModel: localOnly(activeModels.embed),
+          generateModel: localOnly(activeModels.generate),
+          rerankModel: localOnly(activeModels.rerank),
         }),
       );
     } catch {
@@ -2387,9 +2406,16 @@ function ensureModelsConfiguredForCli(): {
         },
       });
     }
+    // Install the resolved configuration so sessions created later in this
+    // process route by it. Without this the config is read, echoed back, and
+    // never reaches the backend -- which is how a URL in models.embed used to
+    // produce working search results computed entirely locally.
+    setActiveModelConfig(models);
     return models;
   } catch {
-    return resolveModels();
+    const fallback = resolveModels();
+    setActiveModelConfig(fallback);
+    return fallback;
   }
 }
 
@@ -4930,7 +4956,7 @@ async function runDoctorDeviceChecks(nextSteps: string[]): Promise<void> {
   }
 
   try {
-    const device = await getDefaultLlamaCpp().getDeviceInfo({
+    const device = await getLocalLlamaCpp().getDeviceInfo({
       allowBuild: false,
     });
     if (process.stdout.isTTY) {

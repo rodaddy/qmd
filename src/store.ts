@@ -27,7 +27,10 @@ import fastGlob from "fast-glob";
 import { qmdHomedir } from "./paths.js";
 import {
   LlamaCpp,
+  type LLM,
+  createLLM,
   getDefaultLlamaCpp,
+  getLocalLlamaCpp,
   formatQueryForEmbedding,
   formatDocForEmbedding,
   withLLMSessionForLlm,
@@ -86,11 +89,16 @@ export function getEmbeddingFingerprint(
 }
 
 /**
- * Get the LlamaCpp instance for a store — prefers the store's own instance,
- * falls back to the global singleton.
+ * Get the LLM backend for a store — prefers the store's own instance, falls
+ * back to the configured backend.
+ *
+ * Returns the interface rather than LlamaCpp: when a model field names a
+ * remote server this is a RemoteLLM (or a HybridLLM routing per role), and
+ * hardcoding the local implementation here is what let a configured URL be
+ * carried around as a model name while every embedding still ran in-process.
  */
-function getLlm(store: Store): LlamaCpp {
-  return store.llm ?? getDefaultLlamaCpp();
+function getLlm(store: Store): LLM {
+  return store.llm ?? createLLM();
 }
 
 // =============================================================================
@@ -3699,7 +3707,7 @@ export async function chunkDocumentByTokens(
   ): Promise<void> => {
     if (signal?.aborted) return;
 
-    const tokens = await llm.tokenize(text);
+    const tokens = await getLocalLlamaCpp().tokenize(text);
     if (tokens.length <= maxTokens || text.length <= 1) {
       results.push({ text, pos, tokens: tokens.length });
       return;
@@ -3743,7 +3751,7 @@ export async function chunkDocumentByTokens(
 
     if (subChunks.length <= 1 || subChunks[0]?.text.length === text.length) {
       const fallbackTokens = tokens.slice(0, Math.max(1, maxTokens));
-      const truncatedText = await llm.detokenize(fallbackTokens);
+      const truncatedText = await getLocalLlamaCpp().detokenize(fallbackTokens);
       results.push({
         text: truncatedText,
         pos,
@@ -4722,7 +4730,18 @@ export async function searchVec(
 
   const embedding =
     precomputedEmbedding ?? (await getEmbedding(query, model, true, session));
-  if (!embedding) return [];
+  // A failed embedding is not "no matches". Returning [] here makes an
+  // unreachable embedding backend indistinguishable from a query that simply
+  // found nothing -- and because callers fuse these results with the lexical
+  // ones, the caller still shows a full page. That is how a dead endpoint on a
+  // fake path returned working search results.
+  if (!embedding) {
+    throw new Error(
+      `Embedding failed for the search query using ${model}. Vector search ` +
+        `cannot run. Check that the embedding backend is reachable and the ` +
+        `model name is correct.`,
+    );
+  }
 
   // IMPORTANT: We use a two-step query approach here because sqlite-vec virtual tables
   // hang indefinitely when combined with JOINs in the same query. Do NOT try to
@@ -6209,6 +6228,20 @@ export async function hybridQuery(
     const embeddings = await llm.embedBatch(textsToEmbed);
     hooks?.onEmbedDone?.(Date.now() - embedStart);
 
+    // A vector search whose every embedding failed is not a vector search.
+    // Skipping the empty lists silently leaves RRF fusing the lexical results
+    // alone and returning a full page that looks like it came from the vector
+    // index -- which is how an unreachable embedding backend reads as healthy.
+    // Individual failures still degrade quietly; total failure must not.
+    if (textsToEmbed.length > 0 && embeddings.every((e) => !e?.embedding)) {
+      throw new Error(
+        `Embedding failed for all ${textsToEmbed.length} vector ` +
+          `${textsToEmbed.length === 1 ? "query" : "queries"} using ` +
+          `${embedModel}. Vector search cannot run. Check that the embedding ` +
+          `backend is reachable and the model name is correct.`,
+      );
+    }
+
     // Run sqlite-vec lookups with pre-computed embeddings
     for (let i = 0; i < vecQueries.length; i++) {
       const embedding = embeddings[i]?.embedding;
@@ -6666,6 +6699,19 @@ export async function structuredSearch(
       const embedStart = Date.now();
       const embeddings = await llm.embedBatch(textsToEmbed);
       hooks?.onEmbedDone?.(Date.now() - embedStart);
+
+      // See the matching guard in hybridQuery: when every embedding fails the
+      // vector lists are all empty, fusion silently returns the lexical
+      // results, and an unreachable embedding backend is indistinguishable
+      // from a working one. Individual failures still degrade quietly.
+      if (textsToEmbed.length > 0 && embeddings.every((e) => !e?.embedding)) {
+        throw new Error(
+          `Embedding failed for all ${textsToEmbed.length} vector ` +
+            `${textsToEmbed.length === 1 ? "query" : "queries"} using ` +
+            `${embedModel}. Vector search cannot run. Check that the ` +
+            `embedding backend is reachable and the model name is correct.`,
+        );
+      }
 
       for (let i = 0; i < vecSearches.length; i++) {
         const embedding = embeddings[i]?.embedding;

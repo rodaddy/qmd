@@ -10,16 +10,34 @@ import type {
   LlamaEmbeddingContext,
   Token as LlamaToken,
 } from "node-llama-cpp";
+import {
+  isRemoteModelUri,
+  modelIdentity,
+  parseRemoteModelUri,
+  RemoteLLM,
+} from "./remote-llm.js";
+
+export {
+  isRemoteModelUri,
+  modelIdentity,
+  parseRemoteModelUri,
+  RemoteLLM,
+} from "./remote-llm.js";
 
 type StdoutChunk = string | Uint8Array;
 type WriteCallback = (err?: Error | null) => void;
 
 type NodeLlamaCppModule = {
   getLlama: (options: Record<string, unknown>) => Promise<Llama>;
-  getLlamaGpuTypes?: (include?: "supported" | "allValid") => Promise<LlamaGpuMode[]>;
+  getLlamaGpuTypes?: (
+    include?: "supported" | "allValid",
+  ) => Promise<LlamaGpuMode[]>;
   resolveModelFile: (model: string, cacheDir: string) => Promise<string>;
   LlamaChatSession: new (options: { contextSequence: unknown }) => {
-    prompt: (prompt: string, options?: Record<string, unknown>) => Promise<string>;
+    prompt: (
+      prompt: string,
+      options?: Record<string, unknown>,
+    ) => Promise<string>;
   };
   LlamaLogLevel: { error: unknown };
 };
@@ -27,12 +45,14 @@ type NodeLlamaCppModule = {
 let nodeLlamaCppImport: Promise<NodeLlamaCppModule> | null = null;
 async function loadNodeLlamaCpp(): Promise<NodeLlamaCppModule> {
   nodeLlamaCppImport ??= withNativeStdoutRedirectedToStderr(
-    () => import("node-llama-cpp") as Promise<NodeLlamaCppModule>
+    () => import("node-llama-cpp") as Promise<NodeLlamaCppModule>,
   );
   return nodeLlamaCppImport;
 }
 
-export function setNodeLlamaCppModuleForTest(module: NodeLlamaCppModule | null): void {
+export function setNodeLlamaCppModuleForTest(
+  module: NodeLlamaCppModule | null,
+): void {
   nodeLlamaCppImport = module ? Promise.resolve(module) : null;
   failedGpuInitModes.clear();
   noGpuAccelerationWarningShown = false;
@@ -48,10 +68,18 @@ let originalStdoutWrite: StdoutWrite | null = null;
  * JSON APIs must reserve stdout for machine-readable payloads, so route that
  * noise to stderr while native llama initialization is in progress.
  */
-export async function withNativeStdoutRedirectedToStderr<T>(fn: () => Promise<T>): Promise<T> {
+export async function withNativeStdoutRedirectedToStderr<T>(
+  fn: () => Promise<T>,
+): Promise<T> {
   if (nativeStdoutRedirectDepth === 0) {
-    originalStdoutWrite = process.stdout.write.bind(process.stdout) as StdoutWrite;
-    process.stdout.write = ((chunk: StdoutChunk, encodingOrCallback?: BufferEncoding | WriteCallback, callback?: WriteCallback) => {
+    originalStdoutWrite = process.stdout.write.bind(
+      process.stdout,
+    ) as StdoutWrite;
+    process.stdout.write = ((
+      chunk: StdoutChunk,
+      encodingOrCallback?: BufferEncoding | WriteCallback,
+      callback?: WriteCallback,
+    ) => {
       if (typeof encodingOrCallback === "function") {
         return process.stderr.write(chunk, encodingOrCallback);
       }
@@ -72,7 +100,18 @@ export async function withNativeStdoutRedirectedToStderr<T>(fn: () => Promise<T>
 
 import { homedir } from "os";
 import { join } from "path";
-import { existsSync, mkdirSync, statSync, unlinkSync, readdirSync, readFileSync, writeFileSync, openSync, readSync, closeSync } from "fs";
+import {
+  existsSync,
+  mkdirSync,
+  statSync,
+  unlinkSync,
+  readdirSync,
+  readFileSync,
+  writeFileSync,
+  openSync,
+  readSync,
+  closeSync,
+} from "fs";
 
 // =============================================================================
 // Embedding Formatting Functions
@@ -83,7 +122,11 @@ import { existsSync, mkdirSync, statSync, unlinkSync, readdirSync, readFileSync,
  * Qwen3-Embedding uses a different prompting style than nomic/embeddinggemma.
  */
 export function isQwen3EmbeddingModel(modelUri: string): boolean {
-  return /qwen.*embed/i.test(modelUri) || /embed.*qwen/i.test(modelUri);
+  // Match the model NAME, never the transport. A URL pointing at a qwen
+  // embedder has "qwen" nowhere in its host, so testing the raw field would
+  // silently pick the wrong prompt format and quietly degrade recall.
+  const name = modelIdentity(modelUri);
+  return /qwen.*embed/i.test(name) || /embed.*qwen/i.test(name);
 }
 
 /**
@@ -91,7 +134,10 @@ export function isQwen3EmbeddingModel(modelUri: string): boolean {
  * Uses nomic-style task prefix format for embeddinggemma (default).
  * Uses Qwen3-Embedding instruct format when a Qwen embedding model is active.
  */
-export function formatQueryForEmbedding(query: string, modelUri?: string): string {
+export function formatQueryForEmbedding(
+  query: string,
+  modelUri?: string,
+): string {
   const uri = modelUri ?? resolveEmbedModel();
   if (isQwen3EmbeddingModel(uri)) {
     return `Instruct: Retrieve relevant documents for the given query\nQuery: ${query}`;
@@ -104,7 +150,11 @@ export function formatQueryForEmbedding(query: string, modelUri?: string): strin
  * Uses nomic-style format with title and text fields (default).
  * Qwen3-Embedding encodes documents as raw text without special prefixes.
  */
-export function formatDocForEmbedding(text: string, title?: string, modelUri?: string): string {
+export function formatDocForEmbedding(
+  text: string,
+  title?: string,
+  modelUri?: string,
+): string {
   const uri = modelUri ?? resolveEmbedModel();
   if (isQwen3EmbeddingModel(uri)) {
     // Qwen3-Embedding: documents are raw text, no task prefix
@@ -211,9 +261,19 @@ export type LLMSessionOptions = {
  */
 export interface ILLMSession {
   embed(text: string, options?: EmbedOptions): Promise<EmbeddingResult | null>;
-  embedBatch(texts: string[], options?: EmbedOptions): Promise<(EmbeddingResult | null)[]>;
-  expandQuery(query: string, options?: { context?: string; includeLexical?: boolean }): Promise<Queryable[]>;
-  rerank(query: string, documents: RerankDocument[], options?: RerankOptions): Promise<RerankResult>;
+  embedBatch(
+    texts: string[],
+    options?: EmbedOptions,
+  ): Promise<(EmbeddingResult | null)[]>;
+  expandQuery(
+    query: string,
+    options?: { context?: string; includeLexical?: boolean },
+  ): Promise<Queryable[]>;
+  rerank(
+    query: string,
+    documents: RerankDocument[],
+    options?: RerankOptions,
+  ): Promise<RerankResult>;
   /** Whether this session is still valid (not released or aborted) */
   readonly isValid: boolean;
   /** Abort signal for this session (aborts on release or maxDuration) */
@@ -223,7 +283,7 @@ export interface ILLMSession {
 /**
  * Supported query types for different search backends
  */
-export type QueryType = 'lex' | 'vec' | 'hyde';
+export type QueryType = "lex" | "vec" | "hyde";
 
 /**
  * A single query and its target backend type
@@ -249,16 +309,21 @@ export type RerankDocument = {
 // HuggingFace model URIs for node-llama-cpp
 // Format: hf:<user>/<repo>/<file>
 // Override via QMD_EMBED_MODEL env var (e.g. hf:Qwen/Qwen3-Embedding-0.6B-GGUF/Qwen3-Embedding-0.6B-Q8_0.gguf)
-const DEFAULT_EMBED_MODEL = "hf:ggml-org/embeddinggemma-300M-GGUF/embeddinggemma-300M-Q8_0.gguf";
-const DEFAULT_RERANK_MODEL = "hf:ggml-org/Qwen3-Reranker-0.6B-Q8_0-GGUF/qwen3-reranker-0.6b-q8_0.gguf";
+const DEFAULT_EMBED_MODEL =
+  "hf:ggml-org/embeddinggemma-300M-GGUF/embeddinggemma-300M-Q8_0.gguf";
+const DEFAULT_RERANK_MODEL =
+  "hf:ggml-org/Qwen3-Reranker-0.6B-Q8_0-GGUF/qwen3-reranker-0.6b-q8_0.gguf";
 // const DEFAULT_GENERATE_MODEL = "hf:ggml-org/Qwen3-0.6B-GGUF/Qwen3-0.6B-Q8_0.gguf";
-const DEFAULT_GENERATE_MODEL = "hf:tobil/qmd-query-expansion-1.7B-gguf/qmd-query-expansion-1.7B-q4_k_m.gguf";
+const DEFAULT_GENERATE_MODEL =
+  "hf:tobil/qmd-query-expansion-1.7B-gguf/qmd-query-expansion-1.7B-q4_k_m.gguf";
 
 // Alternative generation models for query expansion:
 // LiquidAI LFM2 - hybrid architecture optimized for edge/on-device inference
 // Use these as base for fine-tuning with configs/sft_lfm2.yaml
-export const LFM2_GENERATE_MODEL = "hf:LiquidAI/LFM2-1.2B-GGUF/LFM2-1.2B-Q4_K_M.gguf";
-export const LFM2_INSTRUCT_MODEL = "hf:LiquidAI/LFM2.5-1.2B-Instruct-GGUF/LFM2.5-1.2B-Instruct-Q4_K_M.gguf";
+export const LFM2_GENERATE_MODEL =
+  "hf:LiquidAI/LFM2-1.2B-GGUF/LFM2-1.2B-Q4_K_M.gguf";
+export const LFM2_INSTRUCT_MODEL =
+  "hf:LiquidAI/LFM2.5-1.2B-Instruct-GGUF/LFM2.5-1.2B-Instruct-Q4_K_M.gguf";
 
 export const DEFAULT_EMBED_MODEL_URI = DEFAULT_EMBED_MODEL;
 export const DEFAULT_RERANK_MODEL_URI = DEFAULT_RERANK_MODEL;
@@ -275,14 +340,18 @@ export function resolveEmbedModel(config?: ModelResolutionConfig): string {
 }
 
 export function resolveGenerateModel(config?: ModelResolutionConfig): string {
-  return config?.generate || process.env.QMD_GENERATE_MODEL || DEFAULT_GENERATE_MODEL;
+  return (
+    config?.generate || process.env.QMD_GENERATE_MODEL || DEFAULT_GENERATE_MODEL
+  );
 }
 
 export function resolveRerankModel(config?: ModelResolutionConfig): string {
   return config?.rerank || process.env.QMD_RERANK_MODEL || DEFAULT_RERANK_MODEL;
 }
 
-export function resolveModels(config?: ModelResolutionConfig): Required<ModelResolutionConfig> {
+export function resolveModels(
+  config?: ModelResolutionConfig,
+): Required<ModelResolutionConfig> {
   return {
     embed: resolveEmbedModel(config),
     generate: resolveGenerateModel(config),
@@ -356,7 +425,12 @@ function printableMagic(header: Buffer): string {
  */
 export function inspectGgufFile(filePath: string): GgufFileInspection {
   if (!existsSync(filePath)) {
-    return { exists: false, valid: false, kind: "missing", details: "file does not exist" };
+    return {
+      exists: false,
+      valid: false,
+      kind: "missing",
+      details: "file does not exist",
+    };
   }
 
   let sizeBytes = 0;
@@ -427,33 +501,35 @@ function validateGgufFile(filePath: string, modelUri: string): void {
   // Remove the bad file so the next attempt re-downloads
   try {
     unlinkSync(filePath);
-  } catch { /* best effort */ }
+  } catch {
+    /* best effort */
+  }
 
   if (inspection.kind === "html") {
     throw new Error(
       `Downloaded model file is an HTML page, not a GGUF model (${formatModelFileSize(inspection.sizeBytes ?? 0)}).\n` +
-      `Something is intercepting the download from huggingface.co (a proxy, firewall, or captive portal).\n\n` +
-      `Model: ${modelUri}\n` +
-      `Path:  ${filePath}\n\n` +
-      `To fix this, either:\n` +
-      `  1. Try a HuggingFace mirror:  HF_ENDPOINT=https://hf-mirror.com qmd embed\n` +
-      `  2. Download the model manually and set the env var, e.g.:\n` +
-      `       QMD_EMBED_MODEL=/path/to/model.gguf qmd embed\n\n` +
-      `Note: 'qmd search' works without any model downloads.`
+        `Something is intercepting the download from huggingface.co (a proxy, firewall, or captive portal).\n\n` +
+        `Model: ${modelUri}\n` +
+        `Path:  ${filePath}\n\n` +
+        `To fix this, either:\n` +
+        `  1. Try a HuggingFace mirror:  HF_ENDPOINT=https://hf-mirror.com qmd embed\n` +
+        `  2. Download the model manually and set the env var, e.g.:\n` +
+        `       QMD_EMBED_MODEL=/path/to/model.gguf qmd embed\n\n` +
+        `Note: 'qmd search' works without any model downloads.`,
     );
   }
 
   throw new Error(
     `Model file is not valid GGUF (expected magic "GGUF", got "${inspection.magic ?? "unknown"}", file is ${formatModelFileSize(inspection.sizeBytes ?? 0)}).\n` +
-    `Model: ${modelUri}\n` +
-    `Path:  ${filePath}\n\n` +
-    `The file has been removed. Run the command again to re-download.`
+      `Model: ${modelUri}\n` +
+      `Path:  ${filePath}\n\n` +
+      `The file has been removed. Run the command again to re-download.`,
   );
 }
 
 export async function pullModels(
   models: string[],
-  options: { refresh?: boolean; cacheDir?: string } = {}
+  options: { refresh?: boolean; cacheDir?: string } = {},
 ): Promise<PullResult[]> {
   const cacheDir = options.cacheDir || MODEL_CACHE_DIR;
   if (!existsSync(cacheDir)) {
@@ -479,7 +555,10 @@ export async function pullModels(
         ? readFileSync(etagPath, "utf-8").trim()
         : null;
       const shouldRefresh =
-        options.refresh || !remoteEtag || remoteEtag !== localEtag || cached.length === 0;
+        options.refresh ||
+        !remoteEtag ||
+        remoteEtag !== localEtag ||
+        cached.length === 0;
 
       if (shouldRefresh) {
         for (const candidate of cached) {
@@ -525,9 +604,24 @@ export interface LLM {
   embed(text: string, options?: EmbedOptions): Promise<EmbeddingResult | null>;
 
   /**
+   * Get embeddings for many texts.
+   *
+   * On the interface rather than only on the implementations because a remote
+   * backend serves a whole batch in one request -- the difference between one
+   * HTTP round trip per re-index batch and one per document.
+   */
+  embedBatch(
+    texts: string[],
+    options?: EmbedOptions,
+  ): Promise<(EmbeddingResult | null)[]>;
+
+  /**
    * Generate text completion
    */
-  generate(prompt: string, options?: GenerateOptions): Promise<GenerateResult | null>;
+  generate(
+    prompt: string,
+    options?: GenerateOptions,
+  ): Promise<GenerateResult | null>;
 
   /**
    * Check if a model exists/is available
@@ -538,13 +632,29 @@ export interface LLM {
    * Expand a search query into multiple variations for different backends.
    * Returns a list of Queryable objects.
    */
-  expandQuery(query: string, options?: { context?: string, includeLexical?: boolean }): Promise<Queryable[]>;
+  expandQuery(
+    query: string,
+    options?: { context?: string; includeLexical?: boolean; intent?: string },
+  ): Promise<Queryable[]>;
 
   /**
    * Rerank documents by relevance to a query
    * Returns list of documents with relevance scores (higher = more relevant)
    */
-  rerank(query: string, documents: RerankDocument[], options?: RerankOptions): Promise<RerankResult>;
+  rerank(
+    query: string,
+    documents: RerankDocument[],
+    options?: RerankOptions,
+  ): Promise<RerankResult>;
+
+  /**
+   * The embed model field this backend was configured with.
+   *
+   * On the interface because callers use it to fingerprint stored vectors and
+   * to select a prompt format -- both of which must follow the backend that
+   * actually computes the embeddings, not a global default.
+   */
+  readonly embedModelName: string;
 
   /**
    * Dispose of resources
@@ -599,13 +709,17 @@ type ParallelismOptions = {
   envValue?: string;
 };
 
-export function resolveParallelismOverride(envValue = process.env.QMD_EMBED_PARALLELISM): number | undefined {
+export function resolveParallelismOverride(
+  envValue = process.env.QMD_EMBED_PARALLELISM,
+): number | undefined {
   const normalized = envValue?.trim() ?? "";
   if (!normalized) return undefined;
 
   const parsed = Number(normalized);
   if (!Number.isInteger(parsed) || parsed < 1) {
-    process.stderr.write(`QMD Warning: invalid QMD_EMBED_PARALLELISM="${envValue}", using automatic parallelism.\n`);
+    process.stderr.write(
+      `QMD Warning: invalid QMD_EMBED_PARALLELISM="${envValue}", using automatic parallelism.\n`,
+    );
     return undefined;
   }
 
@@ -619,7 +733,10 @@ export function resolveSafeParallelism(options: ParallelismOptions): number {
   // node-llama-cpp/llama.cpp CUDA on Windows is unstable with multiple
   // simultaneous contexts (ggml-cuda.cu:98 in #519). Vulkan and CPU do not
   // show the same failure mode, so only serialize Windows CUDA by default.
-  if ((options.platform ?? process.platform) === "win32" && options.gpu === "cuda") {
+  if (
+    (options.platform ?? process.platform) === "win32" &&
+    options.gpu === "cuda"
+  ) {
     return 1;
   }
 
@@ -628,23 +745,38 @@ export function resolveSafeParallelism(options: ParallelismOptions): number {
 
 export function resolveLlamaGpuMode(
   envValue = process.env.QMD_LLAMA_GPU,
-  forceCpuValue = process.env.QMD_FORCE_CPU
+  forceCpuValue = process.env.QMD_FORCE_CPU,
 ): LlamaGpuMode {
   const forceCpu = forceCpuValue?.trim().toLowerCase() ?? "";
-  if (forceCpu && !["false", "off", "none", "disable", "disabled", "0"].includes(forceCpu)) {
+  if (
+    forceCpu &&
+    !["false", "off", "none", "disable", "disabled", "0"].includes(forceCpu)
+  ) {
     return false;
   }
 
   const normalized = envValue?.trim().toLowerCase() ?? "";
   if (!normalized) return "auto";
-  if (["false", "off", "none", "disable", "disabled", "0"].includes(normalized)) return false;
-  if (normalized === "metal" || normalized === "vulkan" || normalized === "cuda") return normalized;
+  if (["false", "off", "none", "disable", "disabled", "0"].includes(normalized))
+    return false;
+  if (
+    normalized === "metal" ||
+    normalized === "vulkan" ||
+    normalized === "cuda"
+  )
+    return normalized;
 
-  process.stderr.write(`QMD Warning: invalid QMD_LLAMA_GPU="${envValue}", using auto GPU selection.\n`);
+  process.stderr.write(
+    `QMD Warning: invalid QMD_LLAMA_GPU="${envValue}", using auto GPU selection.\n`,
+  );
   return "auto";
 }
 
-async function disposeWithTimeout(resourceName: string, dispose: () => Promise<void>, timeoutMs = 1000): Promise<void> {
+async function disposeWithTimeout(
+  resourceName: string,
+  dispose: () => Promise<void>,
+  timeoutMs = 1000,
+): Promise<void> {
   const timeoutPromise = new Promise<"timeout">((resolve) => {
     setTimeout(() => resolve("timeout"), timeoutMs).unref();
   });
@@ -652,11 +784,13 @@ async function disposeWithTimeout(resourceName: string, dispose: () => Promise<v
   try {
     const result = await Promise.race([dispose(), timeoutPromise]);
     if (result === "timeout") {
-      process.stderr.write(`QMD Warning: timed out disposing ${resourceName}; continuing shutdown.\n`);
+      process.stderr.write(
+        `QMD Warning: timed out disposing ${resourceName}; continuing shutdown.\n`,
+      );
     }
   } catch (error) {
     process.stderr.write(
-      `QMD Warning: failed to dispose ${resourceName} (${error instanceof Error ? error.message : String(error)}); continuing shutdown.\n`
+      `QMD Warning: failed to dispose ${resourceName} (${error instanceof Error ? error.message : String(error)}); continuing shutdown.\n`,
     );
   }
 }
@@ -664,7 +798,9 @@ async function disposeWithTimeout(resourceName: string, dispose: () => Promise<v
 function resolveExpandContextSize(configValue?: number): number {
   if (configValue !== undefined) {
     if (!Number.isInteger(configValue) || configValue <= 0) {
-      throw new Error(`Invalid expandContextSize: ${configValue}. Must be a positive integer.`);
+      throw new Error(
+        `Invalid expandContextSize: ${configValue}. Must be a positive integer.`,
+      );
     }
     return configValue;
   }
@@ -675,7 +811,7 @@ function resolveExpandContextSize(configValue?: number): number {
   const parsed = Number.parseInt(envValue, 10);
   if (!Number.isInteger(parsed) || parsed <= 0) {
     process.stderr.write(
-      `QMD Warning: invalid QMD_EXPAND_CONTEXT_SIZE="${envValue}", using default ${DEFAULT_EXPAND_CONTEXT_SIZE}.\n`
+      `QMD Warning: invalid QMD_EXPAND_CONTEXT_SIZE="${envValue}", using default ${DEFAULT_EXPAND_CONTEXT_SIZE}.\n`,
     );
     return DEFAULT_EXPAND_CONTEXT_SIZE;
   }
@@ -697,7 +833,9 @@ export class LlamaCpp implements LLM {
   private embedContexts: LlamaEmbeddingContext[] = [];
   private generateModel: LlamaModel | null = null;
   private rerankModel: LlamaModel | null = null;
-  private rerankContexts: Awaited<ReturnType<LlamaModel["createRankingContext"]>>[] = [];
+  private rerankContexts: Awaited<
+    ReturnType<LlamaModel["createRankingContext"]>
+  >[] = [];
 
   private embedModelUri: string;
   private generateModelUri: string;
@@ -723,7 +861,6 @@ export class LlamaCpp implements LLM {
   // Track disposal state to prevent double-dispose
   private disposed = false;
 
-
   constructor(config: LlamaCppConfig = {}) {
     // STRUCTURAL INVARIANT: the launcher (bin/qmd) sets GGML_METAL_NO_RESIDENCY=1
     // on darwin BEFORE the native binding loads, which prevents the libggml-metal
@@ -732,11 +869,14 @@ export class LlamaCpp implements LLM {
     // diagnostics. No constructor-time guard installation is needed.
 
     this.embedModelUri = resolveEmbedModel({ embed: config.embedModel });
-    this.generateModelUri = resolveGenerateModel({ generate: config.generateModel });
+    this.generateModelUri = resolveGenerateModel({
+      generate: config.generateModel,
+    });
     this.rerankModelUri = resolveRerankModel({ rerank: config.rerankModel });
     this.modelCacheDir = config.modelCacheDir || MODEL_CACHE_DIR;
     this.expandContextSize = resolveExpandContextSize(config.expandContextSize);
-    this.inactivityTimeoutMs = config.inactivityTimeoutMs ?? DEFAULT_INACTIVITY_TIMEOUT_MS;
+    this.inactivityTimeoutMs =
+      config.inactivityTimeoutMs ?? DEFAULT_INACTIVITY_TIMEOUT_MS;
     this.disposeModelsOnInactivity = config.disposeModelsOnInactivity ?? false;
   }
 
@@ -769,12 +909,12 @@ export class LlamaCpp implements LLM {
         // Check if session manager allows unloading
         // canUnloadLLM is defined later in this file - it checks the session manager
         // We use dynamic import pattern to avoid circular dependency issues
-        if (typeof canUnloadLLM === 'function' && !canUnloadLLM()) {
+        if (typeof canUnloadLLM === "function" && !canUnloadLLM()) {
           // Active sessions/operations - reschedule timer
           this.touchActivity();
           return;
         }
-        this.unloadIdleResources().catch(err => {
+        this.unloadIdleResources().catch((err) => {
           console.error("Error unloading idle resources:", err);
         });
       }, this.inactivityTimeoutMs);
@@ -872,20 +1012,27 @@ export class LlamaCpp implements LLM {
     if (!this.llama) {
       const gpuMode = resolveLlamaGpuMode();
 
-      const { getLlama, getLlamaGpuTypes, LlamaLogLevel } = await loadNodeLlamaCpp();
-      const loadLlama = async (gpu: LlamaGpuMode, sourceBuildAllowed = allowBuild, buildOverride?: "auto" | "never") =>
-        await withNativeStdoutRedirectedToStderr(() => getLlama({
-          // Prefer packaged prebuilt bindings before compiling llama.cpp locally.
-          // node-llama-cpp documents gpu:"auto" as the best default: Metal on
-          // Apple Silicon, CUDA when fully available, Vulkan where available,
-          // then CPU. Use build:"auto" for normal loads and build:"never" for
-          // diagnostic/probe paths that must not compile llama.cpp.
-          build: buildOverride ?? (sourceBuildAllowed ? "auto" : "never"),
-          logLevel: LlamaLogLevel.error,
-          gpu,
-          progressLogs: false,
-          skipDownload: !sourceBuildAllowed,
-        }));
+      const { getLlama, getLlamaGpuTypes, LlamaLogLevel } =
+        await loadNodeLlamaCpp();
+      const loadLlama = async (
+        gpu: LlamaGpuMode,
+        sourceBuildAllowed = allowBuild,
+        buildOverride?: "auto" | "never",
+      ) =>
+        await withNativeStdoutRedirectedToStderr(() =>
+          getLlama({
+            // Prefer packaged prebuilt bindings before compiling llama.cpp locally.
+            // node-llama-cpp documents gpu:"auto" as the best default: Metal on
+            // Apple Silicon, CUDA when fully available, Vulkan where available,
+            // then CPU. Use build:"auto" for normal loads and build:"never" for
+            // diagnostic/probe paths that must not compile llama.cpp.
+            build: buildOverride ?? (sourceBuildAllowed ? "auto" : "never"),
+            logLevel: LlamaLogLevel.error,
+            gpu,
+            progressLogs: false,
+            skipDownload: !sourceBuildAllowed,
+          }),
+        );
       const loadCpuCompatibleLlama = async () => {
         try {
           return await loadLlama(false, false);
@@ -897,7 +1044,7 @@ export class LlamaCpp implements LLM {
           if (!cpuForcedPrebuiltFallbackWarningShown) {
             cpuForcedPrebuiltFallbackWarningShown = true;
             process.stderr.write(
-              `QMD Warning: CPU-only llama.cpp prebuilt not available (${err instanceof Error ? err.message : String(err)}); using packaged backend with GPU offloading disabled.\n`
+              `QMD Warning: CPU-only llama.cpp prebuilt not available (${err instanceof Error ? err.message : String(err)}); using packaged backend with GPU offloading disabled.\n`,
             );
           }
           return await loadLlama("auto", false);
@@ -909,7 +1056,7 @@ export class LlamaCpp implements LLM {
         llama = await loadCpuCompatibleLlama();
       } else if (failedGpuInitModes.has(gpuMode)) {
         process.stderr.write(
-          `QMD Warning: skipping previously failed GPU init${gpuMode === "auto" ? "" : ` for QMD_LLAMA_GPU=${gpuMode}`}, using CPU.\n`
+          `QMD Warning: skipping previously failed GPU init${gpuMode === "auto" ? "" : ` for QMD_LLAMA_GPU=${gpuMode}`}, using CPU.\n`,
         );
         llama = await loadCpuCompatibleLlama();
       } else {
@@ -922,18 +1069,24 @@ export class LlamaCpp implements LLM {
           // systems where a packaged backend can load but detection is too
           // conservative. Never compile during these extra probes.
           if (gpuMode === "auto" && llama.gpu === false && getLlamaGpuTypes) {
-            const candidates = (await getLlamaGpuTypes("allValid"))
-              .filter((candidate): candidate is Exclude<LlamaGpuMode, "auto" | false> => candidate !== false && candidate !== "auto");
+            const candidates = (await getLlamaGpuTypes("allValid")).filter(
+              (candidate): candidate is Exclude<LlamaGpuMode, "auto" | false> =>
+                candidate !== false && candidate !== "auto",
+            );
             for (const candidate of candidates) {
               if (failedGpuInitModes.has(candidate)) continue;
               try {
                 const gpuLlama = await loadLlama(candidate, false, "never");
                 if (gpuLlama.gpu !== false) {
-                  await disposeWithTimeout("CPU llama runtime", () => llama.dispose());
+                  await disposeWithTimeout("CPU llama runtime", () =>
+                    llama.dispose(),
+                  );
                   llama = gpuLlama;
                   break;
                 }
-                await disposeWithTimeout(`${candidate} probe runtime`, () => gpuLlama.dispose());
+                await disposeWithTimeout(`${candidate} probe runtime`, () =>
+                  gpuLlama.dispose(),
+                );
               } catch {
                 failedGpuInitModes.add(candidate);
               }
@@ -945,7 +1098,7 @@ export class LlamaCpp implements LLM {
           // expensive native build/probe attempts in this process.
           failedGpuInitModes.add(gpuMode);
           process.stderr.write(
-            `QMD Warning: GPU init failed${gpuMode === "auto" ? "" : ` for QMD_LLAMA_GPU=${gpuMode}`} (${err instanceof Error ? err.message : String(err)}), falling back to CPU.\n`
+            `QMD Warning: GPU init failed${gpuMode === "auto" ? "" : ` for QMD_LLAMA_GPU=${gpuMode}`} (${err instanceof Error ? err.message : String(err)}), falling back to CPU.\n`,
           );
           llama = await loadCpuCompatibleLlama();
         }
@@ -954,7 +1107,7 @@ export class LlamaCpp implements LLM {
       if (llama.gpu === false && !noGpuAccelerationWarningShown) {
         noGpuAccelerationWarningShown = true;
         process.stderr.write(
-          "QMD Warning: no GPU acceleration, running on CPU (slow). Run 'qmd doctor' for device diagnostics.\n"
+          "QMD Warning: no GPU acceleration, running on CPU (slow). Run 'qmd doctor' for device diagnostics.\n",
         );
       }
       this.llama = llama;
@@ -966,7 +1119,10 @@ export class LlamaCpp implements LLM {
     return isCpuModeRequested();
   }
 
-  private modelLoadOptions(modelPath: string): { modelPath: string; gpuLayers?: number } {
+  private modelLoadOptions(modelPath: string): {
+    modelPath: string;
+    gpuLayers?: number;
+  } {
     return {
       modelPath,
       ...(this.isCpuOffloadForced() ? { gpuLayers: 0 } : {}),
@@ -1061,7 +1217,8 @@ export class LlamaCpp implements LLM {
    * Load embedding contexts (lazy). Creates multiple for parallel embedding.
    * Uses promise guard to prevent concurrent context creation race condition.
    */
-  private embedContextsCreatePromise: Promise<LlamaEmbeddingContext[]> | null = null;
+  private embedContextsCreatePromise: Promise<LlamaEmbeddingContext[]> | null =
+    null;
 
   private async ensureEmbedContexts(): Promise<LlamaEmbeddingContext[]> {
     if (this.embedContexts.length > 0) {
@@ -1080,12 +1237,15 @@ export class LlamaCpp implements LLM {
       const threads = await this.threadsPerContext(n);
       for (let i = 0; i < n; i++) {
         try {
-          this.embedContexts.push(await model.createEmbeddingContext({
-            contextSize: LlamaCpp.EMBED_CONTEXT_SIZE,
-            ...(threads > 0 ? { threads } : {}),
-          }));
+          this.embedContexts.push(
+            await model.createEmbeddingContext({
+              contextSize: LlamaCpp.EMBED_CONTEXT_SIZE,
+              ...(threads > 0 ? { threads } : {}),
+            }),
+          );
         } catch {
-          if (this.embedContexts.length === 0) throw new Error("Failed to create any embedding context");
+          if (this.embedContexts.length === 0)
+            throw new Error("Failed to create any embedding context");
           break;
         }
       }
@@ -1191,7 +1351,9 @@ export class LlamaCpp implements LLM {
     const v = parseInt(process.env.QMD_EMBED_CONTEXT_SIZE ?? "", 10);
     return Number.isFinite(v) && v > 0 ? v : 2048;
   })();
-  private async ensureRerankContexts(): Promise<Awaited<ReturnType<LlamaModel["createRankingContext"]>>[]> {
+  private async ensureRerankContexts(): Promise<
+    Awaited<ReturnType<LlamaModel["createRankingContext"]>>[]
+  > {
     if (this.rerankContexts.length === 0) {
       const model = await this.ensureRerankModel();
       // ~960 MB per context with flash attention at contextSize 2048
@@ -1199,18 +1361,22 @@ export class LlamaCpp implements LLM {
       const threads = await this.threadsPerContext(n);
       for (let i = 0; i < n; i++) {
         try {
-          this.rerankContexts.push(await model.createRankingContext({
-            contextSize: LlamaCpp.RERANK_CONTEXT_SIZE,
-            ...(threads > 0 ? { threads } : {}),
-          }));
+          this.rerankContexts.push(
+            await model.createRankingContext({
+              contextSize: LlamaCpp.RERANK_CONTEXT_SIZE,
+              ...(threads > 0 ? { threads } : {}),
+            }),
+          );
         } catch {
           if (this.rerankContexts.length === 0) {
             // Flash attention might not be supported — retry without it
             try {
-              this.rerankContexts.push(await model.createRankingContext({
-                contextSize: LlamaCpp.RERANK_CONTEXT_SIZE,
-                ...(threads > 0 ? { threads } : {}),
-              }));
+              this.rerankContexts.push(
+                await model.createRankingContext({
+                  contextSize: LlamaCpp.RERANK_CONTEXT_SIZE,
+                  ...(threads > 0 ? { threads } : {}),
+                }),
+              );
             } catch {
               throw new Error("Failed to create any rerank context");
             }
@@ -1232,7 +1398,7 @@ export class LlamaCpp implements LLM {
    * Returns tokenizer tokens (opaque type from node-llama-cpp)
    */
   async tokenize(text: string): Promise<readonly LlamaToken[]> {
-    await this.ensureEmbedContext();  // Ensure model is loaded
+    await this.ensureEmbedContext(); // Ensure model is loaded
     if (!this.embedModel) {
       throw new Error("Embed model not loaded");
     }
@@ -1270,22 +1436,31 @@ export class LlamaCpp implements LLM {
    */
   private resolveEmbedTokenLimit(): number {
     const trainedContextSize = this.embedModel?.trainContextSize;
-    if (typeof trainedContextSize === "number" && Number.isFinite(trainedContextSize) && trainedContextSize > 0) {
-      return Math.max(1, Math.min(LlamaCpp.EMBED_CONTEXT_SIZE, trainedContextSize));
+    if (
+      typeof trainedContextSize === "number" &&
+      Number.isFinite(trainedContextSize) &&
+      trainedContextSize > 0
+    ) {
+      return Math.max(
+        1,
+        Math.min(LlamaCpp.EMBED_CONTEXT_SIZE, trainedContextSize),
+      );
     }
     return LlamaCpp.EMBED_CONTEXT_SIZE;
   }
 
   private async truncateToContextSize(
-    text: string
+    text: string,
   ): Promise<{ text: string; truncated: boolean; limit: number }> {
-    if (!this.embedModel) return { text, truncated: false, limit: LlamaCpp.EMBED_CONTEXT_SIZE };
+    if (!this.embedModel)
+      return { text, truncated: false, limit: LlamaCpp.EMBED_CONTEXT_SIZE };
 
     const maxTokens = this.resolveEmbedTokenLimit();
     if (maxTokens <= 0) return { text, truncated: false, limit: maxTokens };
 
     const tokens = this.embedModel.tokenize(text);
-    if (tokens.length <= maxTokens) return { text, truncated: false, limit: maxTokens };
+    if (tokens.length <= maxTokens)
+      return { text, truncated: false, limit: maxTokens };
 
     // Leave a small margin (4 tokens) for BOS/EOS overhead
     const safeLimit = Math.max(1, maxTokens - 4);
@@ -1294,7 +1469,10 @@ export class LlamaCpp implements LLM {
     return { text: truncatedText, truncated: true, limit: maxTokens };
   }
 
-  async embed(text: string, options: EmbedOptions = {}): Promise<EmbeddingResult | null> {
+  async embed(
+    text: string,
+    options: EmbedOptions = {},
+  ): Promise<EmbeddingResult | null> {
     // Ping activity at start to keep models alive during this operation
     this.touchActivity();
 
@@ -1302,9 +1480,15 @@ export class LlamaCpp implements LLM {
       const context = await this.ensureEmbedContext();
 
       // Guard: truncate text that exceeds model context window to prevent GGML crash
-      const { text: safeText, truncated, limit } = await this.truncateToContextSize(text);
+      const {
+        text: safeText,
+        truncated,
+        limit,
+      } = await this.truncateToContextSize(text);
       if (truncated) {
-        console.warn(`⚠ Text truncated to fit embedding context (${limit} tokens)`);
+        console.warn(
+          `⚠ Text truncated to fit embedding context (${limit} tokens)`,
+        );
       }
 
       const embedding = await context.getEmbeddingFor(safeText);
@@ -1323,8 +1507,12 @@ export class LlamaCpp implements LLM {
    * Batch embed multiple texts efficiently
    * Uses Promise.all for parallel embedding - node-llama-cpp handles batching internally
    */
-  async embedBatch(texts: string[], options: EmbedOptions = {}): Promise<(EmbeddingResult | null)[]> {
-    if (this._ciMode) throw new Error("LLM operations are disabled in CI (set CI=true)");
+  async embedBatch(
+    texts: string[],
+    options: EmbedOptions = {},
+  ): Promise<(EmbeddingResult | null)[]> {
+    if (this._ciMode)
+      throw new Error("LLM operations are disabled in CI (set CI=true)");
     // Ping activity at start to keep models alive during this operation
     this.touchActivity();
 
@@ -1337,16 +1525,26 @@ export class LlamaCpp implements LLM {
       if (n === 1) {
         // Single context: sequential (no point splitting)
         const context = contexts[0]!;
-        const embeddings: ({ embedding: number[]; model: string } | null)[] = [];
+        const embeddings: ({ embedding: number[]; model: string } | null)[] =
+          [];
         for (const text of texts) {
           try {
-            const { text: safeText, truncated, limit } = await this.truncateToContextSize(text);
+            const {
+              text: safeText,
+              truncated,
+              limit,
+            } = await this.truncateToContextSize(text);
             if (truncated) {
-              console.warn(`⚠ Batch text truncated to fit embedding context (${limit} tokens)`);
+              console.warn(
+                `⚠ Batch text truncated to fit embedding context (${limit} tokens)`,
+              );
             }
             const embedding = await context.getEmbeddingFor(safeText);
             this.touchActivity();
-            embeddings.push({ embedding: Array.from(embedding.vector), model: options.model ?? this.embedModelUri });
+            embeddings.push({
+              embedding: Array.from(embedding.vector),
+              model: options.model ?? this.embedModelUri,
+            });
           } catch (err) {
             console.error("Embedding error for text:", err);
             embeddings.push(null);
@@ -1358,7 +1556,7 @@ export class LlamaCpp implements LLM {
       // Multiple contexts: split texts across contexts for parallel evaluation
       const chunkSize = Math.ceil(texts.length / n);
       const chunks = Array.from({ length: n }, (_, i) =>
-        texts.slice(i * chunkSize, (i + 1) * chunkSize)
+        texts.slice(i * chunkSize, (i + 1) * chunkSize),
       );
 
       const chunkResults = await Promise.all(
@@ -1367,20 +1565,29 @@ export class LlamaCpp implements LLM {
           const results: (EmbeddingResult | null)[] = [];
           for (const text of chunk) {
             try {
-              const { text: safeText, truncated, limit } = await this.truncateToContextSize(text);
+              const {
+                text: safeText,
+                truncated,
+                limit,
+              } = await this.truncateToContextSize(text);
               if (truncated) {
-                console.warn(`⚠ Batch text truncated to fit embedding context (${limit} tokens)`);
+                console.warn(
+                  `⚠ Batch text truncated to fit embedding context (${limit} tokens)`,
+                );
               }
               const embedding = await ctx.getEmbeddingFor(safeText);
               this.touchActivity();
-              results.push({ embedding: Array.from(embedding.vector), model: options.model ?? this.embedModelUri });
+              results.push({
+                embedding: Array.from(embedding.vector),
+                model: options.model ?? this.embedModelUri,
+              });
             } catch (err) {
               console.error("Embedding error for text:", err);
               results.push(null);
             }
           }
           return results;
-        })
+        }),
       );
 
       return chunkResults.flat();
@@ -1390,8 +1597,12 @@ export class LlamaCpp implements LLM {
     }
   }
 
-  async generate(prompt: string, options: GenerateOptions = {}): Promise<GenerateResult | null> {
-    if (this._ciMode) throw new Error("LLM operations are disabled in CI (set CI=true)");
+  async generate(
+    prompt: string,
+    options: GenerateOptions = {},
+  ): Promise<GenerateResult | null> {
+    if (this._ciMode)
+      throw new Error("LLM operations are disabled in CI (set CI=true)");
     // Ping activity at start to keep models alive during this operation
     this.touchActivity();
 
@@ -1451,8 +1662,16 @@ export class LlamaCpp implements LLM {
   // High-level abstractions
   // ==========================================================================
 
-  async expandQuery(query: string, options: { context?: string, includeLexical?: boolean, intent?: string } = {}): Promise<Queryable[]> {
-    if (this._ciMode) throw new Error("LLM operations are disabled in CI (set CI=true)");
+  async expandQuery(
+    query: string,
+    options: {
+      context?: string;
+      includeLexical?: boolean;
+      intent?: string;
+    } = {},
+  ): Promise<Queryable[]> {
+    if (this._ciMode)
+      throw new Error("LLM operations are disabled in CI (set CI=true)");
     // Ping activity at start to keep models alive during this operation
     this.touchActivity();
 
@@ -1470,7 +1689,8 @@ export class LlamaCpp implements LLM {
     // Set up inside the try so any failure (grammar creation, context
     // allocation/VRAM, session prompt) falls back to the original query
     // instead of propagating and failing the caller's operation.
-    let genContext: Awaited<ReturnType<LlamaModel["createContext"]>> | undefined;
+    let genContext:
+      Awaited<ReturnType<LlamaModel["createContext"]>> | undefined;
     try {
       const grammar = await llama.createGrammar({
         grammar: `
@@ -1478,7 +1698,7 @@ export class LlamaCpp implements LLM {
         line ::= type ": " content "\\n"
         type ::= "lex" | "vec" | "hyde"
         content ::= [^\\n]+
-      `
+      `,
       });
 
       // Create a bounded context for expansion to prevent large default VRAM allocations.
@@ -1506,39 +1726,48 @@ export class LlamaCpp implements LLM {
 
       const lines = result.trim().split("\n");
       const queryLower = query.toLowerCase();
-      const queryTerms = queryLower.replace(/[^a-z0-9\s]/g, " ").split(/\s+/).filter(Boolean);
+      const queryTerms = queryLower
+        .replace(/[^a-z0-9\s]/g, " ")
+        .split(/\s+/)
+        .filter(Boolean);
 
       const hasQueryTerm = (text: string): boolean => {
         const lower = text.toLowerCase();
         if (queryTerms.length === 0) return true;
-        return queryTerms.some(term => lower.includes(term));
+        return queryTerms.some((term) => lower.includes(term));
       };
 
-      const queryables: Queryable[] = lines.map(line => {
-        const colonIdx = line.indexOf(":");
-        if (colonIdx === -1) return null;
-        const type = line.slice(0, colonIdx).trim();
-        if (type !== 'lex' && type !== 'vec' && type !== 'hyde') return null;
-        const text = line.slice(colonIdx + 1).trim();
-        if (!hasQueryTerm(text)) return null;
-        return { type: type as QueryType, text };
-      }).filter((q): q is Queryable => q !== null);
+      const queryables: Queryable[] = lines
+        .map((line) => {
+          const colonIdx = line.indexOf(":");
+          if (colonIdx === -1) return null;
+          const type = line.slice(0, colonIdx).trim();
+          if (type !== "lex" && type !== "vec" && type !== "hyde") return null;
+          const text = line.slice(colonIdx + 1).trim();
+          if (!hasQueryTerm(text)) return null;
+          return { type: type as QueryType, text };
+        })
+        .filter((q): q is Queryable => q !== null);
 
       // Filter out lex entries if not requested
-      const filtered = includeLexical ? queryables : queryables.filter(q => q.type !== 'lex');
+      const filtered = includeLexical
+        ? queryables
+        : queryables.filter((q) => q.type !== "lex");
       if (filtered.length > 0) return filtered;
 
       const fallback: Queryable[] = [
-        { type: 'hyde', text: `Information about ${query}` },
-        { type: 'lex', text: query },
-        { type: 'vec', text: query },
+        { type: "hyde", text: `Information about ${query}` },
+        { type: "lex", text: query },
+        { type: "vec", text: query },
       ];
-      return includeLexical ? fallback : fallback.filter(q => q.type !== 'lex');
+      return includeLexical
+        ? fallback
+        : fallback.filter((q) => q.type !== "lex");
     } catch (error) {
       console.error("Structured query expansion failed:", error);
       // Fallback to original query
-      const fallback: Queryable[] = [{ type: 'vec', text: query }];
-      if (includeLexical) fallback.unshift({ type: 'lex', text: query });
+      const fallback: Queryable[] = [{ type: "vec", text: query }];
+      if (includeLexical) fallback.unshift({ type: "lex", text: query });
       return fallback;
     } finally {
       if (genContext) await genContext.dispose();
@@ -1554,9 +1783,10 @@ export class LlamaCpp implements LLM {
   async rerank(
     query: string,
     documents: RerankDocument[],
-    options: RerankOptions = {}
+    options: RerankOptions = {},
   ): Promise<RerankResult> {
-    if (this._ciMode) throw new Error("LLM operations are disabled in CI (set CI=true)");
+    if (this._ciMode)
+      throw new Error("LLM operations are disabled in CI (set CI=true)");
     // Ping activity at start to keep models alive during this operation
     this.touchActivity();
 
@@ -1566,7 +1796,10 @@ export class LlamaCpp implements LLM {
     // Truncate documents that would exceed the rerank context size.
     // Budget = contextSize - template overhead - query tokens
     const queryTokens = model.tokenize(query).length;
-    const maxDocTokens = LlamaCpp.RERANK_CONTEXT_SIZE - LlamaCpp.RERANK_TEMPLATE_OVERHEAD - queryTokens;
+    const maxDocTokens =
+      LlamaCpp.RERANK_CONTEXT_SIZE -
+      LlamaCpp.RERANK_TEMPLATE_OVERHEAD -
+      queryTokens;
     const truncationCache = new Map<string, string>();
 
     const truncatedDocs = documents.map((doc) => {
@@ -1576,9 +1809,10 @@ export class LlamaCpp implements LLM {
       }
 
       const tokens = model.tokenize(doc.text);
-      const truncatedText = tokens.length <= maxDocTokens
-        ? doc.text
-        : model.detokenize(tokens.slice(0, maxDocTokens));
+      const truncatedText =
+        tokens.length <= maxDocTokens
+          ? doc.text
+          : model.detokenize(tokens.slice(0, maxDocTokens));
       truncationCache.set(doc.text, truncatedText);
 
       if (truncatedText === doc.text) return doc;
@@ -1608,17 +1842,17 @@ export class LlamaCpp implements LLM {
       1,
       Math.min(
         contexts.length,
-        Math.ceil(texts.length / LlamaCpp.RERANK_TARGET_DOCS_PER_CONTEXT)
-      )
+        Math.ceil(texts.length / LlamaCpp.RERANK_TARGET_DOCS_PER_CONTEXT),
+      ),
     );
     const activeContexts = contexts.slice(0, activeContextCount);
     const chunkSize = Math.ceil(texts.length / activeContexts.length);
     const chunks = Array.from({ length: activeContexts.length }, (_, i) =>
-      texts.slice(i * chunkSize, (i + 1) * chunkSize)
-    ).filter(chunk => chunk.length > 0);
+      texts.slice(i * chunkSize, (i + 1) * chunkSize),
+    ).filter((chunk) => chunk.length > 0);
 
     const allScores = await Promise.all(
-      chunks.map((chunk, i) => activeContexts[i]!.rankAll(query, chunk))
+      chunks.map((chunk, i) => activeContexts[i]!.rankAll(query, chunk)),
     );
 
     // Reassemble scores in original order and sort
@@ -1665,7 +1899,9 @@ export class LlamaCpp implements LLM {
       try {
         const state = await llama.getVramState();
         vram = { total: state.total, used: state.used, free: state.free };
-      } catch { /* no vram info */ }
+      } catch {
+        /* no vram info */
+      }
     }
     return {
       gpu: cpuForced ? false : llama.gpu,
@@ -1704,15 +1940,21 @@ export class LlamaCpp implements LLM {
     this.rerankContexts = [];
 
     if (this.embedModel) {
-      await disposeWithTimeout("embedding model", () => this.embedModel!.dispose());
+      await disposeWithTimeout("embedding model", () =>
+        this.embedModel!.dispose(),
+      );
       this.embedModel = null;
     }
     if (this.generateModel) {
-      await disposeWithTimeout("generation model", () => this.generateModel!.dispose());
+      await disposeWithTimeout("generation model", () =>
+        this.generateModel!.dispose(),
+      );
       this.generateModel = null;
     }
     if (this.rerankModel) {
-      await disposeWithTimeout("rerank model", () => this.rerankModel!.dispose());
+      await disposeWithTimeout("rerank model", () =>
+        this.rerankModel!.dispose(),
+      );
       this.rerankModel = null;
     }
 
@@ -1739,11 +1981,14 @@ export class LlamaCpp implements LLM {
  * Coordinates with LlamaCpp idle timeout to prevent disposal during active sessions.
  */
 class LLMSessionManager {
-  private llm: LlamaCpp;
+  // Typed to the interface, not the local implementation: a session is a
+  // lifecycle wrapper and does not care whether the work happens in-process
+  // or over HTTP.
+  private llm: LLM;
   private _activeSessionCount = 0;
   private _inFlightOperations = 0;
 
-  constructor(llm: LlamaCpp) {
+  constructor(llm: LLM) {
     this.llm = llm;
   }
 
@@ -1779,7 +2024,7 @@ class LLMSessionManager {
     this._inFlightOperations = Math.max(0, this._inFlightOperations - 1);
   }
 
-  getLlamaCpp(): LlamaCpp {
+  getLlamaCpp(): LLM {
     return this.llm;
   }
 }
@@ -1815,9 +2060,13 @@ class LLMSession implements ILLMSession {
       if (options.signal.aborted) {
         this.abortController.abort(options.signal.reason);
       } else {
-        options.signal.addEventListener("abort", () => {
-          this.abortController.abort(options.signal!.reason);
-        }, { once: true });
+        options.signal.addEventListener(
+          "abort",
+          () => {
+            this.abortController.abort(options.signal!.reason);
+          },
+          { once: true },
+        );
       }
     }
 
@@ -1825,7 +2074,11 @@ class LLMSession implements ILLMSession {
     const maxDuration = options.maxDuration ?? 10 * 60 * 1000; // Default 10 minutes
     if (maxDuration > 0) {
       this.maxDurationTimer = setTimeout(() => {
-        this.abortController.abort(new Error(`Session "${this.name}" exceeded max duration of ${maxDuration}ms`));
+        this.abortController.abort(
+          new Error(
+            `Session "${this.name}" exceeded max duration of ${maxDuration}ms`,
+          ),
+        );
       }, maxDuration);
       this.maxDurationTimer.unref(); // Don't keep process alive
     }
@@ -1872,7 +2125,7 @@ class LLMSession implements ILLMSession {
       // Check abort before starting
       if (this.abortController.signal.aborted) {
         throw new SessionReleasedError(
-          this.abortController.signal.reason?.message || "Session aborted"
+          this.abortController.signal.reason?.message || "Session aborted",
         );
       }
       return await fn();
@@ -1881,38 +2134,79 @@ class LLMSession implements ILLMSession {
     }
   }
 
-  async embed(text: string, options?: EmbedOptions): Promise<EmbeddingResult | null> {
-    return this.withOperation(() => this.manager.getLlamaCpp().embed(text, options));
+  async embed(
+    text: string,
+    options?: EmbedOptions,
+  ): Promise<EmbeddingResult | null> {
+    return this.withOperation(() =>
+      this.manager.getLlamaCpp().embed(text, options),
+    );
   }
 
-  async embedBatch(texts: string[], options?: EmbedOptions): Promise<(EmbeddingResult | null)[]> {
-    return this.withOperation(() => this.manager.getLlamaCpp().embedBatch(texts, options));
+  async embedBatch(
+    texts: string[],
+    options?: EmbedOptions,
+  ): Promise<(EmbeddingResult | null)[]> {
+    return this.withOperation(() =>
+      this.manager.getLlamaCpp().embedBatch(texts, options),
+    );
   }
 
   async expandQuery(
     query: string,
-    options?: { context?: string; includeLexical?: boolean }
+    options?: { context?: string; includeLexical?: boolean },
   ): Promise<Queryable[]> {
-    return this.withOperation(() => this.manager.getLlamaCpp().expandQuery(query, options));
+    return this.withOperation(() =>
+      this.manager.getLlamaCpp().expandQuery(query, options),
+    );
   }
 
   async rerank(
     query: string,
     documents: RerankDocument[],
-    options?: RerankOptions
+    options?: RerankOptions,
   ): Promise<RerankResult> {
-    return this.withOperation(() => this.manager.getLlamaCpp().rerank(query, documents, options));
+    return this.withOperation(() =>
+      this.manager.getLlamaCpp().rerank(query, documents, options),
+    );
   }
 }
 
-// Session manager for the default LlamaCpp instance
+// Session manager for the active backend.
 let defaultSessionManager: LLMSessionManager | null = null;
+
+// The model configuration sessions are built from. The CLI loads index.yml
+// and installs it here, so a session created anywhere in the process routes
+// by the user's config rather than by the built-in defaults.
+let activeModelConfig: ModelResolutionConfig | undefined;
+
+/**
+ * Install the model configuration used for new sessions.
+ *
+ * Called once by the CLI after reading index.yml. Discards any cached session
+ * manager so a configuration change takes effect rather than being masked by
+ * a manager built from the previous one.
+ */
+export function setActiveModelConfig(
+  config: ModelResolutionConfig | undefined,
+): void {
+  activeModelConfig = config;
+  // Discard every cached backend: a configuration change that leaves a stale
+  // singleton in place is indistinguishable from a change that did nothing.
+  defaultSessionManager = null;
+  defaultLlamaCpp = null;
+  localLlamaCpp = null;
+}
 
 /**
  * Get the session manager for the default LlamaCpp instance.
  */
 function getSessionManager(): LLMSessionManager {
-  const llm = getDefaultLlamaCpp();
+  // createLLM validates every configured model field and routes each role to
+  // the backend its own field named. This is the single point where the
+  // configuration becomes a backend, so a URL cannot be accepted here and
+  // then quietly ignored downstream.
+  const llm = createLLM(activeModelConfig);
   if (!defaultSessionManager || defaultSessionManager.getLlamaCpp() !== llm) {
     defaultSessionManager = new LLMSessionManager(llm);
   }
@@ -1935,7 +2229,7 @@ function getSessionManager(): LLMSessionManager {
  */
 export async function withLLMSession<T>(
   fn: (session: ILLMSession) => Promise<T>,
-  options?: LLMSessionOptions
+  options?: LLMSessionOptions,
 ): Promise<T> {
   const manager = getSessionManager();
   const session = new LLMSession(manager, options);
@@ -1952,9 +2246,9 @@ export async function withLLMSession<T>(
  * Unlike withLLMSession, this does not use the global singleton.
  */
 export async function withLLMSessionForLlm<T>(
-  llm: LlamaCpp,
+  llm: LLM,
   fn: (session: ILLMSession) => Promise<T>,
-  options?: LLMSessionOptions
+  options?: LLMSessionOptions,
 ): Promise<T> {
   const manager = new LLMSessionManager(llm);
   const session = new LLMSession(manager, options);
@@ -2039,18 +2333,190 @@ export function isDarwinExitGuardInstalled(): boolean {
 // Singleton for default LlamaCpp instance
 // =============================================================================
 
-let defaultLlamaCpp: LlamaCpp | null = null;
+let defaultLlamaCpp: LLM | null = null;
 
 /**
- * Get the default LlamaCpp instance (creates one if needed). The LlamaCpp
- * constructor installs the darwin exit guard, so any code path that obtains
- * the singleton is protected.
+ * Get the default backend, building it from the active configuration.
+ *
+ * THIS IS THE ONE PLACE A BACKEND IS CHOSEN. Every caller in store.ts,
+ * index.ts and the CLI funnels through here, so the decision is made once and
+ * nothing downstream re-derives it. Previously this hardcoded `new LlamaCpp()`
+ * regardless of configuration, which is why a `models.embed` naming a remote
+ * server was accepted, echoed back, and then ignored: the config never reached
+ * the object that did the work.
+ *
+ * When the configuration names a remote server for every role, no LlamaCpp is
+ * constructed at all -- node-llama-cpp is never loaded and no model is
+ * resident locally, which is the entire point of pointing qmd at a GPU box.
  */
-export function getDefaultLlamaCpp(): LlamaCpp {
+export function getDefaultLlamaCpp(): LLM {
   if (!defaultLlamaCpp) {
-    defaultLlamaCpp = new LlamaCpp();
+    defaultLlamaCpp = buildBackendFromConfig(activeModelConfig);
   }
   return defaultLlamaCpp;
+}
+
+/**
+ * The local backend, for the roles that genuinely run in-process.
+ *
+ * Only ever handed model fields that name local models: LlamaCpp resolves a
+ * model string as a HuggingFace ref or a file path, so passing it a URL makes
+ * it try to DOWNLOAD the endpoint.
+ */
+let localLlamaCpp: LlamaCpp | null = null;
+export function getLocalLlamaCpp(
+  models?: Required<ModelResolutionConfig>,
+): LlamaCpp {
+  if (!localLlamaCpp) {
+    const localOnly = (uri?: string): string | undefined =>
+      uri && !isRemoteModelUri(uri) ? uri : undefined;
+    localLlamaCpp = new LlamaCpp({
+      embedModel: localOnly(models?.embed),
+      generateModel: localOnly(models?.generate),
+      rerankModel: localOnly(models?.rerank),
+    });
+  }
+  return localLlamaCpp;
+}
+
+/**
+ * Turn a configuration into the backend it describes.
+ *
+ * Validates every role first: a model field qmd cannot parse is a
+ * configuration error the user must see, never a silent fall back to local.
+ */
+function buildBackendFromConfig(config?: ModelResolutionConfig): LLM {
+  const models = resolveModels(config);
+  assertKnownModelScheme(models.embed, "embed");
+  assertKnownModelScheme(models.generate, "generate");
+  assertKnownModelScheme(models.rerank, "rerank");
+
+  const remoteRoles = [models.embed, models.generate, models.rerank].filter(
+    isRemoteModelUri,
+  );
+  if (remoteRoles.length === 0) return getLocalLlamaCpp(models);
+
+  const remote = new RemoteLLM({
+    embedModel: isRemoteModelUri(models.embed) ? models.embed : undefined,
+    generateModel: isRemoteModelUri(models.generate)
+      ? models.generate
+      : undefined,
+    rerankModel: isRemoteModelUri(models.rerank) ? models.rerank : undefined,
+  });
+  if (remoteRoles.length === 3) return remote;
+  return new HybridLLM(remote, models);
+}
+
+/**
+ * Reject a model field that is neither a local model nor a remote URL.
+ *
+ * qmd 2.6.3 accepted any string here and passed anything it did not recognise
+ * to node-llama-cpp, which treated it as a local path. A typo'd or half-migrated
+ * URL therefore produced working search results computed entirely locally --
+ * configured, apparently fine, and doing something other than what it said. A
+ * config that lies is worse than one that breaks, so an unrecognised scheme
+ * now throws by name.
+ */
+export function assertKnownModelScheme(uri: string, role: string): void {
+  if (!isRemoteModelUri(uri)) return; // hf:, a path, or a bare name: local, as always
+  // A URL routes to a remote server, and a remote server needs a model name.
+  // Without one the request would be sent with the URL itself as the model and
+  // rejected as "no router for requested model" -- a confusing failure a long
+  // way from its cause, so name it here instead.
+  parseRemoteModelUri(uri);
+}
+
+/**
+ * Whether the active configuration routes any role to a remote server.
+ */
+export function usesRemoteBackend(config?: ModelResolutionConfig): boolean {
+  const models = resolveModels(config);
+  return (
+    isRemoteModelUri(models.embed) ||
+    isRemoteModelUri(models.generate) ||
+    isRemoteModelUri(models.rerank)
+  );
+}
+
+/**
+ * Build the LLM backend for a configuration, validating every role first.
+ *
+ * Roles are independent: embeddings can run on a GPU box while query expansion
+ * stays local. When every remote role shares one base URL a single RemoteLLM
+ * serves them; a mixed configuration keeps the local instance for the roles
+ * that named a local model.
+ */
+export function createLLM(config?: ModelResolutionConfig): LLM {
+  return config === undefined
+    ? getDefaultLlamaCpp()
+    : buildBackendFromConfig(config);
+}
+
+/**
+ * Routes each role to whichever backend its own model field named.
+ *
+ * Exists so a partial migration is a first-class configuration rather than an
+ * all-or-nothing switch: embeddings move to the GPU box on their own, and the
+ * local generate/rerank models keep working untouched.
+ */
+class HybridLLM implements LLM {
+  constructor(
+    private readonly remote: RemoteLLM,
+    private readonly models: Required<ModelResolutionConfig>,
+  ) {}
+
+  private backend(role: "embed" | "generate" | "rerank"): LLM {
+    return isRemoteModelUri(this.models[role])
+      ? this.remote
+      : getLocalLlamaCpp(this.models);
+  }
+
+  get embedModelName(): string {
+    return this.models.embed;
+  }
+
+  embed(text: string, options?: EmbedOptions): Promise<EmbeddingResult | null> {
+    return this.backend("embed").embed(text, options);
+  }
+
+  embedBatch(
+    texts: string[],
+    options?: EmbedOptions,
+  ): Promise<(EmbeddingResult | null)[]> {
+    return this.backend("embed").embedBatch(texts, options);
+  }
+
+  generate(
+    prompt: string,
+    options?: GenerateOptions,
+  ): Promise<GenerateResult | null> {
+    return this.backend("generate").generate(prompt, options);
+  }
+
+  rerank(
+    query: string,
+    documents: RerankDocument[],
+    options?: RerankOptions,
+  ): Promise<RerankResult> {
+    return this.backend("rerank").rerank(query, documents, options);
+  }
+
+  expandQuery(
+    query: string,
+    options?: { context?: string; includeLexical?: boolean; intent?: string },
+  ): Promise<Queryable[]> {
+    return this.backend("generate").expandQuery(query, options);
+  }
+
+  modelExists(model: string): Promise<ModelInfo> {
+    return isRemoteModelUri(model)
+      ? this.remote.modelExists(model)
+      : getLocalLlamaCpp(this.models).modelExists(model);
+  }
+
+  async dispose(): Promise<void> {
+    await this.remote.dispose();
+  }
 }
 
 /**
@@ -2059,9 +2525,10 @@ export function getDefaultLlamaCpp(): LlamaCpp {
  * the invariant intact for test doubles that didn't go through the real
  * constructor.
  */
-export function setDefaultLlamaCpp(llm: LlamaCpp | null): void {
+export function setDefaultLlamaCpp(llm: LLM | null): void {
   if (llm !== null) installDarwinExitGuard();
   defaultLlamaCpp = llm;
+  if (llm instanceof LlamaCpp) localLlamaCpp = llm;
 }
 
 /**
