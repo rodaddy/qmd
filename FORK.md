@@ -201,3 +201,50 @@ Out of scope for the engine: `cache_prompt`, `--cache-reuse`, and
 `--slot-save-path` are documented only under llama-server's `/completion`
 endpoint. Neither `/v1/embeddings` nor `/rerank` supports prefix reuse, and
 llama-swap adds no response cache, so this has to be solved in qmd.
+
+### D3 — a list-shaped `collections:` block indexes but cannot be searched
+
+`.qmd/index.yml` expects `collections:` to be a MAP keyed by collection
+name, with an absolute `path:` and a `pattern:` list:
+
+```yaml
+collections:
+  mycorpus:
+    path: /abs/path/to/docs
+    pattern:
+      - "*.md"
+```
+
+The list-of-objects spelling — the more common YAML idiom, and what a
+reasonable person writes from memory — is ACCEPTED by the loader:
+
+```yaml
+collections:
+  - name: mycorpus
+    path: docs
+    include:
+      - "**/*.md"
+```
+
+Measured 2026-08-25 on a 67-file corpus: `qmd update` reported
+`Indexed: 67 new`, `qmd embed` embedded 448 chunks, `documents`,
+`content`, and `documents_fts` each held 67 rows, and `content_vectors`
+held 448 under the correct model and fingerprint. Every query — `qmd
+query`, `qmd vsearch`, and plain `qmd search` — returned
+`No results found`.
+
+Lexical search failing alongside vector search is what rules out an
+embedding problem: the documents are indexed under paths that cannot be
+resolved at search time.
+
+The cost is that every observable signal reports success. No error, no
+warning, and every row count is correct.
+
+Still needed if: the config loader accepts a list under `collections:`
+without either rejecting it or normalizing it to the map form.
+
+Worth fixing at the loader rather than in the docs. This is the same
+class as the `embed:` field accepting a URL and silently ignoring it —
+the defect this fork exists to fix. A config value that is accepted,
+acted on, and produces a working-looking artifact that cannot serve its
+purpose is harder to debug than one that is rejected outright.
