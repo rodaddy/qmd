@@ -3195,11 +3195,34 @@ export function getCacheKey(url: string, body: object): string {
   return hash.digest("hex");
 }
 
+/**
+ * Process-lifetime cache counters.
+ *
+ * The llm_cache table had never been instrumented, so "is the cache working"
+ * could only be answered by opening the database by hand. Measured that way
+ * on 2026-08-25: the Development index held 0 rows after months of use, while
+ * open-brain held 82 rows all written inside one 27-minute window. Both are
+ * explained by the eviction policy in setCachedResult below, and neither is
+ * visible from anything qmd prints.
+ *
+ * Counters only -- no keys, no values, nothing that could carry document text
+ * into a log.
+ */
+const cacheStats = { hits: 0, misses: 0, writes: 0, evictions: 0 };
+
+/** Snapshot of this process's cache activity. */
+export function getCacheStats(): Readonly<typeof cacheStats> {
+  return { ...cacheStats };
+}
+
 export function getCachedResult(db: Database, cacheKey: string): string | null {
   const row = db
     .prepare(`SELECT result FROM llm_cache WHERE hash = ?`)
     .get(cacheKey) as { result: string } | null;
-  return row?.result || null;
+  const result = row?.result || null;
+  if (result === null) cacheStats.misses++;
+  else cacheStats.hits++;
+  return result;
 }
 
 export function setCachedResult(
@@ -3211,10 +3234,12 @@ export function setCachedResult(
   db.prepare(
     `INSERT OR REPLACE INTO llm_cache (hash, result, created_at) VALUES (?, ?, ?)`,
   ).run(cacheKey, result, now);
+  cacheStats.writes++;
   if (Math.random() < 0.01) {
     db.exec(
       `DELETE FROM llm_cache WHERE hash NOT IN (SELECT hash FROM llm_cache ORDER BY created_at DESC LIMIT 1000)`,
     );
+    cacheStats.evictions++;
   }
 }
 
