@@ -161,12 +161,16 @@ const DEFAULT_CONCURRENCY = 2;
  * a remote client has no tokenizer, so it budgets conservatively by character
  * count at qmd's own ~4 chars/token ratio (store.ts CHUNK_SIZE_CHARS).
  *
- * Override with QMD_REMOTE_RERANK_BATCH_TOKENS when the server is configured
- * with a larger ubatch.
+ * Defaults to 4096, matching both qmd's own RERANK_CONTEXT_SIZE and the
+ * `-b 4096 -ub 4096` the rerank-qwen3 service runs with (k3s-deploy #140).
+ * At parity the truncation below never fires and the reranker judges whole
+ * chunks. Lower it with QMD_REMOTE_RERANK_BATCH_TOKENS for a server built with
+ * a smaller ubatch: documents are then truncated to fit rather than rejected,
+ * since a truncated score beats no score.
  */
 const REMOTE_RERANK_BATCH_TOKENS: number = (() => {
   const v = parseInt(process.env.QMD_REMOTE_RERANK_BATCH_TOKENS ?? "", 10);
-  return Number.isFinite(v) && v > 0 ? v : 512;
+  return Number.isFinite(v) && v > 0 ? v : 4096;
 })();
 
 /** Qwen3 reranker chat template overhead, per llm.ts RERANK_TEMPLATE_OVERHEAD. */
