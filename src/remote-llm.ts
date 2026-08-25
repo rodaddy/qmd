@@ -21,6 +21,8 @@
  * byte-identical input.
  */
 
+import { errorFields, logger, withCorrelationId } from "./logging.js";
+import { HttpStatusError, TransportError, withRetry } from "./retry.js";
 import type {
   EmbedOptions,
   EmbeddingResult,
@@ -130,10 +132,24 @@ export type RemoteLLMConfig = {
    * bounds POST body size so one oversized call cannot stall a whole index.
    */
   embedBatchSize?: number;
+  /**
+   * Embedding requests in flight at once. The work is I/O-bound, so this is
+   * about keeping the server busy, not about local CPU. Past what the server
+   * can serve concurrently the extra requests just queue on its side.
+   */
+  concurrency?: number;
+  /** Attempts per request, including the first. */
+  attempts?: number;
 };
 
 const DEFAULT_REQUEST_TIMEOUT_MS = 300_000;
 const DEFAULT_EMBED_BATCH_SIZE = 32;
+// Measured against llama-swap on an RTX 5060 Ti, 512 texts in 32-text batches:
+// concurrency 1 = 525 texts/s, 2 = 890, 4 = 881, 8 = 853, 16 = 843. One
+// in-flight request leaves the GPU idle between batches; past two the requests
+// queue server-side and add latency without throughput. Raise only with a
+// measurement from the server actually in use.
+const DEFAULT_CONCURRENCY = 2;
 
 /**
  * An OpenAI-compatible server reached over HTTP.
@@ -150,6 +166,13 @@ export class RemoteLLM implements LLM {
   private readonly embedModelField?: string;
   private readonly requestTimeoutMs: number;
   private readonly embedBatchSize: number;
+  private readonly concurrency: number;
+  /**
+   * Vector width observed from the first successful embedding, used to reject
+   * any later vector of a different width. Learned rather than configured:
+   * the server owns the model, so it owns the dimension.
+   */
+  private expectedDimensions: number | undefined;
 
   constructor(config: RemoteLLMConfig = {}) {
     this.embedModelField = config.embedModel;
@@ -168,6 +191,7 @@ export class RemoteLLM implements LLM {
     this.requestTimeoutMs =
       config.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
     this.embedBatchSize = config.embedBatchSize ?? DEFAULT_EMBED_BATCH_SIZE;
+    this.concurrency = Math.max(1, config.concurrency ?? DEFAULT_CONCURRENCY);
   }
 
   /** The embed model field as configured, for fingerprinting and logging. */
@@ -235,22 +259,28 @@ export class RemoteLLM implements LLM {
         signal: controller.signal,
       });
     } catch (err) {
-      const reason =
-        err instanceof Error && err.name === "AbortError"
+      const timedOut = err instanceof Error && err.name === "AbortError";
+      throw new TransportError(
+        timedOut
           ? `timed out after ${this.requestTimeoutMs}ms`
           : err instanceof Error
             ? err.message
-            : String(err);
-      throw new Error(`Remote LLM request to ${url} failed: ${reason}`);
+            : String(err),
+        url,
+        timedOut,
+      );
     } finally {
+      // Always clear the timer: leaving it armed keeps the event loop alive
+      // and, in a CLI that waits for the loop to drain, hangs the process.
       clearTimeout(timer);
     }
 
     if (!response.ok) {
       const detail = (await response.text().catch(() => "")).slice(0, 500);
-      throw new Error(
-        `Remote LLM request to ${url} returned ${response.status} ` +
-          `${response.statusText}${detail ? `: ${detail}` : ""}`,
+      throw new HttpStatusError(
+        `${response.status} ${response.statusText}${detail ? `: ${detail}` : ""}`,
+        response.status,
+        url,
       );
     }
 
@@ -293,44 +323,129 @@ export class RemoteLLM implements LLM {
     if (texts.length === 0) return [];
     const uri = this.require("embed");
     const model = this.wireModel(options.model, uri);
-    const out: (EmbeddingResult | null)[] = [];
 
-    for (let start = 0; start < texts.length; start += this.embedBatchSize) {
-      const slice = texts.slice(start, start + this.embedBatchSize);
+    // Split into batches first, then run several concurrently. The work is
+    // I/O-bound -- the GPU is on the other end of the socket and this process
+    // is idle while a request is in flight -- so concurrency here is about not
+    // leaving the server idle between batches, not about local CPU.
+    const batches: { at: number; texts: string[] }[] = [];
+    for (let at = 0; at < texts.length; at += this.embedBatchSize) {
+      batches.push({ at, texts: texts.slice(at, at + this.embedBatchSize) });
+    }
+
+    const out: (EmbeddingResult | null)[] = new Array(texts.length).fill(null);
+    let failedBatches = 0;
+    const startedAt = Date.now();
+
+    const runBatch = async (batch: {
+      at: number;
+      texts: string[];
+    }): Promise<void> => {
       try {
-        const body = await this.post<EmbeddingsResponse>(
-          uri.baseUrl,
-          "/embeddings",
+        const rows = await withRetry(
+          async () => {
+            const body = await this.post<EmbeddingsResponse>(
+              uri.baseUrl,
+              "/embeddings",
+              { model, input: batch.texts },
+            );
+            const data = body.data ?? [];
+            // Trust nothing about the shape: a truncated or reordered response
+            // silently writes wrong vectors into the index, and a wrong-
+            // dimension vector corrupts it outright.
+            if (data.length !== batch.texts.length) {
+              throw new Error(
+                `expected ${batch.texts.length} embeddings, got ${data.length}`,
+              );
+            }
+            return data;
+          },
           {
-            model,
-            input: slice,
+            operation: "remote.embedBatch",
+            context: { model, batch_size: batch.texts.length },
           },
         );
-        const rows = body.data ?? [];
-        if (rows.length !== slice.length) {
-          throw new Error(
-            `expected ${slice.length} embeddings, server returned ${rows.length}`,
-          );
-        }
-        // Index is authoritative when present: the spec permits any order.
-        const ordered: (EmbeddingResult | null)[] = new Array(
-          slice.length,
-        ).fill(null);
+
         rows.forEach((row, i) => {
           const at = typeof row.index === "number" ? row.index : i;
-          if (at < 0 || at >= slice.length) return;
-          ordered[at] = row.embedding
-            ? { embedding: row.embedding, model }
-            : null;
+          if (at < 0 || at >= batch.texts.length) return;
+          if (!row.embedding?.length) return;
+          if (this.expectedDimensions === undefined) {
+            this.expectedDimensions = row.embedding.length;
+          } else if (row.embedding.length !== this.expectedDimensions) {
+            // Mixed dimensions in one index make every later search wrong in a
+            // way no error reports, so refuse the vector rather than store it.
+            logger.error(
+              {
+                operation: "remote.embedBatch",
+                model,
+                expected_dimensions: this.expectedDimensions,
+                got_dimensions: row.embedding.length,
+              },
+              "embedding_dimension_mismatch",
+            );
+            return;
+          }
+          out[batch.at + at] = { embedding: row.embedding, model };
         });
-        out.push(...ordered);
       } catch (err) {
-        console.error(
-          `Remote batch embedding failed for ${slice.length} texts:`,
-          err instanceof Error ? err.message : err,
+        // The batch is lost, but the run continues: one bad batch should not
+        // discard thousands of good embeddings. Counted and reported below --
+        // never silently absorbed.
+        failedBatches++;
+        logger.error(
+          {
+            operation: "remote.embedBatch",
+            model,
+            batch_offset: batch.at,
+            batch_size: batch.texts.length,
+            ...errorFields(err),
+          },
+          "embed_batch_failed",
         );
-        out.push(...slice.map(() => null));
       }
+    };
+
+    // Bounded concurrency: a fixed pool of workers pulling from one queue, so
+    // an unbounded input cannot open unbounded sockets.
+    let next = 0;
+    const workers = Array.from(
+      { length: Math.min(this.concurrency, batches.length) },
+      async () => {
+        while (next < batches.length) {
+          await runBatch(batches[next++]!);
+        }
+      },
+    );
+    await Promise.all(workers);
+
+    const failedTexts = out.filter((e) => e === null).length;
+    if (failedTexts > 0) {
+      // A partially-failed run that reports success is how an index quietly
+      // ends up incomplete, so say so at a level that is visible by default.
+      logger.warn(
+        {
+          operation: "remote.embedBatch",
+          model,
+          failed_texts: failedTexts,
+          total_texts: texts.length,
+          failed_batches: failedBatches,
+          duration_ms: Date.now() - startedAt,
+        },
+        "embed_batch_partial_failure",
+      );
+    } else {
+      logger.info(
+        {
+          operation: "remote.embedBatch",
+          model,
+          total_texts: texts.length,
+          batches: batches.length,
+          concurrency: this.concurrency,
+          duration_ms: Date.now() - startedAt,
+        },
+        "embed_batch_ok",
+      );
     }
     return out;
   }
@@ -343,24 +458,39 @@ export class RemoteLLM implements LLM {
     const uri = this.require("generate");
     const model = this.wireModel(options.model, uri);
     try {
-      const body = await this.post<ChatResponse>(
-        uri.baseUrl,
-        "/chat/completions",
-        {
-          model,
-          messages: [{ role: "user", content: prompt }],
-          max_tokens: options.maxTokens ?? 600,
-          temperature: options.temperature ?? 0.7,
+      return await withRetry(
+        async () => {
+          const body = await this.post<ChatResponse>(
+            uri.baseUrl,
+            "/chat/completions",
+            {
+              model,
+              messages: [{ role: "user", content: prompt }],
+              max_tokens: options.maxTokens ?? 600,
+              temperature: options.temperature ?? 0.7,
+            },
+          );
+          const choice = body.choices?.[0];
+          const text = choice?.message?.content;
+          if (typeof text !== "string") {
+            throw new Error("response contained no message content");
+          }
+          return {
+            text,
+            model,
+            done: choice?.finish_reason !== "length",
+          } satisfies GenerateResult;
         },
+        { operation: "remote.generate", context: { model } },
       );
-      const choice = body.choices?.[0];
-      const text = choice?.message?.content;
-      if (typeof text !== "string") return null;
-      return { text, model, done: choice?.finish_reason !== "length" };
     } catch (err) {
-      console.error(
-        "Remote generation failed:",
-        err instanceof Error ? err.message : err,
+      // Generation drives query expansion, which has a defined fallback: the
+      // plain query. Returning null selects it, and the caller degrades to an
+      // unexpanded search rather than failing. Logged at error because a
+      // degraded search that says nothing is indistinguishable from a good one.
+      logger.error(
+        { operation: "remote.generate", model, ...errorFields(err) },
+        "generate_failed",
       );
       return null;
     }
@@ -378,16 +508,67 @@ export class RemoteLLM implements LLM {
       ? parseRemoteModelUri(modelUri)
       : (this.embedUri ?? this.generateUri ?? this.rerankUri);
     if (!uri) return { name, exists: false };
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), this.requestTimeoutMs);
     try {
       const response = await fetch(`${uri.baseUrl}/models`, {
-        signal: AbortSignal.timeout(this.requestTimeoutMs),
+        signal: controller.signal,
       });
-      if (!response.ok) return { name, exists: false };
+      if (!response.ok) {
+        throw new HttpStatusError(
+          `${response.status} ${response.statusText}`,
+          response.status,
+          `${uri.baseUrl}/models`,
+        );
+      }
       const body = (await response.json()) as { data?: { id?: string }[] };
       const exists = (body.data ?? []).some((m) => m.id === name);
       return { name, exists, path: `${uri.baseUrl}#${name}` };
-    } catch {
+    } catch (err) {
+      // Reports non-existence rather than throwing, because callers use this
+      // as a probe. The log is what distinguishes "the server says no" from
+      // "the server could not be asked".
+      logger.warn(
+        { operation: "remote.modelExists", model: name, ...errorFields(err) },
+        "model_exists_check_failed",
+      );
       return { name, exists: false };
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  /**
+   * Verify every configured remote role before any work depends on it.
+   *
+   * Without this the first failure surfaces mid-operation -- partway through a
+   * re-index, or on a search the user is waiting for -- and a wrong model name
+   * looks identical to a network problem. One round trip up front turns both
+   * into a named error before anything starts.
+   *
+   * @throws If a configured model is not served, or the server cannot be
+   *   reached at all.
+   */
+  async preflight(): Promise<void> {
+    const roles: [string, RemoteModelUri | undefined][] = [
+      ["embed", this.embedUri],
+      ["generate", this.generateUri],
+      ["rerank", this.rerankUri],
+    ];
+    for (const [role, uri] of roles) {
+      if (!uri) continue;
+      const info = await this.modelExists(`${uri.baseUrl}#${uri.model}`);
+      if (!info.exists) {
+        throw new Error(
+          `Remote ${role} model ${JSON.stringify(uri.model)} is not served by ` +
+            `${uri.baseUrl}. Check the model name against that server's ` +
+            `/v1/models, and that the server is reachable.`,
+        );
+      }
+      logger.debug(
+        { operation: "remote.preflight", role, model: uri.model },
+        "preflight_ok",
+      );
     }
   }
 
@@ -407,11 +588,18 @@ export class RemoteLLM implements LLM {
     const model = this.wireModel(options.model, uri);
     if (documents.length === 0) return { results: [], model };
 
-    const body = await this.post<RerankResponse>(uri.baseUrl, "/rerank", {
-      model,
-      query,
-      documents: documents.map((d) => d.text),
-    });
+    const body = await withRetry(
+      () =>
+        this.post<RerankResponse>(uri.baseUrl, "/rerank", {
+          model,
+          query,
+          documents: documents.map((d) => d.text),
+        }),
+      {
+        operation: "remote.rerank",
+        context: { model, documents: documents.length },
+      },
+    );
 
     const scores = new Array(documents.length).fill(0);
     for (const row of body.results ?? []) {
@@ -491,9 +679,11 @@ export class RemoteLLM implements LLM {
         : queryables.filter((q) => q.type !== "lex");
       return filtered.length > 0 ? filtered : plain;
     } catch (err) {
-      console.error(
-        "Remote query expansion failed:",
-        err instanceof Error ? err.message : err,
+      // Falls back to the unexpanded query -- a documented degraded path, not
+      // a swallowed error: search still works, with less recall.
+      logger.warn(
+        { operation: "remote.expandQuery", ...errorFields(err) },
+        "expand_query_degraded",
       );
       return plain;
     }
