@@ -152,6 +152,25 @@ const DEFAULT_EMBED_BATCH_SIZE = 32;
 const DEFAULT_CONCURRENCY = 2;
 
 /**
+ * Read a positive-integer tuning knob from the environment.
+ *
+ * Throws on a malformed value rather than falling back to the default: a
+ * sweep that silently ignores its own setting reports the default's numbers
+ * under the override's name, which is worse than no knob at all.
+ */
+function positiveIntFromEnv(name: string, fallback: number): number {
+  const raw = process.env[name];
+  if (raw === undefined || raw === "") return fallback;
+  const parsed = Number(raw);
+  if (!Number.isInteger(parsed) || parsed <= 0) {
+    throw new Error(
+      `${name} must be a positive integer, got ${JSON.stringify(raw)}`,
+    );
+  }
+  return parsed;
+}
+
+/**
  * Token budget for one rerank request, matching a llama-server physical batch.
  *
  * llama.cpp scores a rerank pair in a single ubatch, so a pair exceeding the
@@ -227,8 +246,17 @@ export class RemoteLLM implements LLM {
         : undefined;
     this.requestTimeoutMs =
       config.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
-    this.embedBatchSize = config.embedBatchSize ?? DEFAULT_EMBED_BATCH_SIZE;
-    this.concurrency = Math.max(1, config.concurrency ?? DEFAULT_CONCURRENCY);
+    // Env overrides so these can be swept against a live server without a
+    // rebuild. Both defaults were measured against one specific GPU and server
+    // config; the right value moves when either changes.
+    this.embedBatchSize =
+      config.embedBatchSize ??
+      positiveIntFromEnv("QMD_REMOTE_EMBED_BATCH", DEFAULT_EMBED_BATCH_SIZE);
+    this.concurrency = Math.max(
+      1,
+      config.concurrency ??
+        positiveIntFromEnv("QMD_REMOTE_CONCURRENCY", DEFAULT_CONCURRENCY),
+    );
   }
 
   /** The embed model field as configured, for fingerprinting and logging. */

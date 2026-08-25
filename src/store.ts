@@ -66,8 +66,35 @@ const EMBED_FINGERPRINT_PROBE_DOC = "__qmd_embedding_document_probe__";
 
 // Chunking: 900 tokens per chunk with 15% overlap
 // Increased from 800 to accommodate smart chunking finding natural break points
-export const CHUNK_SIZE_TOKENS = 900;
-export const CHUNK_OVERLAP_TOKENS = Math.floor(CHUNK_SIZE_TOKENS * 0.15); // 135 tokens (15% overlap)
+//
+// OVERRIDABLE because 900 is a property of the MODEL, not of qmd. It suits a
+// 300M embedder sized to run on a laptop; a remote backend can serve a model
+// with a far larger context, where 900 splits documents that would embed whole.
+// Measured 2026-08-25 against embeddinggemma-300M on llama-swap: 2600 input
+// tokens returned 200, 3000 returned HTTP 500 "input exceeds context" -- so the
+// usable ceiling for THAT model is its 2048 architectural limit, and a bigger
+// chunk needs a bigger model, not just a larger -c on the server.
+//
+// Both values feed getEmbeddingFingerprint below, so changing either
+// invalidates existing vectors and forces a re-embed. That is deliberate:
+// vectors built at different chunk sizes are not comparable.
+function chunkTokensFromEnv(name: string, fallback: number): number {
+  const raw = process.env[name];
+  if (raw === undefined || raw === "") return fallback;
+  const parsed = Number(raw);
+  if (!Number.isInteger(parsed) || parsed <= 0) {
+    throw new Error(
+      `${name} must be a positive integer, got ${JSON.stringify(raw)}`,
+    );
+  }
+  return parsed;
+}
+
+export const CHUNK_SIZE_TOKENS = chunkTokensFromEnv("QMD_CHUNK_TOKENS", 900);
+export const CHUNK_OVERLAP_TOKENS = chunkTokensFromEnv(
+  "QMD_CHUNK_OVERLAP_TOKENS",
+  Math.floor(CHUNK_SIZE_TOKENS * 0.15), // 135 tokens at the default size
+);
 // Fallback char-based approximation for sync chunking (~4 chars per token)
 export const CHUNK_SIZE_CHARS = CHUNK_SIZE_TOKENS * 4; // 3600 chars
 export const CHUNK_OVERLAP_CHARS = CHUNK_OVERLAP_TOKENS * 4; // 540 chars
