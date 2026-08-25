@@ -21,7 +21,7 @@
  * byte-identical input.
  */
 
-import { errorFields, logger, withCorrelationId } from "./logging.js";
+import { errorFields, logger } from "./logging.js";
 import { HttpStatusError, TransportError, withRetry } from "./retry.js";
 import type {
   EmbedOptions,

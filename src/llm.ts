@@ -10,6 +10,7 @@ import type {
   LlamaEmbeddingContext,
   Token as LlamaToken,
 } from "node-llama-cpp";
+import { errorFields, logger } from "./logging.js";
 import {
   isRemoteModelUri,
   modelIdentity,
@@ -2180,6 +2181,9 @@ let defaultSessionManager: LLMSessionManager | null = null;
 // by the user's config rather than by the built-in defaults.
 let activeModelConfig: ModelResolutionConfig | undefined;
 
+// Preflight runs once per process, not once per backend build.
+let preflightStarted = false;
+
 /**
  * Install the model configuration used for new sessions.
  *
@@ -2196,6 +2200,7 @@ export function setActiveModelConfig(
   defaultSessionManager = null;
   defaultLlamaCpp = null;
   localLlamaCpp = null;
+  preflightStarted = false;
 }
 
 /**
@@ -2403,6 +2408,24 @@ function buildBackendFromConfig(config?: ModelResolutionConfig): LLM {
       : undefined,
     rerankModel: isRemoteModelUri(models.rerank) ? models.rerank : undefined,
   });
+
+  // Check the server knows every model we are about to ask it for, once per
+  // process, without blocking this synchronous factory. A wrong model name and
+  // an unreachable host otherwise surface partway through a re-index, where
+  // they look like a transient network problem rather than a typo. Failure is
+  // reported, not thrown: the operation needing the model fails on its own with
+  // its own context, and aborting here would take down commands (`qmd status`)
+  // that never touch a model.
+  if (!preflightStarted) {
+    preflightStarted = true;
+    void remote.preflight().catch((err: unknown) => {
+      logger.error(
+        { operation: "remote.preflight", ...errorFields(err) },
+        "preflight_failed",
+      );
+    });
+  }
+
   if (remoteRoles.length === 3) return remote;
   return new HybridLLM(remote, models);
 }
