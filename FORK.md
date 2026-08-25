@@ -133,3 +133,71 @@ cd ~ && bun add /Volumes/ThunderBolt/Development/qmd --no-scripts
 `--no-scripts` skips the `better-sqlite3` native build, which fails under
 node-gyp here and is unused: `db.ts` picks `bun:sqlite` when running under Bun
 and only falls back to `better-sqlite3` under Node.
+
+## Known defects, not yet fixed
+
+Filed here rather than as GitHub issues: issues are disabled on
+`rodaddy/qmd`, and `gh` in this checkout resolves to upstream `tobi/qmd`,
+where these would land on someone else's tracker.
+
+Found 2026-08-25 by the rtech-infra seat while researching whether repeated
+llama-swap calls could be cached; confirmed against source by the qmd seat.
+Both are upstream defects, present in clean v2.6.3, not fork breakage.
+
+### D1 — `llm_cache` self-evicts before it can hit
+
+`setCachedResult` (`src/store.ts`) trims to the newest 1000 rows on ~1% of
+writes. The rerank path calls it inside a loop over `rerankResult.results`,
+so it writes ONE ROW PER DOCUMENT per search: a search over 100 chunks
+writes 100 rows, and roughly 10 searches turn the whole cache over.
+
+Live evidence: `SELECT COUNT(*) FROM llm_cache` on the Development index
+returns 0 rows, with `min(created_at)` and `max(created_at)` both NULL,
+after months of use.
+
+Still needed if: the cap is still a fixed row count sized against writes
+per REQUEST rather than writes per SEARCH.
+
+### D2 — rerank cache keys record the requested model, not the serving one
+
+`rerank()` (`src/store.ts`) declares `model: string = DEFAULT_RERANK_MODEL`,
+the `hf:` constant. The cache key is built from that parameter, so a caller
+that omits it keys the entry under `hf:...` no matter which backend actually
+produced the score. With a remote backend configured, a score computed on
+llama-swap is cached under the local model's name and vice versa.
+
+Note the key is NOT missing model identity — `model` is in the hashed body,
+and the literal `"rerank"` passed as the url argument is cosmetic. The defect
+is what the parameter RESOLVES to.
+
+Same class as the `wireModel()` bug fixed in `src/remote-llm.ts`, where a
+caller's `hf:` default reaching the server produced "no router for requested
+model" 404s. Both come from a caller-side default standing in for the
+backend's real identity.
+
+Still needed if: the cache key derives from the `model` PARAMETER rather
+than from the resolved backend identity.
+
+### Fixing these
+
+Measure before sizing. A hit/miss counter in `getCachedResult`, surfaced in
+search output, establishes the real repeat rate as a side effect of normal
+use — the byte-identical repeat rate is currently UNMEASURED, and sizing a
+cache against a guessed hit rate is how the 1000-row cap got chosen.
+
+Invalidation rules that must hold for any replacement key:
+
+- Full model identity: resolved backend URL AND model name (D2).
+- `embed_fingerprint` for embeddings; context size and rerank token budget
+  for rerank — the reranker moved to `-c 8192 -b 4096 -ub 4096` on
+  2026-08-25, which silently invalidates any score stored before it.
+- The intent-prefixed `rerankQuery`, not the raw query. Current code is
+  already correct here.
+- Never key an embedding on unformatted text: `formatQueryForEmbedding` and
+  `formatDocForEmbedding` apply task prefixes that must not collide.
+- A cache version bumped on any chunking or prompt-format change.
+
+Out of scope for the engine: `cache_prompt`, `--cache-reuse`, and
+`--slot-save-path` are documented only under llama-server's `/completion`
+endpoint. Neither `/v1/embeddings` nor `/rerank` supports prefix reuse, and
+llama-swap adds no response cache, so this has to be solved in qmd.
