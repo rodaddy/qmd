@@ -53,6 +53,15 @@ export class TransportError extends Error {
 export function isTransient(err: unknown): boolean {
   if (err instanceof TransportError) return true;
   if (err instanceof HttpStatusError) {
+    // A 5xx whose body says the INPUT was rejected is permanent however it is
+    // numbered: llama.cpp answers an over-large rerank pair with a 500 reading
+    // "input (994 tokens) is too large to process", and re-sending identical
+    // input cannot succeed. Retrying it spends the budget proving that.
+    if (
+      /too large to process|exceed[s]? context|context size/i.test(err.message)
+    ) {
+      return false;
+    }
     // 408 request timeout, 429 too many requests, 5xx server-side.
     return err.status === 408 || err.status === 429 || err.status >= 500;
   }

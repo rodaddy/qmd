@@ -152,6 +152,39 @@ const DEFAULT_EMBED_BATCH_SIZE = 32;
 const DEFAULT_CONCURRENCY = 2;
 
 /**
+ * Token budget for one rerank request, matching a llama-server physical batch.
+ *
+ * llama.cpp scores a rerank pair in a single ubatch, so a pair exceeding the
+ * server's `--ubatch-size` fails with "input (N tokens) is too large to
+ * process" -- a 500 that no retry can fix. The local path budgets against its
+ * own 4096-token context (llm.ts RERANK_CONTEXT_SIZE) using a real tokenizer;
+ * a remote client has no tokenizer, so it budgets conservatively by character
+ * count at qmd's own ~4 chars/token ratio (store.ts CHUNK_SIZE_CHARS).
+ *
+ * Override with QMD_REMOTE_RERANK_BATCH_TOKENS when the server is configured
+ * with a larger ubatch.
+ */
+const REMOTE_RERANK_BATCH_TOKENS: number = (() => {
+  const v = parseInt(process.env.QMD_REMOTE_RERANK_BATCH_TOKENS ?? "", 10);
+  return Number.isFinite(v) && v > 0 ? v : 512;
+})();
+
+/** Qwen3 reranker chat template overhead, per llm.ts RERANK_TEMPLATE_OVERHEAD. */
+const REMOTE_RERANK_TEMPLATE_OVERHEAD = 128;
+
+/**
+ * Characters per token, for budgeting without a tokenizer.
+ *
+ * store.ts uses 4 for CHUNK_SIZE_CHARS, which is right for prose. Source code,
+ * markdown and CJK tokenize denser: measured against this server, a document
+ * budgeted at 4 chars/token arrived as 570 tokens against a 384-token budget.
+ * Budget at 2.5 so the estimate errs toward a request the server accepts --
+ * a slightly short document still ranks, an oversized one 500s and scores
+ * nothing.
+ */
+const CHARS_PER_TOKEN = 2.5;
+
+/**
  * An OpenAI-compatible server reached over HTTP.
  *
  * One instance may serve all three roles or only some: each of embed,
@@ -212,6 +245,14 @@ export class RemoteLLM implements LLM {
     fallback: RemoteModelUri,
   ): string {
     if (!override) return fallback.model;
+    // A local model reference is not a name this server knows. Callers default
+    // their model parameter to qmd's built-in hf: constants (store.ts rerank()
+    // is one), so an override arrives on every call whether or not the caller
+    // meant to choose a model -- forwarding it asks llama-swap to route
+    // "hf:ggml-org/..." and gets "no router for requested model".
+    if (override.startsWith("hf:") || override.startsWith("/")) {
+      return fallback.model;
+    }
     const identity = modelIdentity(override);
     return identity === override && isRemoteModelUri(override)
       ? fallback.model
@@ -588,12 +629,40 @@ export class RemoteLLM implements LLM {
     const model = this.wireModel(options.model, uri);
     if (documents.length === 0) return { results: [], model };
 
+    // Fit each document inside one server ubatch. Truncating is what the local
+    // path does too (llm.ts rerank): a reranker scores relevance, and the
+    // opening of a chunk carries it -- a truncated score beats no score.
+    const budgetChars =
+      (REMOTE_RERANK_BATCH_TOKENS -
+        REMOTE_RERANK_TEMPLATE_OVERHEAD -
+        Math.ceil(query.length / CHARS_PER_TOKEN)) *
+      CHARS_PER_TOKEN;
+    let truncated = 0;
+    const texts = documents.map((d) => {
+      if (budgetChars > 0 && d.text.length > budgetChars) {
+        truncated++;
+        return d.text.slice(0, budgetChars);
+      }
+      return d.text;
+    });
+    if (truncated > 0) {
+      logger.debug(
+        {
+          operation: "remote.rerank",
+          model,
+          truncated_documents: truncated,
+          budget_chars: budgetChars,
+        },
+        "rerank_documents_truncated",
+      );
+    }
+
     const body = await withRetry(
       () =>
         this.post<RerankResponse>(uri.baseUrl, "/rerank", {
           model,
           query,
-          documents: documents.map((d) => d.text),
+          documents: texts,
         }),
       {
         operation: "remote.rerank",
