@@ -107,8 +107,6 @@ import {
 import {
   disposeDefaultLlamaCpp,
   getDefaultLlamaCpp,
-  setDefaultLlamaCpp,
-  LlamaCpp,
   withLLMSession,
   pullModels,
   DEFAULT_MODEL_CACHE_DIR,
@@ -119,7 +117,6 @@ import {
   setActiveModelConfig,
   assertKnownModelScheme,
   getLocalLlamaCpp,
-  isRemoteModelUri,
   inspectGgufFile,
   isDarwinMetalMitigationActive,
 } from "../llm.js";
@@ -183,20 +180,24 @@ function getStore(): ReturnType<typeof createStore> {
     try {
       const config = loadConfig();
       syncConfigToDb(store.db, config);
-      // The local backend backs only the roles whose model field named a local
-      // model. A URL must never reach LlamaCpp: it resolves model strings as
-      // HuggingFace refs or file paths, so it would try to DOWNLOAD the
-      // endpoint. Roles pointing at a URL are served by RemoteLLM via
-      // createLLM; undefined here means "keep the built-in default".
-      const localOnly = (uri: string): string | undefined =>
-        isRemoteModelUri(uri) ? undefined : uri;
-      setDefaultLlamaCpp(
-        new LlamaCpp({
-          embedModel: localOnly(activeModels.embed),
-          generateModel: localOnly(activeModels.generate),
-          rerankModel: localOnly(activeModels.rerank),
-        }),
-      );
+      // Install the configuration and let the backend be BUILT from it.
+      //
+      // Constructing a LlamaCpp here instead -- even one with URL-valued roles
+      // stripped to undefined -- installs a purely local backend as the process
+      // default, and no RemoteLLM is ever reached. That is not a partial
+      // failure: LlamaCpp fills a stripped role from its own built-in default
+      // model, so a config naming a remote endpoint embeds locally and reports
+      // success. Measured 2026-08-25: embed pointed at a dead port
+      // (127.0.0.1:9) wrote 8 vectors and exited 0.
+      //
+      // setActiveModelConfig discards every cached backend, so the next
+      // getDefaultLlamaCpp() runs buildBackendFromConfig, which validates each
+      // role and routes URL-valued ones to RemoteLLM.
+      setActiveModelConfig({
+        embed: activeModels.embed,
+        generate: activeModels.generate,
+        rerank: activeModels.rerank,
+      });
     } catch {
       // Config may not exist yet — that's fine, DB works without it
     }
