@@ -20,6 +20,9 @@ texts/
 # rules every handover here needs; tracked for the same reason as FORK.md.
 !_DOCS/HANDOFF-RULES.md
 !_DOCS/_handoff/*.md
+# Postgres backend benchmark record (rodaddy/development#347); tracked for
+# the same reason as FORK.md.
+!_DOCS/postgres-benchmark.md
 !skills/**/*.md
 !finetune/*.md
 !docs/*.md

@@ -27,5 +27,6 @@ log="$dir/.qmd/bench-$label.log"
   steps=${BENCH_STEPS:-update,embed}
   case ",$steps," in *,update,*) echo "== qmd update"; /usr/bin/time -p timeout -s KILL "${UPDATE_DEADLINE:-3600}" node "$QMD" update 2>&1 | tail -15;; esac
   case ",$steps," in *,embed,*)  echo "== qmd embed";  /usr/bin/time -p timeout -s KILL "${EMBED_DEADLINE:-7200}" node "$QMD" embed  2>&1 | tail -15;; esac
+  case ",$steps," in *,search,*) echo "== qmd search (FTS)"; timeout -s KILL 120 node "$QMD" search halfvec -n 3 2>&1 | tail -8; echo "== qmd vsearch (vector)"; timeout -s KILL 120 node "$QMD" vsearch "moving the index to postgres" -n 3 2>&1 | tail -8;; esac
   echo "== $label end $(date -u +%FT%TZ)"
 } 2>&1 | sed -e "s#${QMD_POSTGRES_URL}#<url>#g" | tee "$log"
