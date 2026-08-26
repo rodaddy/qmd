@@ -11,7 +11,12 @@
  *   const store = createStore();
  */
 
-import { getBackend, openDatabase, openPgDatabase, loadSqliteVec } from "./db.js";
+import {
+  getBackend,
+  openDatabase,
+  openPgDatabase,
+  loadSqliteVec,
+} from "./db.js";
 import type { Backend, Database } from "./db.js";
 import picomatch from "picomatch";
 import { createHash } from "crypto";
@@ -83,7 +88,7 @@ function getPostgresUrl(): string {
   const url = process.env.QMD_POSTGRES_URL?.trim();
   if (!url) {
     throw new Error(
-      'QMD_BACKEND=postgres requires QMD_POSTGRES_URL (e.g. postgresql://user@localhost/qmd).',
+      "QMD_BACKEND=postgres requires QMD_POSTGRES_URL (e.g. postgresql://user@localhost/qmd).",
     );
   }
   return url;
@@ -1244,9 +1249,13 @@ function initializePostgresDatabase(db: Database): void {
     )
   `);
 
-  db.exec(`CREATE INDEX IF NOT EXISTS idx_documents_collection ON documents(collection, active)`);
+  db.exec(
+    `CREATE INDEX IF NOT EXISTS idx_documents_collection ON documents(collection, active)`,
+  );
   db.exec(`CREATE INDEX IF NOT EXISTS idx_documents_hash ON documents(hash)`);
-  db.exec(`CREATE INDEX IF NOT EXISTS idx_documents_path ON documents(path, active)`);
+  db.exec(
+    `CREATE INDEX IF NOT EXISTS idx_documents_path ON documents(path, active)`,
+  );
 
   db.exec(`
     CREATE TABLE IF NOT EXISTS llm_cache (
@@ -1266,10 +1275,14 @@ function initializePostgresDatabase(db: Database): void {
       PRIMARY KEY (hash, seq)
     )
   `);
-  db.exec(`CREATE INDEX IF NOT EXISTS idx_content_vectors_hash ON content_vectors(hash)`);
+  db.exec(
+    `CREATE INDEX IF NOT EXISTS idx_content_vectors_hash ON content_vectors(hash)`,
+  );
 
   // Native Postgres full-text search index.
-  db.exec(`CREATE INDEX IF NOT EXISTS idx_content_tsv_gin ON content USING GIN (tsv)`);
+  db.exec(
+    `CREATE INDEX IF NOT EXISTS idx_content_tsv_gin ON content USING GIN (tsv)`,
+  );
 }
 
 // =============================================================================
@@ -1577,9 +1590,21 @@ function ensureSqliteVecTableInternal(db: Database, dimensions: number): void {
   );
 }
 
+/**
+ * Create the Postgres vector table in the configuration this fork measured.
+ *
+ * `dimensions` comes from the serving embedding model, which is 768 at runtime,
+ * so the emitted column is halfvec(768). halfvec over vector: table 1398→394 MB,
+ * index 570→296 MB, 26% faster, identical recall (83.60% both, same run,
+ * float32-exact ground truth). HNSW m=32 / ef_construction=128 over the pgvector
+ * defaults (m=16, ef_c=64): recall 84.8% → 87.6% for 11 MB.
+ * Evidence: FORK.md, "Tuning the PR does not carry".
+ */
 function ensurePgVectorTableInternal(db: Database, dimensions: number): void {
   db.exec(`CREATE EXTENSION IF NOT EXISTS vector`);
-  const tableInfo = db.prepare(`
+  const tableInfo = db
+    .prepare(
+      `
     SELECT format_type(a.atttypid, a.atttypmod) AS embedding_type
     FROM pg_attribute a
     JOIN pg_class c ON c.oid = a.attrelid
@@ -1590,10 +1615,12 @@ function ensurePgVectorTableInternal(db: Database, dimensions: number): void {
       AND a.attnum > 0
       AND NOT a.attisdropped
     LIMIT 1
-  `).get() as { embedding_type: string } | null;
+  `,
+    )
+    .get() as { embedding_type: string } | null;
 
   if (tableInfo) {
-    const match = tableInfo.embedding_type.match(/^vector\((\d+)\)$/);
+    const match = tableInfo.embedding_type.match(/^halfvec\((\d+)\)$/);
     const existingDims = match?.[1] ? parseInt(match[1], 10) : null;
     if (existingDims !== dimensions) {
       db.exec(`DROP TABLE IF EXISTS vectors`);
@@ -1603,10 +1630,12 @@ function ensurePgVectorTableInternal(db: Database, dimensions: number): void {
   db.exec(`
     CREATE TABLE IF NOT EXISTS vectors (
       hash_seq TEXT PRIMARY KEY,
-      embedding vector(${dimensions}) NOT NULL
+      embedding halfvec(${dimensions}) NOT NULL
     )
   `);
-  db.exec(`CREATE INDEX IF NOT EXISTS idx_vectors_embedding_hnsw ON vectors USING hnsw (embedding vector_cosine_ops)`);
+  db.exec(
+    `CREATE INDEX IF NOT EXISTS idx_vectors_embedding_hnsw ON vectors USING hnsw (embedding halfvec_cosine_ops) WITH (m = 32, ef_construction = 128)`,
+  );
 }
 
 function ensureVecTableInternal(db: Database, dimensions: number): void {
@@ -1619,10 +1648,18 @@ function ensureVecTableInternal(db: Database, dimensions: number): void {
 
 function hasVectorIndex(db: Database): boolean {
   if (isPostgresDb(db)) {
-    const row = db.prepare(`SELECT to_regclass(current_schema() || '.vectors') AS table_name`).get() as { table_name: string | null } | null;
+    const row = db
+      .prepare(
+        `SELECT to_regclass(current_schema() || '.vectors') AS table_name`,
+      )
+      .get() as { table_name: string | null } | null;
     return !!row?.table_name;
   }
-  return !!db.prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name='vectors_vec'`).get();
+  return !!db
+    .prepare(
+      `SELECT name FROM sqlite_master WHERE type='table' AND name='vectors_vec'`,
+    )
+    .get();
 }
 
 // =============================================================================
@@ -2714,10 +2751,12 @@ export async function generateEmbeddings(
  */
 export function createStore(dbPath?: string): Store {
   const backend = getBackend();
-  const resolvedPath = dbPath || (backend === "postgres" ? getPostgresUrl() : getDefaultDbPath());
-  const db = backend === "postgres"
-    ? openPgDatabase(resolvedPath)
-    : openDatabase(resolvedPath);
+  const resolvedPath =
+    dbPath || (backend === "postgres" ? getPostgresUrl() : getDefaultDbPath());
+  const db =
+    backend === "postgres"
+      ? openPgDatabase(resolvedPath)
+      : openDatabase(resolvedPath);
   registerDbBackend(db, backend);
   initializeDatabase(db);
 
@@ -3383,13 +3422,15 @@ export function setCachedResult(
 ): void {
   const now = new Date().toISOString();
   if (isPostgresDb(db)) {
-    db.prepare(`
+    db.prepare(
+      `
       INSERT INTO llm_cache (hash, result, created_at)
       VALUES (?, ?, ?)
       ON CONFLICT(hash) DO UPDATE SET
         result = excluded.result,
         created_at = excluded.created_at
-    `).run(cacheKey, result, now);
+    `,
+    ).run(cacheKey, result, now);
   } else {
     db.prepare(
       `INSERT OR REPLACE INTO llm_cache (hash, result, created_at) VALUES (?, ?, ?)`,
@@ -3616,11 +3657,13 @@ export function insertContent(
   createdAt: string,
 ): void {
   if (isPostgresDb(db)) {
-    db.prepare(`
+    db.prepare(
+      `
       INSERT INTO content (hash, doc, created_at)
       VALUES (?, ?, ?)
       ON CONFLICT(hash) DO NOTHING
-    `).run(hash, content, createdAt);
+    `,
+    ).run(hash, content, createdAt);
   } else {
     db.prepare(
       `INSERT OR IGNORE INTO content (hash, doc, created_at) VALUES (?, ?, ?)`,
@@ -4884,6 +4927,27 @@ export function validateLexQuery(query: string): string | null {
   return null;
 }
 
+/**
+ * Build an OR-joined `to_tsquery` expression for the Postgres FTS branch.
+ *
+ * The web-search parser this replaces ANDs unquoted terms, so a multi-word
+ * query silently returns nothing unless one document holds every word — SQLite
+ * FTS5, as this fork calls it, ORs instead (FORK.md, decision 1).
+ * Matching that needs the explicit OR spelling, which `to_tsquery` only accepts
+ * pre-tokenised, so the terms are cleaned and joined here rather than in SQL.
+ *
+ * Returns "" when nothing survives cleaning; the caller must short-circuit,
+ * because `to_tsquery('')` raises rather than matching zero rows.
+ */
+export function buildPgTsQuery(query: string): string {
+  return query
+    .split(/\s+/)
+    .map((token) => token.replace(/[&|!():'\\<>*]/g, ""))
+    .filter((token) => token.length > 0)
+    .map((token) => `'${token}'`)
+    .join(" | ");
+}
+
 export function searchFTS(
   db: Database,
   query: string,
@@ -4891,12 +4955,12 @@ export function searchFTS(
   collectionName?: string,
 ): SearchResult[] {
   if (isPostgresDb(db)) {
-    const rawQuery = query.trim();
-    if (!rawQuery) return [];
+    const tsQuery = buildPgTsQuery(query);
+    if (!tsQuery) return [];
 
     let sql = `
       WITH q AS (
-        SELECT websearch_to_tsquery('english', ?) AS tsq
+        SELECT to_tsquery('english', ?) AS tsq
       )
       SELECT
         'qmd://' || d.collection || '/' || d.path as filepath,
@@ -4904,13 +4968,13 @@ export function searchFTS(
         d.title,
         content.doc as body,
         d.hash,
-        ts_rank(content.tsv, q.tsq) as bm25_score
+        ts_rank_cd(content.tsv, q.tsq) as bm25_score
       FROM q
       JOIN documents d ON d.active = 1
       JOIN content ON content.hash = d.hash
       WHERE content.tsv @@ q.tsq
     `;
-    const params: (string | number)[] = [rawQuery];
+    const params: (string | number)[] = [tsQuery];
 
     if (collectionName) {
       sql += ` AND d.collection = ?`;
@@ -4931,7 +4995,8 @@ export function searchFTS(
       }[];
 
       return rows.map((row) => {
-        const rowCollectionName = row.filepath.split("//")[1]?.split("/")[0] || "";
+        const rowCollectionName =
+          row.filepath.split("//")[1]?.split("/")[0] || "";
         const rawScore = Number(row.bm25_score);
         const score = rawScore > 0 ? rawScore / (1 + rawScore) : 0;
         return {
@@ -5063,7 +5128,7 @@ export async function searchVec(
 
   if (isPostgresDb(db)) {
     let sql = `
-      WITH query_vec AS (SELECT ?::vector AS embedding)
+      WITH query_vec AS (SELECT ?::halfvec AS embedding)
       SELECT
         v.hash_seq,
         cv.hash,
@@ -5079,7 +5144,9 @@ export async function searchVec(
       JOIN documents d ON d.hash = cv.hash AND d.active = 1
       JOIN content ON content.hash = d.hash
     `;
-    const params: (string | number | Float32Array)[] = [new Float32Array(embedding)];
+    const params: (string | number | Float32Array)[] = [
+      new Float32Array(embedding),
+    ];
 
     if (collectionName) {
       sql += ` WHERE d.collection = ?`;
@@ -5100,7 +5167,10 @@ export async function searchVec(
       distance: number;
     }[];
 
-    const seen = new Map<string, { row: typeof docRows[number]; bestDist: number }>();
+    const seen = new Map<
+      string,
+      { row: (typeof docRows)[number]; bestDist: number }
+    >();
     for (const row of docRows) {
       const distance = Number(row.distance);
       const existing = seen.get(row.filepath);
@@ -5113,7 +5183,8 @@ export async function searchVec(
       .sort((a, b) => a.bestDist - b.bestDist)
       .slice(0, limit)
       .map(({ row, bestDist }) => {
-        const rowCollectionName = row.filepath.split('//')[1]?.split('/')[0] || "";
+        const rowCollectionName =
+          row.filepath.split("//")[1]?.split("/")[0] || "";
         return {
           filepath: row.filepath,
           displayPath: row.display_path,
@@ -5281,7 +5352,11 @@ export function getHashesForEmbedding(
       GROUP BY d.hash
     `,
       )
-      .all(model, fingerprint) as { hash: string; body: string; path: string }[];
+      .all(model, fingerprint) as {
+      hash: string;
+      body: string;
+      path: string;
+    }[];
   }
   return withLazyContentVectorMigration(
     db,
@@ -5415,7 +5490,7 @@ export function insertEmbedding(
   if (isPostgresDb(db)) {
     const insertVecStmt = db.prepare(`
       INSERT INTO vectors (hash_seq, embedding)
-      VALUES (?, ?::vector)
+      VALUES (?, ?::halfvec)
       ON CONFLICT(hash_seq) DO UPDATE SET
         embedding = excluded.embedding
     `);
