@@ -565,10 +565,20 @@ async function showStatus(): Promise<void> {
 
   // Index size
   let indexSize = 0;
-  try {
-    const stat = statSync(dbPath).size;
-    indexSize = stat;
-  } catch {}
+  const backend = process.env.QMD_BACKEND || "sqlite";
+  if (backend === "postgres") {
+    try {
+      const sizeResult = db
+        .prepare(`SELECT pg_database_size(current_database()) as size`)
+        .get() as { size: number };
+      indexSize = sizeResult?.size ?? 0;
+    } catch {}
+  } else {
+    try {
+      const stat = statSync(dbPath).size;
+      indexSize = stat;
+    } catch {}
+  }
 
   // Collections info (from YAML + database stats)
   const collections = listCollections(db);
@@ -595,7 +605,14 @@ async function showStatus(): Promise<void> {
     .get() as { latest: string | null };
 
   console.log(`${c.bold}QMD Status${c.reset}\n`);
-  console.log(`Index: ${dbPath}`);
+  if (backend === "postgres") {
+    const pgUrl = process.env.QMD_POSTGRES_URL || "postgresql://localhost/qmd";
+    // Show just host/db, strip credentials
+    const dbName = pgUrl.split("/").pop()?.split("?")[0] || "qmd";
+    console.log(`Backend: PostgreSQL (${dbName})`);
+  } else {
+    console.log(`Index: ${dbPath}`);
+  }
   console.log(`Size:  ${formatBytes(indexSize)}`);
 
   // MCP daemon status (check PID file liveness)
@@ -6081,6 +6098,17 @@ if (isMain) {
     await finishSuccessfulCliCommand({
       command: cli.command,
       format: cli.opts.format,
+      // The CLI lifecycle owns the store handle, so it owns releasing it.
+      // Individual command arms call closeDb() ad hoc and several (search,
+      // vsearch, query) do not; under the Postgres backend that leaves the
+      // bridge Worker and its MessagePort as live libuv handles and the
+      // process never exits even though output is already on stdout.
+      // Closing here is idempotent (closeDb() no-ops when store is null) and
+      // is a no-op for SQLite beyond the close it would get at exit anyway.
+      cleanup: async () => {
+        closeDb();
+        await disposeDefaultLlamaCpp();
+      },
     });
   }
 } // end if (main module)

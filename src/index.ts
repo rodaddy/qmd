@@ -66,6 +66,7 @@ import {
   type ChunkStrategy,
 } from "./store.js";
 import { LlamaCpp } from "./llm.js";
+import type { Backend } from "./db.js";
 import {
   setConfigSource,
   loadConfig,
@@ -108,7 +109,7 @@ export type {
 };
 
 // Re-export the internal Store type for advanced consumers
-export type { InternalStore };
+export type { Backend, InternalStore };
 
 // Re-export utility functions and types used by frontends
 export { extractSnippet, addLineNumbers, DEFAULT_MULTI_GET_MAX_BYTES };
@@ -201,7 +202,7 @@ export interface ExpandQueryOptions {
  * DB state (useful for reopening a previously-configured store).
  */
 export interface StoreOptions {
-  /** Path to the SQLite database file */
+  /** Path to the SQLite database file or PostgreSQL connection URL */
   dbPath: string;
   /** Path to a YAML config file (mutually exclusive with `config`) */
   configPath?: string;
@@ -219,7 +220,9 @@ export interface StoreOptions {
 export interface QMDStore {
   /** The underlying internal store (for advanced use) */
   readonly internal: InternalStore;
-  /** Path to the SQLite database */
+  /** Active storage backend */
+  readonly backend: Backend;
+  /** Active SQLite database path or PostgreSQL connection URL */
   readonly dbPath: string;
 
   // ── Search ──────────────────────────────────────────────────────────
@@ -389,7 +392,7 @@ export async function createStore(options: StoreOptions): Promise<QMDStore> {
   // Track whether we have a YAML config path for write-through
   const hasYamlConfig = !!options.configPath;
 
-  // Sync config into SQLite store_collections
+  // Sync config into the store_collections table for the active backend
   let config: CollectionConfig | undefined;
   if (options.configPath) {
     // YAML mode: inject config source for write-through, sync to DB
@@ -417,6 +420,7 @@ export async function createStore(options: StoreOptions): Promise<QMDStore> {
 
   const store: QMDStore = {
     internal,
+    backend: internal.backend,
     dbPath: internal.dbPath,
 
     // Search
@@ -471,7 +475,7 @@ export async function createStore(options: StoreOptions): Promise<QMDStore> {
     },
     multiGet: async (pattern, opts) => internal.findDocuments(pattern, opts),
 
-    // Collection Management — write to SQLite + write-through to YAML/inline if configured
+    // Collection Management — write to store tables + write-through to YAML/inline if configured
     addCollection: async (name, opts) => {
       upsertStoreCollection(db, name, {
         path: opts.path,
@@ -502,7 +506,7 @@ export async function createStore(options: StoreOptions): Promise<QMDStore> {
       return collections.filter((c) => c.includeByDefault).map((c) => c.name);
     },
 
-    // Context Management — write to SQLite + write-through to YAML/inline if configured
+    // Context Management — write to store tables + write-through to YAML/inline if configured
     addContext: async (collectionName, pathPrefix, contextText) => {
       const result = updateStoreContext(
         db,
@@ -531,7 +535,7 @@ export async function createStore(options: StoreOptions): Promise<QMDStore> {
     getGlobalContext: async () => getStoreGlobalContext(db),
     listContexts: async () => getStoreContexts(db),
 
-    // Indexing — reads collections from SQLite
+    // Indexing — reads collections from store_collections
     update: async (updateOpts) => {
       const collections = getStoreCollections(db);
       const filtered = updateOpts?.collections

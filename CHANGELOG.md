@@ -17,6 +17,13 @@
   docs. `qmd update` with no positional paths is unchanged, including `-c` and
   `--pull`.
 
+### Changes
+
+- **PostgreSQL backend**: add PostgreSQL + pgvector as an alternative storage
+  backend for shared and multi-agent deployments where multiple processes need
+  concurrent access to the same QMD index. Configure with `QMD_BACKEND=postgres`
+  and `QMD_POSTGRES_URL`.
+
 ## [2.6.3] - 2026-06-24
 
 ### Added

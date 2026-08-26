@@ -11,8 +11,13 @@
  *   const store = createStore();
  */
 
-import { openDatabase, loadSqliteVec } from "./db.js";
-import type { Database } from "./db.js";
+import {
+  getBackend,
+  openDatabase,
+  openPgDatabase,
+  loadSqliteVec,
+} from "./db.js";
+import type { Backend, Database, SQLiteValue } from "./db.js";
 import picomatch from "picomatch";
 import { createHash } from "crypto";
 import {
@@ -63,6 +68,31 @@ export const DEFAULT_EMBED_MAX_DURATION_MS = 30 * 60 * 1000; // 30 minutes; see 
 const EMBED_FINGERPRINT_PROBE_QUERY = "__qmd_embedding_query_probe__";
 const EMBED_FINGERPRINT_PROBE_TITLE = "__qmd_embedding_title_probe__";
 const EMBED_FINGERPRINT_PROBE_DOC = "__qmd_embedding_document_probe__";
+
+// Track backend per opened DB so operations remain correct even if env changes.
+const dbBackendMap = new WeakMap<Database, Backend>();
+
+function registerDbBackend(db: Database, backend: Backend): void {
+  dbBackendMap.set(db, backend);
+}
+
+function getDbBackend(db: Database): Backend {
+  return dbBackendMap.get(db) ?? getBackend();
+}
+
+function isPostgresDb(db: Database): boolean {
+  return getDbBackend(db) === "postgres";
+}
+
+function getPostgresUrl(): string {
+  const url = process.env.QMD_POSTGRES_URL?.trim();
+  if (!url) {
+    throw new Error(
+      "QMD_BACKEND=postgres requires QMD_POSTGRES_URL (e.g. postgresql://user@localhost/qmd).",
+    );
+  }
+  return url;
+}
 
 // Chunking: 900 tokens per chunk with 15% overlap
 // Increased from 800 to accommodate smart chunking finding natural break points
@@ -1068,6 +1098,15 @@ function rebuildFTSForCjkNormalization(db: Database): void {
 }
 
 function initializeDatabase(db: Database): void {
+  if (isPostgresDb(db)) {
+    initializePostgresDatabase(db);
+    _sqliteVecAvailable = false;
+    return;
+  }
+  initializeSqliteDatabase(db);
+}
+
+function initializeSqliteDatabase(db: Database): void {
   try {
     loadSqliteVec(db);
     verifySqliteVecLoaded(db);
@@ -1175,6 +1214,111 @@ function initializeDatabase(db: Database): void {
   applyFtsSyncTriggers(db);
 
   rebuildFTSForCjkNormalization(db);
+}
+
+function initializePostgresDatabase(db: Database): void {
+  db.exec(`CREATE EXTENSION IF NOT EXISTS vector`);
+
+  // Drop legacy tables that are now managed in YAML
+  db.exec(`DROP TABLE IF EXISTS path_contexts`);
+  db.exec(`DROP TABLE IF EXISTS collections`);
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS content (
+      hash TEXT PRIMARY KEY,
+      doc TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      tsv tsvector GENERATED ALWAYS AS (
+        to_tsvector('english', COALESCE(doc, ''))
+      ) STORED
+    )
+  `);
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS documents (
+      id BIGSERIAL PRIMARY KEY,
+      collection TEXT NOT NULL,
+      path TEXT NOT NULL,
+      title TEXT NOT NULL,
+      hash TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      modified_at TEXT NOT NULL,
+      active INTEGER NOT NULL DEFAULT 1,
+      FOREIGN KEY (hash) REFERENCES content(hash) ON DELETE CASCADE,
+      UNIQUE(collection, path)
+    )
+  `);
+
+  db.exec(
+    `CREATE INDEX IF NOT EXISTS idx_documents_collection ON documents(collection, active)`,
+  );
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_documents_hash ON documents(hash)`);
+  db.exec(
+    `CREATE INDEX IF NOT EXISTS idx_documents_path ON documents(path, active)`,
+  );
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS llm_cache (
+      hash TEXT PRIMARY KEY,
+      result TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    )
+  `);
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS content_vectors (
+      hash TEXT NOT NULL,
+      seq INTEGER NOT NULL DEFAULT 0,
+      pos INTEGER NOT NULL DEFAULT 0,
+      model TEXT NOT NULL,
+      embed_fingerprint TEXT NOT NULL DEFAULT '',
+      total_chunks INTEGER NOT NULL DEFAULT 1,
+      embedded_at TEXT NOT NULL,
+      PRIMARY KEY (hash, seq)
+    )
+  `);
+  // Heal a content_vectors table created before the fingerprint/chunk columns
+  // existed. insertEmbedding writes both on every Postgres insert, and
+  // getHashesForEmbedding groups on them, so a pre-parity table breaks embed
+  // rather than degrading. CREATE TABLE IF NOT EXISTS above is a no-op on such
+  // a table, which is exactly why the ALTERs have to be unconditional.
+  db.exec(
+    `ALTER TABLE content_vectors ADD COLUMN IF NOT EXISTS embed_fingerprint TEXT NOT NULL DEFAULT ''`,
+  );
+  db.exec(
+    `ALTER TABLE content_vectors ADD COLUMN IF NOT EXISTS total_chunks INTEGER NOT NULL DEFAULT 1`,
+  );
+  db.exec(
+    `CREATE INDEX IF NOT EXISTS idx_content_vectors_hash ON content_vectors(hash)`,
+  );
+
+  // Store collections — the backend-independent collection registry. Every
+  // caller of getStoreCollections/upsertStoreCollection runs unguarded on both
+  // backends, so Postgres needs the same table SQLite gets.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS store_collections (
+      name TEXT PRIMARY KEY,
+      path TEXT NOT NULL,
+      pattern TEXT NOT NULL DEFAULT '**/*.md',
+      ignore_patterns TEXT,
+      include_by_default INTEGER DEFAULT 1,
+      update_command TEXT,
+      context TEXT
+    )
+  `);
+
+  // Store config — key-value metadata (config_hash, global_context).
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS store_config (
+      key TEXT PRIMARY KEY,
+      value TEXT
+    )
+  `);
+
+  // Native Postgres full-text search index.
+  db.exec(
+    `CREATE INDEX IF NOT EXISTS idx_content_tsv_gin ON content USING GIN (tsv)`,
+  );
 }
 
 // =============================================================================
@@ -1451,7 +1595,7 @@ export function isSqliteVecAvailable(): boolean {
   return _sqliteVecAvailable === true;
 }
 
-function ensureVecTableInternal(db: Database, dimensions: number): void {
+function ensureSqliteVecTableInternal(db: Database, dimensions: number): void {
   if (!_sqliteVecAvailable) {
     throw createSqliteVecUnavailableError(
       _sqliteVecUnavailableReason ??
@@ -1482,6 +1626,78 @@ function ensureVecTableInternal(db: Database, dimensions: number): void {
   );
 }
 
+/**
+ * Create the Postgres vector table in the configuration this fork measured.
+ *
+ * `dimensions` comes from the serving embedding model, which is 768 at runtime,
+ * so the emitted column is halfvec(768). halfvec over vector: table 1398→394 MB,
+ * index 570→296 MB, 26% faster, identical recall (83.60% both, same run,
+ * float32-exact ground truth). HNSW m=32 / ef_construction=128 over the pgvector
+ * defaults (m=16, ef_c=64): recall 84.8% → 87.6% for 11 MB.
+ * Evidence: FORK.md, "Tuning the PR does not carry".
+ */
+function ensurePgVectorTableInternal(db: Database, dimensions: number): void {
+  db.exec(`CREATE EXTENSION IF NOT EXISTS vector`);
+  const tableInfo = db
+    .prepare(
+      `
+    SELECT format_type(a.atttypid, a.atttypmod) AS embedding_type
+    FROM pg_attribute a
+    JOIN pg_class c ON c.oid = a.attrelid
+    JOIN pg_namespace n ON n.oid = c.relnamespace
+    WHERE n.nspname = current_schema()
+      AND c.relname = 'vectors'
+      AND a.attname = 'embedding'
+      AND a.attnum > 0
+      AND NOT a.attisdropped
+    LIMIT 1
+  `,
+    )
+    .get() as { embedding_type: string } | null;
+
+  if (tableInfo) {
+    const match = tableInfo.embedding_type.match(/^halfvec\((\d+)\)$/);
+    const existingDims = match?.[1] ? parseInt(match[1], 10) : null;
+    if (existingDims !== dimensions) {
+      db.exec(`DROP TABLE IF EXISTS vectors`);
+    }
+  }
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS vectors (
+      hash_seq TEXT PRIMARY KEY,
+      embedding halfvec(${dimensions}) NOT NULL
+    )
+  `);
+  db.exec(
+    `CREATE INDEX IF NOT EXISTS idx_vectors_embedding_hnsw ON vectors USING hnsw (embedding halfvec_cosine_ops) WITH (m = 32, ef_construction = 128)`,
+  );
+}
+
+function ensureVecTableInternal(db: Database, dimensions: number): void {
+  if (isPostgresDb(db)) {
+    ensurePgVectorTableInternal(db, dimensions);
+    return;
+  }
+  ensureSqliteVecTableInternal(db, dimensions);
+}
+
+function hasVectorIndex(db: Database): boolean {
+  if (isPostgresDb(db)) {
+    const row = db
+      .prepare(
+        `SELECT to_regclass(current_schema() || '.vectors') AS table_name`,
+      )
+      .get() as { table_name: string | null } | null;
+    return !!row?.table_name;
+  }
+  return !!db
+    .prepare(
+      `SELECT name FROM sqlite_master WHERE type='table' AND name='vectors_vec'`,
+    )
+    .get();
+}
+
 // =============================================================================
 // Store Factory
 // =============================================================================
@@ -1489,6 +1705,7 @@ function ensureVecTableInternal(db: Database, dimensions: number): void {
 export type Store = {
   db: Database;
   dbPath: string;
+  backend: Backend;
   /** Optional LlamaCpp instance for this store (overrides the global singleton) */
   llm?: LlamaCpp;
   close: () => void;
@@ -2096,10 +2313,17 @@ function getPendingEmbeddingDocs(
   model: string = DEFAULT_EMBED_MODEL,
 ): PendingEmbeddingDoc[] {
   const collectionFilter = collection ? `AND d.collection = ?` : ``;
+  // Byte length of the document body. SQLite spells it length(CAST(x AS BLOB));
+  // Postgres has no BLOB type and spells it octet_length(). Both are wrapped in
+  // an aggregate because the query groups by d.hash and c.doc is not a grouping
+  // column — SQLite tolerates the bare column, Postgres rejects it.
+  const byteLength = isPostgresDb(db)
+    ? `MAX(octet_length(c.doc))`
+    : `MAX(length(CAST(c.doc AS BLOB)))`;
   const fingerprint = getEmbeddingFingerprint(model);
   return withLazyContentVectorMigration(db, () => {
     const stmt = db.prepare(`
-      SELECT d.hash, MIN(d.path) as path, length(CAST(c.doc AS BLOB)) as bytes
+      SELECT d.hash, MIN(d.path) as path, ${byteLength} as bytes
       FROM documents d
       JOIN content c ON d.hash = c.hash
       LEFT JOIN (
@@ -2194,6 +2418,9 @@ export async function generateEmbeddings(
   const now = new Date().toISOString();
   const { maxDocsPerBatch, maxBatchBytes } = resolveEmbedOptions(options);
   const encoder = new TextEncoder();
+  // Only the batch path benefits; the single-chunk retry path below stays
+  // row-by-row so a bad chunk still fails alone instead of poisoning a batch.
+  const usePostgresBatchInsert = isPostgresDb(db);
 
   if (options?.force) {
     clearAllEmbeddings(db, options?.collection);
@@ -2446,30 +2673,70 @@ export async function generateEmbeddings(
             formatDocForEmbedding(chunk.text, chunk.title, embedModelUri),
           );
 
+          // Chunks whose vectors are in pendingRows and therefore not yet
+          // written; counted only once insertEmbeddings() succeeds. Declared
+          // out here so the catch below can tell an insert failure (non-empty)
+          // from an inference failure (empty).
+          const pendingChunks: typeof chunkBatch = [];
+
           try {
             const embeddings = await session.embedBatch(texts, { model });
+            // On Postgres the whole batch is written in one transaction below;
+            // per-chunk autocommit through the Atomics bridge dominated the
+            // embed wall time. SQLite keeps the per-chunk path unchanged.
+            const pendingRows: EmbeddingRow[] = [];
             for (let i = 0; i < chunkBatch.length; i++) {
               const chunk = chunkBatch[i]!;
               const embedding = embeddings[i];
               if (embedding) {
-                insertEmbedding(
-                  db,
-                  chunk.hash,
-                  chunk.seq,
-                  chunk.pos,
-                  new Float32Array(embedding.embedding),
-                  model,
-                  now,
-                  chunk.expectedTotalChunks,
-                  fingerprint,
-                );
-                chunksEmbedded++;
-                successesSinceRetry++;
-                clearFailure(chunk);
+                const vector = new Float32Array(embedding.embedding);
+                if (usePostgresBatchInsert) {
+                  pendingRows.push({
+                    hash: chunk.hash,
+                    seq: chunk.seq,
+                    pos: chunk.pos,
+                    embedding: vector,
+                    model,
+                    embeddedAt: now,
+                    totalChunks: chunk.expectedTotalChunks,
+                    fingerprint,
+                  });
+                } else {
+                  insertEmbedding(
+                    db,
+                    chunk.hash,
+                    chunk.seq,
+                    chunk.pos,
+                    vector,
+                    model,
+                    now,
+                    chunk.expectedTotalChunks,
+                    fingerprint,
+                  );
+                }
+                if (usePostgresBatchInsert) {
+                  // Deferred write: this chunk is not embedded until
+                  // insertEmbeddings() below returns, so it is not counted yet.
+                  pendingChunks.push(chunk);
+                } else {
+                  chunksEmbedded++;
+                  successesSinceRetry++;
+                  clearFailure(chunk);
+                }
               } else {
                 recordFailure(chunk, "batch embedding returned no vector");
               }
               batchChunkBytesProcessed += chunk.bytes;
+            }
+            if (pendingRows.length > 0) {
+              insertEmbeddings(db, pendingRows);
+              // The write landed; only now are these chunks embedded.
+              for (const chunk of pendingChunks) {
+                chunksEmbedded++;
+                successesSinceRetry++;
+                clearFailure(chunk);
+              }
+              pendingChunks.length = 0;
             }
             await retryFailedChunks();
           } catch (error) {
@@ -2477,7 +2744,16 @@ export async function generateEmbeddings(
             // individual retry succeeds, any prior failure for that chunk is
             // cleared, so the visible error count reflects outstanding failures.
             const batchReason = reasonFromError(error);
-            if (!session.isValid) {
+            // pendingChunks is non-empty only when inference already succeeded
+            // and insertEmbeddings() threw. Re-running tryEmbedChunk would pay
+            // for that inference a second time, so record the failure once and
+            // move on.
+            if (pendingChunks.length > 0) {
+              for (const chunk of pendingChunks) {
+                recordFailure(chunk, `batch insert failed: ${batchReason}`);
+              }
+              pendingChunks.length = 0;
+            } else if (!session.isValid) {
               for (const chunk of chunkBatch)
                 recordFailure(
                   chunk,
@@ -2561,19 +2837,32 @@ export async function generateEmbeddings(
 
 /**
  * Create a new store instance with the given database path.
- * If no path is provided, uses the default path (~/.cache/qmd/index.sqlite).
+ * If no path is provided:
+ * - sqlite backend: ~/.cache/qmd/index.sqlite
+ * - postgres backend: QMD_POSTGRES_URL
  *
- * @param dbPath - Path to the SQLite database file
+ * @param dbPath - SQLite file path or PostgreSQL connection URL
  * @returns Store instance with all methods bound to the database
  */
 export function createStore(dbPath?: string): Store {
-  const resolvedPath = dbPath || getDefaultDbPath();
-  const db = openDatabase(resolvedPath);
+  const backend = getBackend();
+  // `dbPath` is a SQLite FILE PATH and is meaningful only to the sqlite
+  // backend. Callers pass the project-local .qmd/index.sqlite whenever a
+  // .qmd/ directory exists; under postgres the connection target is ALWAYS
+  // QMD_POSTGRES_URL, never that path.
+  const resolvedPath =
+    backend === "postgres" ? getPostgresUrl() : dbPath || getDefaultDbPath();
+  const db =
+    backend === "postgres"
+      ? openPgDatabase(resolvedPath)
+      : openDatabase(resolvedPath);
+  registerDbBackend(db, backend);
   initializeDatabase(db);
 
   const store: Store = {
     db,
     dbPath: resolvedPath,
+    backend,
     close: () => db.close(),
     ensureVecTable: (dimensions: number) =>
       ensureVecTableInternal(db, dimensions),
@@ -3231,9 +3520,21 @@ export function setCachedResult(
   result: string,
 ): void {
   const now = new Date().toISOString();
-  db.prepare(
-    `INSERT OR REPLACE INTO llm_cache (hash, result, created_at) VALUES (?, ?, ?)`,
-  ).run(cacheKey, result, now);
+  if (isPostgresDb(db)) {
+    db.prepare(
+      `
+      INSERT INTO llm_cache (hash, result, created_at)
+      VALUES (?, ?, ?)
+      ON CONFLICT(hash) DO UPDATE SET
+        result = excluded.result,
+        created_at = excluded.created_at
+    `,
+    ).run(cacheKey, result, now);
+  } else {
+    db.prepare(
+      `INSERT OR REPLACE INTO llm_cache (hash, result, created_at) VALUES (?, ?, ?)`,
+    ).run(cacheKey, result, now);
+  }
   cacheStats.writes++;
   if (Math.random() < 0.01) {
     db.exec(
@@ -3292,6 +3593,44 @@ export function cleanupOrphanedContent(db: Database): number {
  * Returns the number of orphaned embedding chunks deleted.
  */
 export function cleanupOrphanedVectors(db: Database): number {
+  if (isPostgresDb(db)) {
+    if (!hasVectorIndex(db)) {
+      return 0;
+    }
+
+    const countResult = db
+      .prepare(
+        `
+      SELECT COUNT(*) as c FROM content_vectors cv
+      WHERE NOT EXISTS (
+        SELECT 1 FROM documents d WHERE d.hash = cv.hash AND d.active = 1
+      )
+    `,
+      )
+      .get() as { c: number };
+
+    if (countResult.c === 0) {
+      return 0;
+    }
+
+    db.exec(`
+      DELETE FROM vectors v
+      USING content_vectors cv
+      WHERE v.hash_seq = cv.hash || '_' || cv.seq
+      AND NOT EXISTS (
+        SELECT 1 FROM documents d WHERE d.hash = cv.hash AND d.active = 1
+      )
+    `);
+
+    db.exec(`
+      DELETE FROM content_vectors WHERE hash NOT IN (
+        SELECT hash FROM documents WHERE active = 1
+      )
+    `);
+
+    return countResult.c;
+  }
+
   // sqlite-vec may not be loaded (e.g. Bun's bun:sqlite lacks loadExtension).
   // The vectors_vec virtual table can appear in sqlite_master from a prior
   // session, but querying it without the vec0 module loaded will crash (#380).
@@ -3352,6 +3691,9 @@ export function cleanupOrphanedVectors(db: Database): number {
  * This operation rebuilds the database file to eliminate fragmentation.
  */
 export function vacuumDatabase(db: Database): void {
+  // Postgres has no equivalent to run here: VACUUM cannot execute inside the
+  // bridge's transaction wrapper, and autovacuum already owns reclamation.
+  if (isPostgresDb(db)) return;
   db.exec(`VACUUM`);
 }
 
@@ -3416,12 +3758,32 @@ export function insertContent(
   content: string,
   createdAt: string,
 ): void {
-  db.prepare(
-    `INSERT OR IGNORE INTO content (hash, doc, created_at) VALUES (?, ?, ?)`,
-  ).run(hash, content, createdAt);
+  if (isPostgresDb(db)) {
+    // Postgres `text` cannot hold NUL (0x00) and rejects the whole statement
+    // with "invalid byte sequence for encoding UTF8"; SQLite stores it happily.
+    // Strip NULs on this path only -- the hash is computed from the original
+    // bytes upstream, so both backends keep addressing the same content, and
+    // the SQLite branch below stays byte-identical.
+    db.prepare(
+      `
+      INSERT INTO content (hash, doc, created_at)
+      VALUES (?, ?, ?)
+      ON CONFLICT(hash) DO NOTHING
+    `,
+    ).run(hash, content.replace(/\0/g, ""), createdAt);
+  } else {
+    db.prepare(
+      `INSERT OR IGNORE INTO content (hash, doc, created_at) VALUES (?, ?, ?)`,
+    ).run(hash, content, createdAt);
+  }
 }
 
 function rebuildDocumentFTS(db: Database, documentId: number): void {
+  // documents_fts is an fts5 virtual table that only the SQLite path creates.
+  // Postgres indexes full text through the generated content.tsv column and its
+  // GIN index, which Postgres maintains itself, so there is nothing to rebuild.
+  if (isPostgresDb(db)) return;
+
   const row = db
     .prepare(
       `
@@ -3525,9 +3887,19 @@ export function findOrMigrateLegacyDocument(
   if (existing) return existing;
 
   // Case-insensitive match (legacy normalization: e.g. "README.md" → "readme.md").
+  // COLLATE NOCASE is SQLite-only; Postgres ships no such collation and errors
+  // out rather than degrading, so it gets LOWER() on both sides instead. Both
+  // spellings are case-insensitive equality over the stored path.
   const legacyCase = db
     .prepare(
-      `
+      isPostgresDb(db)
+        ? `
+    SELECT id, hash, title FROM documents
+    WHERE collection = ? AND LOWER(path) = LOWER(?) AND active = 1
+    ORDER BY id
+    LIMIT 1
+  `
+        : `
     SELECT id, hash, title FROM documents
     WHERE collection = ? AND path COLLATE NOCASE = ? AND active = 1
     ORDER BY id
@@ -3568,11 +3940,26 @@ export function findOrMigrateLegacyDocument(
   const migrate = db.transaction(() => {
     // Use OR IGNORE so a UNIQUE conflict (e.g. both "readme.md" and
     // "README.md" already exist) is a no-op rather than crashing.
+    // UPDATE OR IGNORE is SQLite-only. Postgres has no statement-level ignore
+    // clause, so the conflicting row is excluded in the WHERE instead: skip the
+    // rename when the target path already exists under this collection.
     const result = db
       .prepare(
-        `UPDATE OR IGNORE documents SET path = ? WHERE id = ? AND active = 1`,
+        isPostgresDb(db)
+          ? `UPDATE documents SET path = ? WHERE id = ? AND active = 1
+             AND NOT EXISTS (
+               SELECT 1 FROM documents existing
+               WHERE existing.collection = (SELECT collection FROM documents WHERE id = ?)
+                 AND existing.path = ?
+                 AND existing.id <> ?
+             )`
+          : `UPDATE OR IGNORE documents SET path = ? WHERE id = ? AND active = 1`,
       )
-      .run(path, legacy.id);
+      .run(
+        ...(isPostgresDb(db)
+          ? [path, legacy.id, legacy.id, path, legacy.id]
+          : [path, legacy.id]),
+      );
 
     if (result.changes === 0) return false;
 
@@ -4677,12 +5064,96 @@ export function validateLexQuery(query: string): string | null {
   return null;
 }
 
+/**
+ * Build an OR-joined `to_tsquery` expression for the Postgres FTS branch.
+ *
+ * The web-search parser this replaces ANDs unquoted terms, so a multi-word
+ * query silently returns nothing unless one document holds every word — SQLite
+ * FTS5, as this fork calls it, ORs instead (FORK.md, decision 1).
+ * Matching that needs the explicit OR spelling, which `to_tsquery` only accepts
+ * pre-tokenised, so the terms are cleaned and joined here rather than in SQL.
+ *
+ * Returns "" when nothing survives cleaning; the caller must short-circuit,
+ * because `to_tsquery('')` raises rather than matching zero rows.
+ */
+export function buildPgTsQuery(query: string): string {
+  return query
+    .split(/\s+/)
+    .map((token) => token.replace(/[&|!():'\\<>*]/g, ""))
+    .filter((token) => token.length > 0)
+    .map((token) => `'${token}'`)
+    .join(" | ");
+}
+
 export function searchFTS(
   db: Database,
   query: string,
   limit: number = 20,
   collectionName?: string,
 ): SearchResult[] {
+  if (isPostgresDb(db)) {
+    const tsQuery = buildPgTsQuery(query);
+    if (!tsQuery) return [];
+
+    let sql = `
+      WITH q AS (
+        SELECT to_tsquery('english', ?) AS tsq
+      )
+      SELECT
+        'qmd://' || d.collection || '/' || d.path as filepath,
+        d.collection || '/' || d.path as display_path,
+        d.title,
+        content.doc as body,
+        d.hash,
+        ts_rank_cd(content.tsv, q.tsq) as bm25_score
+      FROM q
+      JOIN documents d ON d.active = 1
+      JOIN content ON content.hash = d.hash
+      WHERE content.tsv @@ q.tsq
+    `;
+    const params: (string | number)[] = [tsQuery];
+
+    if (collectionName) {
+      sql += ` AND d.collection = ?`;
+      params.push(String(collectionName));
+    }
+
+    sql += ` ORDER BY bm25_score DESC LIMIT ?`;
+    params.push(limit);
+
+    // Errors propagate, matching the SQLite arm below: a dropped connection or
+    // a malformed tsquery must not be reported to the user as "no matches".
+    const rows = db.prepare(sql).all(...params) as {
+      filepath: string;
+      display_path: string;
+      title: string;
+      body: string;
+      hash: string;
+      bm25_score: number;
+    }[];
+
+    return rows.map((row) => {
+      const rowCollectionName =
+        row.filepath.split("//")[1]?.split("/")[0] || "";
+      const rawScore = Number(row.bm25_score);
+      const score = rawScore > 0 ? rawScore / (1 + rawScore) : 0;
+      return {
+        filepath: row.filepath,
+        displayPath: row.display_path,
+        title: row.title,
+        hash: row.hash,
+        docid: getDocid(row.hash),
+        collectionName: rowCollectionName,
+        modifiedAt: "",
+        bodyLength: row.body.length,
+        body: row.body,
+        context: getContextForFile(db, row.filepath),
+        score,
+        source: "fts" as const,
+      };
+    });
+  }
+
   const ftsQuery = buildFTS5Query(query);
   if (!ftsQuery) return [];
 
@@ -4740,8 +5211,8 @@ export function searchFTS(
     const collectionName = row.filepath.split("//")[1]?.split("/")[0] || "";
     // Convert bm25 (negative, lower is better) into a stable [0..1) score where higher is better.
     // FTS5 BM25 scores are negative (e.g., -10 is strong, -2 is weak).
-    // |x| / (1 + |x|) maps: strong(-10)→0.91, medium(-2)→0.67, weak(-0.5)→0.33, none(0)→0.
-    // Monotonic and query-independent — no per-query normalization needed.
+    // |x| / (1 + |x|) maps: strong(-10)->0.91, medium(-2)->0.67, weak(-0.5)->0.33, none(0)->0.
+    // Monotonic and query-independent - no per-query normalization needed.
     const score = Math.abs(row.bm25_score) / (1 + Math.abs(row.bm25_score));
     return {
       filepath: row.filepath,
@@ -4773,12 +5244,7 @@ export async function searchVec(
   session?: ILLMSession,
   precomputedEmbedding?: number[],
 ): Promise<SearchResult[]> {
-  const tableExists = db
-    .prepare(
-      `SELECT name FROM sqlite_master WHERE type='table' AND name='vectors_vec'`,
-    )
-    .get();
-  if (!tableExists) return [];
+  if (!hasVectorIndex(db)) return [];
 
   const embedding =
     precomputedEmbedding ?? (await getEmbedding(query, model, true, session));
@@ -4793,6 +5259,83 @@ export async function searchVec(
         `cannot run. Check that the embedding backend is reachable and the ` +
         `model name is correct.`,
     );
+  }
+
+  if (isPostgresDb(db)) {
+    let sql = `
+      WITH query_vec AS (SELECT ?::halfvec AS embedding)
+      SELECT
+        v.hash_seq,
+        cv.hash,
+        cv.pos,
+        'qmd://' || d.collection || '/' || d.path as filepath,
+        d.collection || '/' || d.path as display_path,
+        d.title,
+        content.doc as body,
+        (v.embedding <=> query_vec.embedding) as distance
+      FROM query_vec
+      JOIN vectors v ON TRUE
+      JOIN content_vectors cv ON cv.hash || '_' || cv.seq = v.hash_seq
+      JOIN documents d ON d.hash = cv.hash AND d.active = 1
+      JOIN content ON content.hash = d.hash
+    `;
+    const params: (string | number | Float32Array)[] = [
+      new Float32Array(embedding),
+    ];
+
+    if (collectionName) {
+      sql += ` WHERE d.collection = ?`;
+      params.push(collectionName);
+    }
+
+    sql += ` ORDER BY distance ASC LIMIT ?`;
+    params.push(limit * 3);
+
+    const docRows = db.prepare(sql).all(...params) as {
+      hash_seq: string;
+      hash: string;
+      pos: number;
+      filepath: string;
+      display_path: string;
+      title: string;
+      body: string;
+      distance: number;
+    }[];
+
+    const seen = new Map<
+      string,
+      { row: (typeof docRows)[number]; bestDist: number }
+    >();
+    for (const row of docRows) {
+      const distance = Number(row.distance);
+      const existing = seen.get(row.filepath);
+      if (!existing || distance < existing.bestDist) {
+        seen.set(row.filepath, { row, bestDist: distance });
+      }
+    }
+
+    return Array.from(seen.values())
+      .sort((a, b) => a.bestDist - b.bestDist)
+      .slice(0, limit)
+      .map(({ row, bestDist }) => {
+        const rowCollectionName =
+          row.filepath.split("//")[1]?.split("/")[0] || "";
+        return {
+          filepath: row.filepath,
+          displayPath: row.display_path,
+          title: row.title,
+          hash: row.hash,
+          docid: getDocid(row.hash),
+          collectionName: rowCollectionName,
+          modifiedAt: "",
+          bodyLength: row.body.length,
+          body: row.body,
+          context: getContextForFile(db, row.filepath),
+          score: 1 - bestDist,
+          source: "vec" as const,
+          chunkPos: row.pos,
+        };
+      });
   }
 
   // IMPORTANT: We use a two-step query approach here because sqlite-vec virtual tables
@@ -4926,6 +5469,30 @@ export function getHashesForEmbedding(
   model: string = DEFAULT_EMBED_MODEL,
 ): { hash: string; body: string; path: string }[] {
   const fingerprint = getEmbeddingFingerprint(model);
+  if (isPostgresDb(db)) {
+    return db
+      .prepare(
+        `
+      SELECT d.hash, MIN(c.doc) as body, MIN(d.path) as path
+      FROM documents d
+      JOIN content c ON d.hash = c.hash
+      LEFT JOIN (
+        SELECT hash, model, COUNT(*) AS chunk_count, MAX(total_chunks) AS expected_chunks
+        FROM content_vectors
+        WHERE model = ? AND embed_fingerprint = ?
+        GROUP BY hash, model, embed_fingerprint
+      ) v ON d.hash = v.hash
+      WHERE d.active = 1
+        AND (v.hash IS NULL OR v.chunk_count < v.expected_chunks)
+      GROUP BY d.hash
+    `,
+      )
+      .all(model, fingerprint) as {
+      hash: string;
+      body: string;
+      path: string;
+    }[];
+  }
   return withLazyContentVectorMigration(
     db,
     () =>
@@ -4973,7 +5540,11 @@ export function getHashesForEmbedding(
 export function clearAllEmbeddings(db: Database, collection?: string): void {
   if (!collection) {
     db.exec(`DELETE FROM content_vectors`);
-    db.exec(`DROP TABLE IF EXISTS vectors_vec`);
+    db.exec(
+      isPostgresDb(db)
+        ? `DROP TABLE IF EXISTS vectors`
+        : `DROP TABLE IF EXISTS vectors_vec`,
+    );
     return;
   }
 
@@ -4988,6 +5559,31 @@ export function clearAllEmbeddings(db: Database, collection?: string): void {
           AND d2.collection != d.collection
       )
   `;
+
+  if (isPostgresDb(db)) {
+    // No sqlite_master probe here: on Postgres the vector table is `vectors`
+    // and always exists. Delete the vectors first, then the content_vectors
+    // rows that identify them — the reverse order would drop the hashes the
+    // hash_seq lookup needs.
+    db.prepare(
+      `
+      DELETE FROM vectors
+      WHERE hash_seq IN (
+        SELECT cv.hash || '_' || cv.seq
+        FROM content_vectors cv
+        WHERE cv.hash IN (${exclusiveHashesQuery})
+      )
+    `,
+    ).run(collection);
+
+    db.prepare(
+      `
+      DELETE FROM content_vectors
+      WHERE hash IN (${exclusiveHashesQuery})
+    `,
+    ).run(collection);
+    return;
+  }
 
   const vecTableExists = db
     .prepare(
@@ -5051,6 +5647,40 @@ export function insertEmbedding(
   fingerprint: string = getEmbeddingFingerprint(model),
 ): void {
   const hashSeq = `${hash}_${seq}`;
+  if (isPostgresDb(db)) {
+    const insertVecStmt = db.prepare(`
+      INSERT INTO vectors (hash_seq, embedding)
+      VALUES (?, ?::halfvec)
+      ON CONFLICT(hash_seq) DO UPDATE SET
+        embedding = excluded.embedding
+    `);
+    const insertContentVectorStmt = db.prepare(`
+      INSERT INTO content_vectors (hash, seq, pos, model, embed_fingerprint, total_chunks, embedded_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(hash, seq) DO UPDATE SET
+        pos = excluded.pos,
+        model = excluded.model,
+        embed_fingerprint = excluded.embed_fingerprint,
+        total_chunks = excluded.total_chunks,
+        embedded_at = excluded.embedded_at
+    `);
+    // content_vectors first, then vectors, both in one transaction — the
+    // crash-safe ordering documented above (getHashesForEmbedding checks only
+    // content_vectors, so the reverse order can strand a vector row forever).
+    db.transaction(() => {
+      insertContentVectorStmt.run(
+        hash,
+        seq,
+        pos,
+        model,
+        fingerprint,
+        totalChunks,
+        embeddedAt,
+      );
+      insertVecStmt.run(hashSeq, embedding);
+    })();
+    return;
+  }
 
   withLazyContentVectorMigration(db, () => {
     // Insert content_vectors first — crash-safe ordering (see getHashesForEmbedding)
@@ -5079,6 +5709,105 @@ export function insertEmbedding(
   });
 }
 
+/** One chunk's embedding, as accepted by {@link insertEmbeddings}. */
+export type EmbeddingRow = {
+  hash: string;
+  seq: number;
+  pos: number;
+  embedding: Float32Array;
+  model: string;
+  embeddedAt: string;
+  totalChunks: number;
+  fingerprint: string;
+};
+
+/**
+ * Rows per INSERT statement. Postgres caps a statement at 65535 bind
+ * parameters; content_vectors binds 7 per row, so 500 rows (3500 params) is
+ * comfortably under it while still amortising the round trip.
+ */
+const EMBEDDING_INSERT_CHUNK_SIZE = 500;
+
+/**
+ * Insert a batch of embeddings in ONE transaction (Postgres only).
+ *
+ * Equivalent to calling insertEmbedding once per row, but the whole batch
+ * commits together instead of each of the 2N statements autocommitting on its
+ * own round trip through the Atomics bridge. That per-statement commit is what
+ * made the Development embed take 287s against ~5s of inference.
+ *
+ * Callers must pass a Postgres db; SQLite keeps the per-chunk path, whose vec0
+ * DELETE+INSERT has no multi-row form.
+ */
+export function insertEmbeddings(db: Database, rows: EmbeddingRow[]): void {
+  if (rows.length === 0) return;
+  if (!isPostgresDb(db)) {
+    throw new Error("insertEmbeddings requires a Postgres database");
+  }
+
+  // A multi-row ON CONFLICT DO UPDATE aborts with "cannot affect row a second
+  // time" if the same key appears twice in one statement, and a batch CAN carry
+  // the same (hash, seq) twice when two indexed paths hold identical content.
+  // Row-by-row inserts tolerated that (the second simply overwrote the first),
+  // so collapse duplicates here, last write winning, to preserve the behaviour.
+  const deduped = new Map<string, EmbeddingRow>();
+  for (const row of rows) deduped.set(`${row.hash}_${row.seq}`, row);
+  const uniqueRows = [...deduped.values()];
+
+  db.transaction(() => {
+    for (
+      let start = 0;
+      start < uniqueRows.length;
+      start += EMBEDDING_INSERT_CHUNK_SIZE
+    ) {
+      const slice = uniqueRows.slice(
+        start,
+        start + EMBEDDING_INSERT_CHUNK_SIZE,
+      );
+
+      const vecParams: SQLiteValue[] = [];
+      const vecTuples = slice
+        .map((row) => {
+          vecParams.push(`${row.hash}_${row.seq}`, row.embedding);
+          return "(?, ?::halfvec)";
+        })
+        .join(", ");
+      db.prepare(
+        `INSERT INTO vectors (hash_seq, embedding)
+         VALUES ${vecTuples}
+         ON CONFLICT(hash_seq) DO UPDATE SET
+           embedding = excluded.embedding`,
+      ).run(...vecParams);
+
+      const contentParams: SQLiteValue[] = [];
+      const contentTuples = slice
+        .map((row) => {
+          contentParams.push(
+            row.hash,
+            row.seq,
+            row.pos,
+            row.model,
+            row.fingerprint,
+            row.totalChunks,
+            row.embeddedAt,
+          );
+          return "(?, ?, ?, ?, ?, ?, ?)";
+        })
+        .join(", ");
+      db.prepare(
+        `INSERT INTO content_vectors (hash, seq, pos, model, embed_fingerprint, total_chunks, embedded_at)
+         VALUES ${contentTuples}
+         ON CONFLICT(hash, seq) DO UPDATE SET
+           pos = excluded.pos,
+           model = excluded.model,
+           embed_fingerprint = excluded.embed_fingerprint,
+           total_chunks = excluded.total_chunks,
+           embedded_at = excluded.embedded_at`,
+      ).run(...contentParams);
+    }
+  })();
+}
+
 function removeIncompleteEmbeddings(
   db: Database,
   expectedChunksByHash: Map<string, number>,
@@ -5093,7 +5822,9 @@ function removeIncompleteEmbeddings(
       `DELETE FROM content_vectors WHERE hash = ? AND model = ?`,
     );
     const deleteVecStmt = db.prepare(
-      `DELETE FROM vectors_vec WHERE hash_seq = ?`,
+      isPostgresDb(db)
+        ? `DELETE FROM vectors WHERE hash_seq = ?`
+        : `DELETE FROM vectors_vec WHERE hash_seq = ?`,
     );
 
     for (const [hash, expectedChunks] of expectedChunksByHash) {
@@ -5825,11 +6556,7 @@ export function getStatus(
       .get() as { c: number }
   ).c;
   const needsEmbedding = getHashesNeedingEmbedding(db, undefined, model);
-  const hasVectors = !!db
-    .prepare(
-      `SELECT name FROM sqlite_master WHERE type='table' AND name='vectors_vec'`,
-    )
-    .get();
+  const hasVectors = hasVectorIndex(db);
 
   return {
     totalDocuments: totalDocs,
@@ -6181,11 +6908,7 @@ export async function hybridQuery(
   const rankedLists: RankedResult[][] = [];
   const rankedListMeta: RankedListMeta[] = [];
   const docidMap = new Map<string, string>(); // filepath -> docid
-  const hasVectors = !!store.db
-    .prepare(
-      `SELECT name FROM sqlite_master WHERE type='table' AND name='vectors_vec'`,
-    )
-    .get();
+  const hasVectors = hasVectorIndex(store.db);
 
   // Step 1: BM25 probe — strong signal skips expensive LLM expansion
   // When intent is provided, disable strong-signal bypass — the obvious BM25
@@ -6578,11 +7301,7 @@ export async function vectorSearchQuery(
   const collection = options?.collection;
   const intent = options?.intent;
 
-  const hasVectors = !!store.db
-    .prepare(
-      `SELECT name FROM sqlite_master WHERE type='table' AND name='vectors_vec'`,
-    )
-    .get();
+  const hasVectors = hasVectorIndex(store.db);
   if (!hasVectors) return [];
 
   // Expand query — filter to vec/hyde only (lex queries target FTS, not vector)
@@ -6700,11 +7419,7 @@ export async function structuredSearch(
   const rankedLists: RankedResult[][] = [];
   const rankedListMeta: RankedListMeta[] = [];
   const docidMap = new Map<string, string>(); // filepath -> docid
-  const hasVectors = !!store.db
-    .prepare(
-      `SELECT name FROM sqlite_master WHERE type='table' AND name='vectors_vec'`,
-    )
-    .get();
+  const hasVectors = hasVectorIndex(store.db);
 
   // Helper to run search across collections (or all if undefined)
   const collectionList = collections ?? [undefined]; // undefined = all collections
