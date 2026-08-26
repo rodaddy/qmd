@@ -50,3 +50,12 @@ only when a session actually needed it.
    SIGTERM handler that cannot run while the main thread is blocked makes it
    immortal. For timed or diagnosed runs call
    `node dist/cli/qmd.js` directly after `npm run build`.
+
+10. **Check `user` CPU against wall time before optimizing the Postgres
+    write path.** run3 of the full embed was 190.66s wall with 15.94s user:
+    the process was waiting on remote inference (~17ms/chunk, serial). The
+    whole Postgres write path is under 3s (all 10,779 rows insert in
+    42.8ms, full HNSW build 2.2s). A microbenchmark of 2,000 separate
+    inserts (4.5s) was misread as index-maintenance cost and produced a
+    bulk-mode lane that measured zero gain and was reverted (c9aa2f9). The
+    lever for a full load is the embedding endpoint, not storage.
