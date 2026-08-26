@@ -19,6 +19,7 @@ texts/
 # Layer 0.1 of the handover contract (_DOCS/HANDOFF-BASE.md). Repo-standing
 # rules every handover here needs; tracked for the same reason as FORK.md.
 !_DOCS/HANDOFF-RULES.md
+!_DOCS/_handoff/*.md
 !skills/**/*.md
 !finetune/*.md
 !docs/*.md
