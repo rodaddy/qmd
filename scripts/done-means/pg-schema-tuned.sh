@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # done-means: the Postgres branch emits the configuration FORK.md measured:
-# halfvec(768), HNSW m=32 / ef_construction=128, to_tsquery OR-terms,
-# ts_rank_cd — and NOT websearch_to_tsquery (ANDs terms; silent zero results).
+# halfvec column + halfvec_cosine_ops, HNSW m=32 / ef_construction=128,
+# to_tsquery OR-terms, ts_rank_cd — and NOT websearch_to_tsquery (ANDs terms;
+# silent zero results). Matches the DDL TEMPLATE in source; the rendered
+# halfvec(768) is proven live by the State 6 format_type probe, not here.
 #   0 pass · 1 any row missing or the AND parser still present · 3 harness error
 set -u
 repo=$(cd "$(dirname "$0")/../.." && pwd)
@@ -11,7 +13,8 @@ files="src/pg.ts src/store.ts"
 for f in $files; do [ -f "$f" ] || { echo "HARNESS ERROR: $f absent (merge not applied)"; exit 3; }; done
 fail=0
 need() { if rg -q "$1" $files; then echo "PASS $2"; else echo "FAIL $2"; fail=1; fi; }
-need 'halfvec\(768\)' 'halfvec(768)'
+need 'embedding halfvec\(\$\{dimensions\}\) NOT NULL' 'DDL template: embedding halfvec(<dimensions>) column'
+need 'USING hnsw \(embedding halfvec_cosine_ops\)' 'HNSW opclass halfvec_cosine_ops'
 need 'm *= *32' 'HNSW m=32'
 need 'ef_construction *= *128' 'HNSW ef_construction=128'
 need 'ts_rank_cd' 'ts_rank_cd'
