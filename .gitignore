@@ -16,6 +16,9 @@ texts/
 # or it does not survive a fresh clone -- which is how this fork previously
 # drifted 124 commits carrying a patch upstream had already fixed.
 !FORK.md
+# Layer 0.1 of the handover contract (_DOCS/HANDOFF-BASE.md). Repo-standing
+# rules every handover here needs; tracked for the same reason as FORK.md.
+!_DOCS/HANDOFF-RULES.md
 !skills/**/*.md
 !finetune/*.md
 !docs/*.md
