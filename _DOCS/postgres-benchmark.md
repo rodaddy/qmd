@@ -21,6 +21,7 @@ inference.
 | run2, incremental | `qmd update` 2.49s (1 new, 1835 unchanged) | `qmd embed` 1.45s (17 chunks, 1 doc) | **3.9s** | the comparable run: **4m13s -> 3.9s** |
 | run3, clean full load, batched writes | not run (`BENCH_STEPS=embed`) | `qmd embed` **190.64s** (10,779 chunks from 1,775 docs) | 190.64s | sha def2a8f + batched insert; one multi-row transaction per embed batch. **287.29s -> 190.64s, -96.6s (-34%)**. `select count(*) from vectors` = 10,779 |
 | run4, same + `synchronous_commit=off` | not run (`BENCH_STEPS=embed`) | `qmd embed` **187.68s** (10,779 chunks from 1,775 docs) | 187.68s | `QMD_PG_SYNCHRONOUS_COMMIT=off`, verified reaching the session (`SHOW synchronous_commit` -> `off`). 2.96s vs run3 — **within noise, no real gain**. count = 10,779 |
+| run5, clean full load, bulk mode | not run (`BENCH_STEPS=embed`) | `qmd embed` **190.66s** (10,779 chunks from 1,775 docs) | 190.66s | sha WIP + bulk mode: HNSW index dropped for the run, rebuilt once. Split from stderr: **loop 190.4s, rebuild 0.0s**. vs run3 190.64s -- **no gain; the premise was wrong** (see below). count = 10,779, index present, vsearch answers |
 
 Logs: `/Volumes/ThunderBolt/Development/.qmd/bench-run1.log`,
 `bench-run2.log`, `bench-run3.log`, `bench-run4.log` (not tracked).
@@ -28,7 +29,35 @@ Logs: `/Volumes/ThunderBolt/Development/.qmd/bench-run1.log`,
 Chunk count is 10,779 in run3/run4 vs 10,762 in run1 because the collection
 itself grew between the two dates, not because of a partial write.
 
-### Where the remaining 190s goes: HNSW index maintenance
+### CORRECTION (run5): the 190s is inference, not index maintenance
+
+Bulk mode was built and MEASURED, and it did not move the number: 190.66s vs
+190.64s. The 2,000-row microbenchmark below is real but was misread -- it timed
+2,000 SEPARATE inserts, each paying its own index descent. That per-row cost is
+not what a batched embed pays. Measured directly on the live 10,779-row table:
+
+| operation over all 10,779 rows | time |
+|---|---|
+| `INSERT INTO ... SELECT` (no index maintenance in play) | **42.8ms** |
+| full `CREATE INDEX ... hnsw (m=32, ef_construction=128)` | **2185.4ms** |
+| `DROP INDEX` | 12.3ms |
+
+The ENTIRE Postgres write path -- every row plus a from-scratch index build -- is
+under 3 seconds of a 190-second embed. There was never 187s of index
+maintenance available to remove. The run5 rebuild logged 0.0s because the index
+had been rebuilt into an empty table before the loop began.
+
+The corroborating signal was in run3 all along and went unread: `user 15.94s`
+of CPU against 190.66s wall. The process is waiting, not computing. The ~187s
+is remote embedding inference on llama-swap (~17ms/chunk over 10,779 chunks).
+**No storage-layer change can reach it.** The lever is inference: batch size,
+concurrency, or a local/faster embedding endpoint.
+
+Bulk mode is kept -- it is correct, it is bounded by the threshold rule, and it
+protects the case the microbenchmark DOES describe (a large embed against a
+table whose index is already populated). It is not a speedup for this corpus.
+
+### The superseded reading: HNSW index maintenance
 
 Measured directly on two scratch `UNLOGGED` tables, inserting the same 2,000
 rows sampled from `vectors`:
@@ -59,8 +88,14 @@ query; it is the next thing to time.
   writes returned 96.6s of it; the rest is HNSW index maintenance, not the
   bridge. FORK.md's "200x from batching" held for raw row inserts (8.9ms vs
   ~1,550ms for 500 rows) but does NOT carry to a table with a live HNSW index.
-- Bulk-load path: drop and rebuild `idx_vectors_embedding_hnsw` around a full
-  embed, instead of maintaining it row by row. Unmeasured; touches tuned DDL.
+- ~~Bulk-load path: drop and rebuild `idx_vectors_embedding_hnsw` around a full
+  embed.~~ DONE and measured in run5: **no gain (190.66s vs 190.64s)**, because
+  the write path was never the cost. Implemented and kept for the
+  large-append-onto-populated-index case; threshold
+  `pending >= max(2000, 0.25 * existing)`, env `QMD_PG_BULK_THRESHOLD`.
+- **Embed wall time is inference-bound (~187s of 190s).** Next lever is the
+  embedding endpoint -- concurrency, batch size, or local inference -- not
+  Postgres. Nothing in the storage layer will move this number.
 - The 4-minute search step above.
 - `bm25()` vs `ts_rank_cd` ranking and OR-vs-AND FTS semantics are recorded
   decisions in FORK.md, not yet reconciled across backends.
