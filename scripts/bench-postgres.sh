@@ -24,7 +24,8 @@ cd "$dir" || exit 3
 log="$dir/.qmd/bench-$label.log"
 {
   echo "== $label start $(date -u +%FT%TZ) cwd=$(pwd) backend=postgres host=10.71.20.167 qmd=$(git -C "$here" rev-parse --short HEAD)"
-  echo "== qmd update"; /usr/bin/time -p timeout -s KILL "${UPDATE_DEADLINE:-3600}" node "$QMD" update 2>&1 | tail -15
-  echo "== qmd embed";  /usr/bin/time -p timeout -s KILL "${EMBED_DEADLINE:-7200}" node "$QMD" embed  2>&1 | tail -15
+  steps=${BENCH_STEPS:-update,embed}
+  case ",$steps," in *,update,*) echo "== qmd update"; /usr/bin/time -p timeout -s KILL "${UPDATE_DEADLINE:-3600}" node "$QMD" update 2>&1 | tail -15;; esac
+  case ",$steps," in *,embed,*)  echo "== qmd embed";  /usr/bin/time -p timeout -s KILL "${EMBED_DEADLINE:-7200}" node "$QMD" embed  2>&1 | tail -15;; esac
   echo "== $label end $(date -u +%FT%TZ)"
 } 2>&1 | sed -e "s#${QMD_POSTGRES_URL}#<url>#g" | tee "$log"
