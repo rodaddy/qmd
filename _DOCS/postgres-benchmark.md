@@ -21,7 +21,7 @@ inference.
 | run2, incremental | `qmd update` 2.49s (1 new, 1835 unchanged) | `qmd embed` 1.45s (17 chunks, 1 doc) | **3.9s** | the comparable run: **4m13s -> 3.9s** |
 | run3, clean full load, batched writes | not run (`BENCH_STEPS=embed`) | `qmd embed` **190.64s** (10,779 chunks from 1,775 docs) | 190.64s | sha def2a8f + batched insert; one multi-row transaction per embed batch. **287.29s -> 190.64s, -96.6s (-34%)**. `select count(*) from vectors` = 10,779 |
 | run4, same + `synchronous_commit=off` | not run (`BENCH_STEPS=embed`) | `qmd embed` **187.68s** (10,779 chunks from 1,775 docs) | 187.68s | `QMD_PG_SYNCHRONOUS_COMMIT=off`, verified reaching the session (`SHOW synchronous_commit` -> `off`). 2.96s vs run3 — **within noise, no real gain**. count = 10,779 |
-| run5, clean full load, bulk mode | not run (`BENCH_STEPS=embed`) | `qmd embed` **190.66s** (10,779 chunks from 1,775 docs) | 190.66s | sha WIP + bulk mode: HNSW index dropped for the run, rebuilt once. Split from stderr: **loop 190.4s, rebuild 0.0s**. vs run3 190.64s -- **no gain; the premise was wrong** (see below). count = 10,779, index present, vsearch answers |
+| run5, clean full load, bulk mode | not run (`BENCH_STEPS=embed`) | `qmd embed` **190.66s** (10,779 chunks from 1,775 docs) | 190.66s | sha a878256 (reverted) + bulk mode: HNSW index dropped for the run, rebuilt once. Split from stderr: **loop 190.4s, rebuild 0.0s**. vs run3 190.64s -- **no gain; the premise was wrong** (see below). count = 10,779, index present, vsearch answers |
 
 Logs: `/Volumes/ThunderBolt/Development/.qmd/bench-run1.log`,
 `bench-run2.log`, `bench-run3.log`, `bench-run4.log` (not tracked).
@@ -53,9 +53,10 @@ is remote embedding inference on llama-swap (~17ms/chunk over 10,779 chunks).
 **No storage-layer change can reach it.** The lever is inference: batch size,
 concurrency, or a local/faster embedding endpoint.
 
-Bulk mode is kept -- it is correct, it is bounded by the threshold rule, and it
-protects the case the microbenchmark DOES describe (a large embed against a
-table whose index is already populated). It is not a speedup for this corpus.
+Bulk mode was REVERTED in the same session (commit after a878256): zero
+measured gain, and while the index is down every search falls back to a
+sequential scan. Code with no receipt does not stay in the branch; the
+measurement above is the record.
 
 ### The superseded reading: HNSW index maintenance
 
@@ -90,9 +91,7 @@ query; it is the next thing to time.
   ~1,550ms for 500 rows) but does NOT carry to a table with a live HNSW index.
 - ~~Bulk-load path: drop and rebuild `idx_vectors_embedding_hnsw` around a full
   embed.~~ DONE and measured in run5: **no gain (190.66s vs 190.64s)**, because
-  the write path was never the cost. Implemented and kept for the
-  large-append-onto-populated-index case; threshold
-  `pending >= max(2000, 0.25 * existing)`, env `QMD_PG_BULK_THRESHOLD`.
+  the write path was never the cost. Code reverted; only the measurement stays.
 - **Embed wall time is inference-bound (~187s of 190s).** Next lever is the
   embedding endpoint -- concurrency, batch size, or local inference -- not
   Postgres. Nothing in the storage layer will move this number.

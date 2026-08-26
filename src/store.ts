@@ -80,13 +80,6 @@ function getDbBackend(db: Database): Backend {
   return dbBackendMap.get(db) ?? getBackend();
 }
 
-// The HNSW index DDL is shared by the initializer and the bulk-embed rebuild
-// so the two can never drift apart on the tuned m / ef_construction values.
-// Kept on ONE line: scripts/done-means/pg-schema-tuned.sh matches it verbatim.
-const PG_HNSW_INDEX_DDL = `CREATE INDEX IF NOT EXISTS idx_vectors_embedding_hnsw ON vectors USING hnsw (embedding halfvec_cosine_ops) WITH (m = 32, ef_construction = 128)`;
-
-const PG_HNSW_INDEX_DROP_DDL = `DROP INDEX IF EXISTS idx_vectors_embedding_hnsw`;
-
 function isPostgresDb(db: Database): boolean {
   return getDbBackend(db) === "postgres";
 }
@@ -1676,7 +1669,9 @@ function ensurePgVectorTableInternal(db: Database, dimensions: number): void {
       embedding halfvec(${dimensions}) NOT NULL
     )
   `);
-  db.exec(PG_HNSW_INDEX_DDL);
+  db.exec(
+    `CREATE INDEX IF NOT EXISTS idx_vectors_embedding_hnsw ON vectors USING hnsw (embedding halfvec_cosine_ops) WITH (m = 32, ef_construction = 128)`,
+  );
 }
 
 function ensureVecTableInternal(db: Database, dimensions: number): void {
@@ -2412,37 +2407,6 @@ function getEmbeddingDocsForBatch(
  * Pure function — no console output, no db lifecycle management.
  * Uses the store's LlamaCpp instance if set, otherwise the global singleton.
  */
-/**
- * Decide whether an embed run is big enough that dropping the HNSW index,
- * writing the rows, and rebuilding once beats paying per-row index
- * maintenance. Measured at b31feb8: 2000 rows insert in 8.9ms without the
- * index and 4494.7ms with it, so index upkeep was ~95% of a full embed.
- *
- * The relative term matters as much as the floor: rebuilding costs time
- * proportional to the WHOLE table, so a 2000-row append onto 10M existing
- * rows must stay incremental. Requiring the batch to be at least a quarter
- * of what is already there keeps the rebuild bounded by the work it serves.
- */
-function shouldUseBulkEmbed(pending: number, existing: number): boolean {
-  const floor = Math.max(1, Number(process.env.QMD_PG_BULK_THRESHOLD) || 2000);
-  return pending >= Math.max(floor, existing * 0.25);
-}
-
-/**
- * Apply a USERSET tuning GUC for the rebuild. Both settings are USERSET, but a
- * managed cluster may still refuse one; a refusal must not fail the embed, so
- * report it and rebuild with whatever the server allows.
- */
-function trySetSessionGuc(db: Database, sql: string): void {
-  try {
-    db.exec(sql);
-  } catch (error) {
-    console.error(
-      `⚠ bulk embed: ${sql} refused (${error instanceof Error ? error.message : String(error)}) — continuing without it`,
-    );
-  }
-}
-
 export async function generateEmbeddings(
   store: Store,
   options?: EmbedOptions,
@@ -2581,267 +2545,56 @@ export async function generateEmbeddings(
         maxBatchBytes,
       );
 
-      // Chunk counts are only exact after chunking, which happens inside the
-      // loop — so size the run from total pending bytes. CHUNK_SIZE_CHARS is
-      // the same bound the chunker uses, making this an under-estimate (real
-      // chunks split early on structure), which errs toward staying incremental.
-      const estimatedPendingChunks = Math.ceil(totalBytes / CHUNK_SIZE_CHARS);
-      // Bulk mode: on a large Postgres embed the HNSW index is dropped for the
-      // duration of the write and rebuilt once at the end. While it is down,
-      // vector search falls back to a sequential scan rather than failing;
-      // qmd has a single writer and the window is the embed itself.
-      let bulkEmbed = false;
-      if (usePostgresBatchInsert) {
-        const existing =
-          (
-            db.prepare(`SELECT count(*) AS n FROM vectors`).get() as {
-              n: number | string;
-            } | null
-          )?.n ?? 0;
-        bulkEmbed = shouldUseBulkEmbed(
-          estimatedPendingChunks,
-          Number(existing),
-        );
-        if (bulkEmbed) {
-          console.error(
-            `▸ bulk embed: ${estimatedPendingChunks} est. pending vs ${Number(existing)} existing — dropping idx_vectors_embedding_hnsw for the run`,
+      for (const batchMeta of batches) {
+        // Abort early if session has been invalidated
+        if (!session.isValid) {
+          console.warn(
+            `⚠ Session expired — skipping remaining document batches`,
           );
-          db.exec(PG_HNSW_INDEX_DROP_DDL);
+          break;
         }
-      }
-      const bulkLoopStart = Date.now();
-      try {
-        for (const batchMeta of batches) {
-          // Abort early if session has been invalidated
-          if (!session.isValid) {
-            console.warn(
-              `⚠ Session expired — skipping remaining document batches`,
-            );
-            break;
-          }
 
-          const batchDocs = getEmbeddingDocsForBatch(db, batchMeta);
-          const batchChunks: ChunkItem[] = [];
-          const expectedChunksByHash = new Map<string, number>();
-          const batchBytes = batchMeta.reduce(
-            (sum, doc) => sum + Math.max(0, doc.bytes),
-            0,
+        const batchDocs = getEmbeddingDocsForBatch(db, batchMeta);
+        const batchChunks: ChunkItem[] = [];
+        const expectedChunksByHash = new Map<string, number>();
+        const batchBytes = batchMeta.reduce(
+          (sum, doc) => sum + Math.max(0, doc.bytes),
+          0,
+        );
+
+        for (const doc of batchDocs) {
+          if (!doc.body.trim()) continue;
+
+          const title = extractTitle(doc.body, doc.path);
+          const chunks = await chunkDocumentByTokens(
+            doc.body,
+            undefined,
+            undefined,
+            undefined,
+            doc.path,
+            options?.chunkStrategy,
+            session.signal,
           );
 
-          for (const doc of batchDocs) {
-            if (!doc.body.trim()) continue;
-
-            const title = extractTitle(doc.body, doc.path);
-            const chunks = await chunkDocumentByTokens(
-              doc.body,
-              undefined,
-              undefined,
-              undefined,
-              doc.path,
-              options?.chunkStrategy,
-              session.signal,
-            );
-
-            for (let seq = 0; seq < chunks.length; seq++) {
-              batchChunks.push({
-                hash: doc.hash,
-                path: doc.path,
-                title,
-                text: chunks[seq]!.text,
-                seq,
-                pos: chunks[seq]!.pos,
-                tokens: chunks[seq]!.tokens,
-                bytes: encoder.encode(chunks[seq]!.text).length,
-                expectedTotalChunks: chunks.length,
-              });
-            }
-            expectedChunksByHash.set(doc.hash, chunks.length);
-          }
-
-          totalChunks += batchChunks.length;
-
-          if (batchChunks.length === 0) {
-            bytesProcessed += batchBytes;
-            options?.onProgress?.({
-              chunksEmbedded,
-              totalChunks,
-              bytesProcessed,
-              totalBytes,
-              errors: activeErrorCount(),
-              failures: failureList(),
-            });
-            continue;
-          }
-
-          if (!vectorTableInitialized) {
-            const firstChunk = batchChunks[0]!;
-            const firstText = formatDocForEmbedding(
-              firstChunk.text,
-              firstChunk.title,
-              embedModelUri,
-            );
-            const firstResult = await session.embed(firstText, { model });
-            if (!firstResult) {
-              throw new Error(
-                "Failed to get embedding dimensions from first chunk",
-              );
-            }
-            store.ensureVecTable(firstResult.embedding.length);
-            vectorTableInitialized = true;
-          }
-
-          const totalBatchChunkBytes = batchChunks.reduce(
-            (sum, chunk) => sum + chunk.bytes,
-            0,
-          );
-          let batchChunkBytesProcessed = 0;
-
-          for (
-            let batchStart = 0;
-            batchStart < batchChunks.length;
-            batchStart += BATCH_SIZE
-          ) {
-            // Abort early if session has been invalidated (e.g. max duration exceeded)
-            if (!session.isValid) {
-              const remainingChunks = batchChunks.slice(batchStart);
-              for (const chunk of remainingChunks)
-                recordFailure(
-                  chunk,
-                  "LLM session expired before embedding chunk",
-                );
-              console.warn(
-                `⚠ Session expired — skipping ${remainingChunks.length} remaining chunks`,
-              );
-              break;
-            }
-
-            // Abort early if active error rate is too high (>80% of attempted chunks failed)
-            const processed = chunksEmbedded + activeErrorCount();
-            if (
-              processed >= BATCH_SIZE &&
-              activeErrorCount() > processed * 0.8
-            ) {
-              const remainingChunks = batchChunks.slice(batchStart);
-              for (const chunk of remainingChunks)
-                recordFailure(
-                  chunk,
-                  "embedding aborted because error rate was too high",
-                );
-              console.warn(
-                `⚠ Error rate too high (${activeErrorCount()}/${processed}) — aborting embedding`,
-              );
-              break;
-            }
-
-            const batchEnd = Math.min(
-              batchStart + BATCH_SIZE,
-              batchChunks.length,
-            );
-            const chunkBatch = batchChunks.slice(batchStart, batchEnd);
-            const texts = chunkBatch.map((chunk) =>
-              formatDocForEmbedding(chunk.text, chunk.title, embedModelUri),
-            );
-
-            try {
-              const embeddings = await session.embedBatch(texts, { model });
-              // On Postgres the whole batch is written in one transaction below;
-              // per-chunk autocommit through the Atomics bridge dominated the
-              // embed wall time. SQLite keeps the per-chunk path unchanged.
-              const pendingRows: EmbeddingRow[] = [];
-              for (let i = 0; i < chunkBatch.length; i++) {
-                const chunk = chunkBatch[i]!;
-                const embedding = embeddings[i];
-                if (embedding) {
-                  const vector = new Float32Array(embedding.embedding);
-                  if (usePostgresBatchInsert) {
-                    pendingRows.push({
-                      hash: chunk.hash,
-                      seq: chunk.seq,
-                      pos: chunk.pos,
-                      embedding: vector,
-                      model,
-                      embeddedAt: now,
-                      totalChunks: chunk.expectedTotalChunks,
-                      fingerprint,
-                    });
-                  } else {
-                    insertEmbedding(
-                      db,
-                      chunk.hash,
-                      chunk.seq,
-                      chunk.pos,
-                      vector,
-                      model,
-                      now,
-                      chunk.expectedTotalChunks,
-                      fingerprint,
-                    );
-                  }
-                  chunksEmbedded++;
-                  successesSinceRetry++;
-                  clearFailure(chunk);
-                } else {
-                  recordFailure(chunk, "batch embedding returned no vector");
-                }
-                batchChunkBytesProcessed += chunk.bytes;
-              }
-              if (pendingRows.length > 0) insertEmbeddings(db, pendingRows);
-              await retryFailedChunks();
-            } catch (error) {
-              // Batch failed — try individual embeddings as fallback. If an
-              // individual retry succeeds, any prior failure for that chunk is
-              // cleared, so the visible error count reflects outstanding failures.
-              const batchReason = reasonFromError(error);
-              if (!session.isValid) {
-                for (const chunk of chunkBatch)
-                  recordFailure(
-                    chunk,
-                    `batch failed and session expired: ${batchReason}`,
-                  );
-                batchChunkBytesProcessed += chunkBatch.reduce(
-                  (sum, c) => sum + c.bytes,
-                  0,
-                );
-              } else {
-                for (const chunk of chunkBatch) {
-                  await tryEmbedChunk(chunk);
-                  batchChunkBytesProcessed += chunk.bytes;
-                  await retryFailedChunks();
-                }
-              }
-            }
-
-            const proportionalBytes =
-              totalBatchChunkBytes === 0
-                ? batchBytes
-                : Math.min(
-                    batchBytes,
-                    Math.round(
-                      (batchChunkBytesProcessed / totalBatchChunkBytes) *
-                        batchBytes,
-                    ),
-                  );
-            options?.onProgress?.({
-              chunksEmbedded,
-              totalChunks,
-              bytesProcessed: bytesProcessed + proportionalBytes,
-              totalBytes,
-              errors: activeErrorCount(),
-              failures: failureList(),
+          for (let seq = 0; seq < chunks.length; seq++) {
+            batchChunks.push({
+              hash: doc.hash,
+              path: doc.path,
+              title,
+              text: chunks[seq]!.text,
+              seq,
+              pos: chunks[seq]!.pos,
+              tokens: chunks[seq]!.tokens,
+              bytes: encoder.encode(chunks[seq]!.text).length,
+              expectedTotalChunks: chunks.length,
             });
           }
+          expectedChunksByHash.set(doc.hash, chunks.length);
+        }
 
-          await retryFailedChunks(true);
+        totalChunks += batchChunks.length;
 
-          const removedPartialChunks = removeIncompleteEmbeddings(
-            db,
-            expectedChunksByHash,
-            model,
-          );
-          if (removedPartialChunks > 0) {
-            chunksEmbedded = Math.max(0, chunksEmbedded - removedPartialChunks);
-          }
-
+        if (batchChunks.length === 0) {
           bytesProcessed += batchBytes;
           options?.onProgress?.({
             chunksEmbedded,
@@ -2851,18 +2604,184 @@ export async function generateEmbeddings(
             errors: activeErrorCount(),
             failures: failureList(),
           });
+          continue;
         }
-      } finally {
-        if (bulkEmbed) {
-          const loopMs = Date.now() - bulkLoopStart;
-          const rebuildStart = Date.now();
-          trySetSessionGuc(db, `SET maintenance_work_mem = '1GB'`);
-          trySetSessionGuc(db, `SET max_parallel_maintenance_workers = 4`);
-          db.exec(PG_HNSW_INDEX_DDL);
-          console.error(
-            `▸ bulk embed: loop ${(loopMs / 1000).toFixed(1)}s, HNSW rebuild ${((Date.now() - rebuildStart) / 1000).toFixed(1)}s`,
+
+        if (!vectorTableInitialized) {
+          const firstChunk = batchChunks[0]!;
+          const firstText = formatDocForEmbedding(
+            firstChunk.text,
+            firstChunk.title,
+            embedModelUri,
           );
+          const firstResult = await session.embed(firstText, { model });
+          if (!firstResult) {
+            throw new Error(
+              "Failed to get embedding dimensions from first chunk",
+            );
+          }
+          store.ensureVecTable(firstResult.embedding.length);
+          vectorTableInitialized = true;
         }
+
+        const totalBatchChunkBytes = batchChunks.reduce(
+          (sum, chunk) => sum + chunk.bytes,
+          0,
+        );
+        let batchChunkBytesProcessed = 0;
+
+        for (
+          let batchStart = 0;
+          batchStart < batchChunks.length;
+          batchStart += BATCH_SIZE
+        ) {
+          // Abort early if session has been invalidated (e.g. max duration exceeded)
+          if (!session.isValid) {
+            const remainingChunks = batchChunks.slice(batchStart);
+            for (const chunk of remainingChunks)
+              recordFailure(
+                chunk,
+                "LLM session expired before embedding chunk",
+              );
+            console.warn(
+              `⚠ Session expired — skipping ${remainingChunks.length} remaining chunks`,
+            );
+            break;
+          }
+
+          // Abort early if active error rate is too high (>80% of attempted chunks failed)
+          const processed = chunksEmbedded + activeErrorCount();
+          if (processed >= BATCH_SIZE && activeErrorCount() > processed * 0.8) {
+            const remainingChunks = batchChunks.slice(batchStart);
+            for (const chunk of remainingChunks)
+              recordFailure(
+                chunk,
+                "embedding aborted because error rate was too high",
+              );
+            console.warn(
+              `⚠ Error rate too high (${activeErrorCount()}/${processed}) — aborting embedding`,
+            );
+            break;
+          }
+
+          const batchEnd = Math.min(
+            batchStart + BATCH_SIZE,
+            batchChunks.length,
+          );
+          const chunkBatch = batchChunks.slice(batchStart, batchEnd);
+          const texts = chunkBatch.map((chunk) =>
+            formatDocForEmbedding(chunk.text, chunk.title, embedModelUri),
+          );
+
+          try {
+            const embeddings = await session.embedBatch(texts, { model });
+            // On Postgres the whole batch is written in one transaction below;
+            // per-chunk autocommit through the Atomics bridge dominated the
+            // embed wall time. SQLite keeps the per-chunk path unchanged.
+            const pendingRows: EmbeddingRow[] = [];
+            for (let i = 0; i < chunkBatch.length; i++) {
+              const chunk = chunkBatch[i]!;
+              const embedding = embeddings[i];
+              if (embedding) {
+                const vector = new Float32Array(embedding.embedding);
+                if (usePostgresBatchInsert) {
+                  pendingRows.push({
+                    hash: chunk.hash,
+                    seq: chunk.seq,
+                    pos: chunk.pos,
+                    embedding: vector,
+                    model,
+                    embeddedAt: now,
+                    totalChunks: chunk.expectedTotalChunks,
+                    fingerprint,
+                  });
+                } else {
+                  insertEmbedding(
+                    db,
+                    chunk.hash,
+                    chunk.seq,
+                    chunk.pos,
+                    vector,
+                    model,
+                    now,
+                    chunk.expectedTotalChunks,
+                    fingerprint,
+                  );
+                }
+                chunksEmbedded++;
+                successesSinceRetry++;
+                clearFailure(chunk);
+              } else {
+                recordFailure(chunk, "batch embedding returned no vector");
+              }
+              batchChunkBytesProcessed += chunk.bytes;
+            }
+            if (pendingRows.length > 0) insertEmbeddings(db, pendingRows);
+            await retryFailedChunks();
+          } catch (error) {
+            // Batch failed — try individual embeddings as fallback. If an
+            // individual retry succeeds, any prior failure for that chunk is
+            // cleared, so the visible error count reflects outstanding failures.
+            const batchReason = reasonFromError(error);
+            if (!session.isValid) {
+              for (const chunk of chunkBatch)
+                recordFailure(
+                  chunk,
+                  `batch failed and session expired: ${batchReason}`,
+                );
+              batchChunkBytesProcessed += chunkBatch.reduce(
+                (sum, c) => sum + c.bytes,
+                0,
+              );
+            } else {
+              for (const chunk of chunkBatch) {
+                await tryEmbedChunk(chunk);
+                batchChunkBytesProcessed += chunk.bytes;
+                await retryFailedChunks();
+              }
+            }
+          }
+
+          const proportionalBytes =
+            totalBatchChunkBytes === 0
+              ? batchBytes
+              : Math.min(
+                  batchBytes,
+                  Math.round(
+                    (batchChunkBytesProcessed / totalBatchChunkBytes) *
+                      batchBytes,
+                  ),
+                );
+          options?.onProgress?.({
+            chunksEmbedded,
+            totalChunks,
+            bytesProcessed: bytesProcessed + proportionalBytes,
+            totalBytes,
+            errors: activeErrorCount(),
+            failures: failureList(),
+          });
+        }
+
+        await retryFailedChunks(true);
+
+        const removedPartialChunks = removeIncompleteEmbeddings(
+          db,
+          expectedChunksByHash,
+          model,
+        );
+        if (removedPartialChunks > 0) {
+          chunksEmbedded = Math.max(0, chunksEmbedded - removedPartialChunks);
+        }
+
+        bytesProcessed += batchBytes;
+        options?.onProgress?.({
+          chunksEmbedded,
+          totalChunks,
+          bytesProcessed,
+          totalBytes,
+          errors: activeErrorCount(),
+          failures: failureList(),
+        });
       }
 
       return {
