@@ -1,7 +1,7 @@
-# Handoff — qmd Postgres merge lane (2026-08-26)
+# Handover — qmd Postgres merge lane (2026-08-26)
 
 ## State 0 — BASE
-Read /Volumes/ThunderBolt/Development/_DOCS/HANDOFF-BASE.md in full
+Read /Volumes/ThunderBolt/Development/_DOCS/HANDOVER-BASE.md in full
 (181 lines). It is the standing contract for this session.
 - Any question this document does not directly override → the rules layers
   answer it, nearest layer first.
@@ -9,7 +9,7 @@ Read /Volumes/ThunderBolt/Development/_DOCS/HANDOFF-BASE.md in full
   before acting.
 - Output discipline: minimum verbosity, only the context needed, output
   tokens low. If Rico wants more, he will ask.
-- Layer 0.1: read qmd/_DOCS/HANDOFF-RULES.md in full (27 lines). It
+- Layer 0.1: read qmd/_DOCS/HANDOVER-RULES.md in full (27 lines). It
   overrides the base; this document overrides it.
 
 ## State 1 — ORIENT
@@ -34,8 +34,8 @@ never work there. Work happens in the standby clone, not the live checkout.
 Retire: `none` this session. `feat/mcp-2026-07-28` and
 `feat/skills-layout-scaffold` are unmerged and NOT this lane's — report them
 to Rico, do not delete (the branch-count gate will fire; that is expected).
-Commit this handoff: branch `wip/2026-08-24`, path
-`_reports/2026-08/handoff-qmd-postgres-merge-20260826.md`, explicit-path
+Commit this handover: branch `wip/2026-08-24`, path
+`_reports/2026-08/handover-qmd-postgres-merge-20260826.md`, explicit-path
 staging, `git commit -F` message file.
 Scribe: dev#347 — started: `gh issue create` → issues/347
 Done-check: `git log -1 --stat`
@@ -76,12 +76,12 @@ Deliverable: timed `qmd update` + `qmd embed` on Development through the
 merged branch against `10.71.20.167`, both numbers recorded on dev#347.
 Scope: the clone, the `qmd` database, a COPY of Development's `.qmd/index.yml`.
 Must NOT: point the live librarian at it, or overwrite Development's own
-sqlite index (see HANDOFF-RULES rule 4 — this already happened once).
+sqlite index (see HANDOVER-RULES rule 4 — this already happened once).
 Record: dev#347
 Done-check: `qmd update && qmd embed` → wall time recorded vs 4m13s (RED: not yet run)
 
 ## State FINAL — WRAP
-Invoke the handoff-author skill; next handoff passes the validator; `aqmd up`.
+Invoke the handover-author skill; next handover passes the validator; `aqmd up`.
 
 ## HANDED-OVER UNKNOWNS
 - Does qmd's FTS OR or AND its terms? Needs Rico. Detail: qmd/FORK.md.

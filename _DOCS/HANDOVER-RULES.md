@@ -1,7 +1,7 @@
-# HANDOFF RULES — qmd (layer 0.1)
+# HANDOVER RULES — qmd (layer 0.1)
 
 Repo-specific rules every handover in this repo needs. Overrides
-HANDOFF-BASE.md; overridden by the handover document. Keep short; add a rule
+HANDOVER-BASE.md; overridden by the handover document. Keep short; add a rule
 only when a session actually needed it.
 
 1. This is a FORK of `tobi/qmd`, not our code. The working branch is

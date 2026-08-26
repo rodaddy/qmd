@@ -1,7 +1,7 @@
-# Handoff — qmd Postgres cutover, first repos through the librarian (2026-08-27)
+# Handover — qmd Postgres cutover, first repos through the librarian (2026-08-27)
 
 ## State 0 — BASE
-Read /Volumes/ThunderBolt/Development/_DOCS/HANDOFF-BASE.md in full
+Read /Volumes/ThunderBolt/Development/_DOCS/HANDOVER-BASE.md in full
 (181 lines). It is the standing contract for this session.
 - Any question this document does not directly override → the rules layers
   answer it, nearest layer first.
@@ -9,7 +9,7 @@ Read /Volumes/ThunderBolt/Development/_DOCS/HANDOFF-BASE.md in full
   before acting.
 - Output discipline: minimum verbosity, only the context needed, output
   tokens low. If Rico wants more, he will ask.
-- Layer 0.1: read qmd/_DOCS/HANDOFF-RULES.md in full (52 lines). It
+- Layer 0.1: read qmd/_DOCS/HANDOVER-RULES.md in full (52 lines). It
   overrides the base; this document overrides it.
 
 ## State 1 — ORIENT
@@ -32,8 +32,8 @@ checkout is `main` or PR #5 is merged, cut `feat/librarian-postgres` from
 `rodaddy/v2.6.3-repo-local` instead, never work on either.
 Retire: `none`. `feat/mcp-2026-07-28` and `feat/skills-layout-scaffold` are
 unmerged and not this lane's — report, do not delete.
-Commit this handoff: branch `feat/postgres-backend`, path
-`_DOCS/_handoff/2026-08-27-postgres-followups.md`, explicit-path staging,
+Commit this handover: branch `feat/postgres-backend`, path
+`_DOCS/_handover/2026-08-27-postgres-followups.md`, explicit-path staging,
 `git commit -F` message file.
 Scribe: dev#347 — started: `scribe-emit --repo rodaddy/development --kind note --issue 347 --state RUNNING --summary "<lane start>"`; if it times out, `gh issue comment 347` with the signature line
 Done-check: `git log -1 --stat`
@@ -76,7 +76,7 @@ Record: dev#347
 Done-check: `rg -c 'concurrency=(2|4)' _DOCS/postgres-benchmark.md` → 2, each row with wall time and GPU util (RED: not yet run)
 
 ## State FINAL — WRAP
-Invoke the handoff-author skill; next handoff passes the validator; `aqmd up`.
+Invoke the handover-author skill; next handover passes the validator; `aqmd up`.
 
 ## HANDED-OVER UNKNOWNS
 - FTS OR-terms and ts_rank_cd are in PR #5 as decisions awaiting Rico's ratification. Detail: qmd/FORK.md.
