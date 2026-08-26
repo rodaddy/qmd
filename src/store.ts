@@ -3704,13 +3704,18 @@ export function insertContent(
   createdAt: string,
 ): void {
   if (isPostgresDb(db)) {
+    // Postgres `text` cannot hold NUL (0x00) and rejects the whole statement
+    // with "invalid byte sequence for encoding UTF8"; SQLite stores it happily.
+    // Strip NULs on this path only -- the hash is computed from the original
+    // bytes upstream, so both backends keep addressing the same content, and
+    // the SQLite branch below stays byte-identical.
     db.prepare(
       `
       INSERT INTO content (hash, doc, created_at)
       VALUES (?, ?, ?)
       ON CONFLICT(hash) DO NOTHING
     `,
-    ).run(hash, content, createdAt);
+    ).run(hash, content.replace(/\0/g, ""), createdAt);
   } else {
     db.prepare(
       `INSERT OR IGNORE INTO content (hash, doc, created_at) VALUES (?, ?, ?)`,
@@ -3880,11 +3885,26 @@ export function findOrMigrateLegacyDocument(
   const migrate = db.transaction(() => {
     // Use OR IGNORE so a UNIQUE conflict (e.g. both "readme.md" and
     // "README.md" already exist) is a no-op rather than crashing.
+    // UPDATE OR IGNORE is SQLite-only. Postgres has no statement-level ignore
+    // clause, so the conflicting row is excluded in the WHERE instead: skip the
+    // rename when the target path already exists under this collection.
     const result = db
       .prepare(
-        `UPDATE OR IGNORE documents SET path = ? WHERE id = ? AND active = 1`,
+        isPostgresDb(db)
+          ? `UPDATE documents SET path = ? WHERE id = ? AND active = 1
+             AND NOT EXISTS (
+               SELECT 1 FROM documents existing
+               WHERE existing.collection = (SELECT collection FROM documents WHERE id = ?)
+                 AND existing.path = ?
+                 AND existing.id <> ?
+             )`
+          : `UPDATE OR IGNORE documents SET path = ? WHERE id = ? AND active = 1`,
       )
-      .run(path, legacy.id);
+      .run(
+        ...(isPostgresDb(db)
+          ? [path, legacy.id, legacy.id, path, legacy.id]
+          : [path, legacy.id]),
+      );
 
     if (result.changes === 0) return false;
 
