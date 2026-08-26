@@ -24,6 +24,7 @@ type QueryType = "exec" | "run" | "get" | "all" | "close";
 type WorkerResponse = {
   result: unknown;
   error: string | null;
+  seq?: number;
 };
 
 /**
@@ -140,6 +141,12 @@ export class PgDatabase implements Database {
   private readonly worker: Worker;
   private readonly port: MessagePort;
   private readonly waitState: Int32Array;
+  // A timed-out query is still in flight: the worker may deliver its reply to
+  // the port afterwards, where the next syncQuery would read it as its own
+  // result. Once that happens the bridge cannot be trusted again, so it is
+  // poisoned permanently rather than left callable.
+  private poisoned = false;
+  private seq = 0;
 
   constructor(url: string) {
     const sharedBuffer = new SharedArrayBuffer(4);
@@ -165,12 +172,18 @@ export class PgDatabase implements Database {
   }
 
   syncQuery(type: QueryType, query: string, params: unknown[]): unknown {
+    if (this.poisoned) {
+      throw new Error("[PgDatabase] bridge unusable after timeout");
+    }
+
     Atomics.store(this.waitState, 0, 0);
 
+    const seq = ++this.seq;
     this.port.postMessage({
       type,
       query,
       params: convertParams(params),
+      seq,
     });
 
     // A deadline, not a hang. Without one, a worker that dies before it can
@@ -181,23 +194,34 @@ export class PgDatabase implements Database {
     const timeoutMs = getQueryTimeoutMs();
     const waitResult = Atomics.wait(this.waitState, 0, 0, timeoutMs);
     if (waitResult === "timed-out") {
+      // terminate() is async, so the in-flight message can still land on the
+      // port after this throws. Close the port and poison the bridge so no
+      // later query can pick up this query's stale reply.
+      this.poisoned = true;
+      this.port.close();
       void this.worker.terminate();
       throw new Error(
         `[PgDatabase] no response from postgres worker within ${timeoutMs}ms`,
       );
     }
 
-    const response = receiveMessageOnPort(this.port);
-    if (!response?.message) {
-      throw new Error("[PgDatabase] no response from postgres worker");
-    }
+    // Skip any reply left over from an earlier request; only the seq we are
+    // awaiting is ours.
+    for (;;) {
+      const response = receiveMessageOnPort(this.port);
+      if (!response?.message) {
+        throw new Error("[PgDatabase] no response from postgres worker");
+      }
 
-    const payload = response.message as WorkerResponse;
-    if (payload.error) {
-      throw new Error(payload.error);
-    }
+      const payload = response.message as WorkerResponse;
+      if (payload.seq !== seq) continue;
 
-    return payload.result;
+      if (payload.error) {
+        throw new Error(payload.error);
+      }
+
+      return payload.result;
+    }
   }
 
   exec(sql: string): void {

@@ -2673,6 +2673,12 @@ export async function generateEmbeddings(
             formatDocForEmbedding(chunk.text, chunk.title, embedModelUri),
           );
 
+          // Chunks whose vectors are in pendingRows and therefore not yet
+          // written; counted only once insertEmbeddings() succeeds. Declared
+          // out here so the catch below can tell an insert failure (non-empty)
+          // from an inference failure (empty).
+          const pendingChunks: typeof chunkBatch = [];
+
           try {
             const embeddings = await session.embedBatch(texts, { model });
             // On Postgres the whole batch is written in one transaction below;
@@ -2708,22 +2714,46 @@ export async function generateEmbeddings(
                     fingerprint,
                   );
                 }
-                chunksEmbedded++;
-                successesSinceRetry++;
-                clearFailure(chunk);
+                if (usePostgresBatchInsert) {
+                  // Deferred write: this chunk is not embedded until
+                  // insertEmbeddings() below returns, so it is not counted yet.
+                  pendingChunks.push(chunk);
+                } else {
+                  chunksEmbedded++;
+                  successesSinceRetry++;
+                  clearFailure(chunk);
+                }
               } else {
                 recordFailure(chunk, "batch embedding returned no vector");
               }
               batchChunkBytesProcessed += chunk.bytes;
             }
-            if (pendingRows.length > 0) insertEmbeddings(db, pendingRows);
+            if (pendingRows.length > 0) {
+              insertEmbeddings(db, pendingRows);
+              // The write landed; only now are these chunks embedded.
+              for (const chunk of pendingChunks) {
+                chunksEmbedded++;
+                successesSinceRetry++;
+                clearFailure(chunk);
+              }
+              pendingChunks.length = 0;
+            }
             await retryFailedChunks();
           } catch (error) {
             // Batch failed — try individual embeddings as fallback. If an
             // individual retry succeeds, any prior failure for that chunk is
             // cleared, so the visible error count reflects outstanding failures.
             const batchReason = reasonFromError(error);
-            if (!session.isValid) {
+            // pendingChunks is non-empty only when inference already succeeded
+            // and insertEmbeddings() threw. Re-running tryEmbedChunk would pay
+            // for that inference a second time, so record the failure once and
+            // move on.
+            if (pendingChunks.length > 0) {
+              for (const chunk of pendingChunks) {
+                recordFailure(chunk, `batch insert failed: ${batchReason}`);
+              }
+              pendingChunks.length = 0;
+            } else if (!session.isValid) {
               for (const chunk of chunkBatch)
                 recordFailure(
                   chunk,
@@ -3661,6 +3691,9 @@ export function cleanupOrphanedVectors(db: Database): number {
  * This operation rebuilds the database file to eliminate fragmentation.
  */
 export function vacuumDatabase(db: Database): void {
+  // Postgres has no equivalent to run here: VACUUM cannot execute inside the
+  // bridge's transaction wrapper, and autovacuum already owns reclamation.
+  if (isPostgresDb(db)) return;
   db.exec(`VACUUM`);
 }
 
@@ -5088,39 +5121,37 @@ export function searchFTS(
     sql += ` ORDER BY bm25_score DESC LIMIT ?`;
     params.push(limit);
 
-    try {
-      const rows = db.prepare(sql).all(...params) as {
-        filepath: string;
-        display_path: string;
-        title: string;
-        body: string;
-        hash: string;
-        bm25_score: number;
-      }[];
+    // Errors propagate, matching the SQLite arm below: a dropped connection or
+    // a malformed tsquery must not be reported to the user as "no matches".
+    const rows = db.prepare(sql).all(...params) as {
+      filepath: string;
+      display_path: string;
+      title: string;
+      body: string;
+      hash: string;
+      bm25_score: number;
+    }[];
 
-      return rows.map((row) => {
-        const rowCollectionName =
-          row.filepath.split("//")[1]?.split("/")[0] || "";
-        const rawScore = Number(row.bm25_score);
-        const score = rawScore > 0 ? rawScore / (1 + rawScore) : 0;
-        return {
-          filepath: row.filepath,
-          displayPath: row.display_path,
-          title: row.title,
-          hash: row.hash,
-          docid: getDocid(row.hash),
-          collectionName: rowCollectionName,
-          modifiedAt: "",
-          bodyLength: row.body.length,
-          body: row.body,
-          context: getContextForFile(db, row.filepath),
-          score,
-          source: "fts" as const,
-        };
-      });
-    } catch {
-      return [];
-    }
+    return rows.map((row) => {
+      const rowCollectionName =
+        row.filepath.split("//")[1]?.split("/")[0] || "";
+      const rawScore = Number(row.bm25_score);
+      const score = rawScore > 0 ? rawScore / (1 + rawScore) : 0;
+      return {
+        filepath: row.filepath,
+        displayPath: row.display_path,
+        title: row.title,
+        hash: row.hash,
+        docid: getDocid(row.hash),
+        collectionName: rowCollectionName,
+        modifiedAt: "",
+        bodyLength: row.body.length,
+        body: row.body,
+        context: getContextForFile(db, row.filepath),
+        score,
+        source: "fts" as const,
+      };
+    });
   }
 
   const ftsQuery = buildFTS5Query(query);
@@ -5529,6 +5560,31 @@ export function clearAllEmbeddings(db: Database, collection?: string): void {
       )
   `;
 
+  if (isPostgresDb(db)) {
+    // No sqlite_master probe here: on Postgres the vector table is `vectors`
+    // and always exists. Delete the vectors first, then the content_vectors
+    // rows that identify them — the reverse order would drop the hashes the
+    // hash_seq lookup needs.
+    db.prepare(
+      `
+      DELETE FROM vectors
+      WHERE hash_seq IN (
+        SELECT cv.hash || '_' || cv.seq
+        FROM content_vectors cv
+        WHERE cv.hash IN (${exclusiveHashesQuery})
+      )
+    `,
+    ).run(collection);
+
+    db.prepare(
+      `
+      DELETE FROM content_vectors
+      WHERE hash IN (${exclusiveHashesQuery})
+    `,
+    ).run(collection);
+    return;
+  }
+
   const vecTableExists = db
     .prepare(
       `SELECT 1 FROM sqlite_master WHERE type='table' AND name='vectors_vec'`,
@@ -5608,16 +5664,21 @@ export function insertEmbedding(
         total_chunks = excluded.total_chunks,
         embedded_at = excluded.embedded_at
     `);
-    insertVecStmt.run(hashSeq, embedding);
-    insertContentVectorStmt.run(
-      hash,
-      seq,
-      pos,
-      model,
-      fingerprint,
-      totalChunks,
-      embeddedAt,
-    );
+    // content_vectors first, then vectors, both in one transaction — the
+    // crash-safe ordering documented above (getHashesForEmbedding checks only
+    // content_vectors, so the reverse order can strand a vector row forever).
+    db.transaction(() => {
+      insertContentVectorStmt.run(
+        hash,
+        seq,
+        pos,
+        model,
+        fingerprint,
+        totalChunks,
+        embeddedAt,
+      );
+      insertVecStmt.run(hashSeq, embedding);
+    })();
     return;
   }
 

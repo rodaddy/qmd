@@ -86,10 +86,13 @@ type QueryMessage = {
   type: "exec" | "run" | "get" | "all" | "close";
   query: string;
   params: unknown[];
+  // Echoed back in the reply so the blocked caller can tell its own response
+  // apart from one left over by an earlier, timed-out request.
+  seq?: number;
 };
 
 port.on("message", async (msg: QueryMessage) => {
-  const { type, query, params } = msg;
+  const { type, query, params, seq } = msg;
   let result: unknown = null;
   let error: string | null = null;
 
@@ -142,7 +145,7 @@ port.on("message", async (msg: QueryMessage) => {
   }
 
   // Post result before signalling so main thread can receiveMessageOnPort
-  port.postMessage({ result, error });
+  port.postMessage({ result, error, seq });
 
   // Signal main thread that result is ready
   Atomics.store(sharedInt32, 0, 1);
