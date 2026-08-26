@@ -112,7 +112,10 @@ class PgStatement implements Statement {
     private readonly sql: string,
   ) {}
 
-  run(...params: SQLiteValue[]): { changes: number; lastInsertRowid: number | bigint } {
+  run(...params: SQLiteValue[]): {
+    changes: number;
+    lastInsertRowid: number | bigint;
+  } {
     return this.db.syncQuery("run", this.sql, params) as {
       changes: number;
       lastInsertRowid: number | bigint;
@@ -146,7 +149,8 @@ export class PgDatabase implements Database {
     this.port = port1;
 
     const workerPath = resolveWorkerPath();
-    const isBunRuntime = typeof (globalThis as Record<string, unknown>).Bun !== "undefined";
+    const isBunRuntime =
+      typeof (globalThis as Record<string, unknown>).Bun !== "undefined";
     const workerNeedsTsx = !isBunRuntime && workerPath.endsWith(".ts");
 
     this.worker = new Worker(workerPath, {
@@ -231,6 +235,15 @@ export class PgDatabase implements Database {
     } catch {
       // Ignore close errors (worker may already be terminating).
     }
+    // Both handles have to go, and terminate() alone does not do it. It is
+    // async — the returned promise is deliberately discarded, so the thread is
+    // still winding down when close() returns — and it says nothing about this
+    // side's MessagePort. An open port is a live libuv handle, so leaving it
+    // open keeps the event loop alive and the CLI never exits after its last
+    // query. Closing the port and unref'ing the worker lets the process end on
+    // its own once the work is done.
+    this.port.close();
+    this.worker.unref();
     void this.worker.terminate();
   }
 }

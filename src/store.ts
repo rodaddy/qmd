@@ -1271,13 +1271,49 @@ function initializePostgresDatabase(db: Database): void {
       seq INTEGER NOT NULL DEFAULT 0,
       pos INTEGER NOT NULL DEFAULT 0,
       model TEXT NOT NULL,
+      embed_fingerprint TEXT NOT NULL DEFAULT '',
+      total_chunks INTEGER NOT NULL DEFAULT 1,
       embedded_at TEXT NOT NULL,
       PRIMARY KEY (hash, seq)
     )
   `);
+  // Heal a content_vectors table created before the fingerprint/chunk columns
+  // existed. insertEmbedding writes both on every Postgres insert, and
+  // getHashesForEmbedding groups on them, so a pre-parity table breaks embed
+  // rather than degrading. CREATE TABLE IF NOT EXISTS above is a no-op on such
+  // a table, which is exactly why the ALTERs have to be unconditional.
+  db.exec(
+    `ALTER TABLE content_vectors ADD COLUMN IF NOT EXISTS embed_fingerprint TEXT NOT NULL DEFAULT ''`,
+  );
+  db.exec(
+    `ALTER TABLE content_vectors ADD COLUMN IF NOT EXISTS total_chunks INTEGER NOT NULL DEFAULT 1`,
+  );
   db.exec(
     `CREATE INDEX IF NOT EXISTS idx_content_vectors_hash ON content_vectors(hash)`,
   );
+
+  // Store collections — the backend-independent collection registry. Every
+  // caller of getStoreCollections/upsertStoreCollection runs unguarded on both
+  // backends, so Postgres needs the same table SQLite gets.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS store_collections (
+      name TEXT PRIMARY KEY,
+      path TEXT NOT NULL,
+      pattern TEXT NOT NULL DEFAULT '**/*.md',
+      ignore_patterns TEXT,
+      include_by_default INTEGER DEFAULT 1,
+      update_command TEXT,
+      context TEXT
+    )
+  `);
+
+  // Store config — key-value metadata (config_hash, global_context).
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS store_config (
+      key TEXT PRIMARY KEY,
+      value TEXT
+    )
+  `);
 
   // Native Postgres full-text search index.
   db.exec(
@@ -2277,10 +2313,17 @@ function getPendingEmbeddingDocs(
   model: string = DEFAULT_EMBED_MODEL,
 ): PendingEmbeddingDoc[] {
   const collectionFilter = collection ? `AND d.collection = ?` : ``;
+  // Byte length of the document body. SQLite spells it length(CAST(x AS BLOB));
+  // Postgres has no BLOB type and spells it octet_length(). Both are wrapped in
+  // an aggregate because the query groups by d.hash and c.doc is not a grouping
+  // column — SQLite tolerates the bare column, Postgres rejects it.
+  const byteLength = isPostgresDb(db)
+    ? `MAX(octet_length(c.doc))`
+    : `MAX(length(CAST(c.doc AS BLOB)))`;
   const fingerprint = getEmbeddingFingerprint(model);
   return withLazyContentVectorMigration(db, () => {
     const stmt = db.prepare(`
-      SELECT d.hash, MIN(d.path) as path, length(CAST(c.doc AS BLOB)) as bytes
+      SELECT d.hash, MIN(d.path) as path, ${byteLength} as bytes
       FROM documents d
       JOIN content c ON d.hash = c.hash
       LEFT JOIN (
@@ -2756,9 +2799,7 @@ export function createStore(dbPath?: string): Store {
   // .qmd/ directory exists; under postgres the connection target is ALWAYS
   // QMD_POSTGRES_URL, never that path.
   const resolvedPath =
-    backend === "postgres"
-      ? getPostgresUrl()
-      : dbPath || getDefaultDbPath();
+    backend === "postgres" ? getPostgresUrl() : dbPath || getDefaultDbPath();
   const db =
     backend === "postgres"
       ? openPgDatabase(resolvedPath)
@@ -3678,6 +3719,11 @@ export function insertContent(
 }
 
 function rebuildDocumentFTS(db: Database, documentId: number): void {
+  // documents_fts is an fts5 virtual table that only the SQLite path creates.
+  // Postgres indexes full text through the generated content.tsv column and its
+  // GIN index, which Postgres maintains itself, so there is nothing to rebuild.
+  if (isPostgresDb(db)) return;
+
   const row = db
     .prepare(
       `
@@ -3781,9 +3827,19 @@ export function findOrMigrateLegacyDocument(
   if (existing) return existing;
 
   // Case-insensitive match (legacy normalization: e.g. "README.md" → "readme.md").
+  // COLLATE NOCASE is SQLite-only; Postgres ships no such collation and errors
+  // out rather than degrading, so it gets LOWER() on both sides instead. Both
+  // spellings are case-insensitive equality over the stored path.
   const legacyCase = db
     .prepare(
-      `
+      isPostgresDb(db)
+        ? `
+    SELECT id, hash, title FROM documents
+    WHERE collection = ? AND LOWER(path) = LOWER(?) AND active = 1
+    ORDER BY id
+    LIMIT 1
+  `
+        : `
     SELECT id, hash, title FROM documents
     WHERE collection = ? AND path COLLATE NOCASE = ? AND active = 1
     ORDER BY id
@@ -5564,7 +5620,9 @@ function removeIncompleteEmbeddings(
       `DELETE FROM content_vectors WHERE hash = ? AND model = ?`,
     );
     const deleteVecStmt = db.prepare(
-      `DELETE FROM vectors_vec WHERE hash_seq = ?`,
+      isPostgresDb(db)
+        ? `DELETE FROM vectors WHERE hash_seq = ?`
+        : `DELETE FROM vectors_vec WHERE hash_seq = ?`,
     );
 
     for (const [hash, expectedChunks] of expectedChunksByHash) {
