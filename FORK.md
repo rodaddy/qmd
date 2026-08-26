@@ -248,3 +248,131 @@ class as the `embed:` field accepting a URL and silently ignoring it —
 the defect this fork exists to fix. A config value that is accepted,
 acted on, and produces a working-looking artifact that cannot serve its
 purpose is harder to debug than one that is rejected outright.
+
+## Postgres backend — decisions that must be made deliberately
+
+Status: ANALYSED, nothing merged. Upstream PR tobi/qmd#375 (chrisdietr,
+1,006 additions across 12 files) implements an opt-in PostgreSQL +
+pgvector backend via `QMD_BACKEND=postgres` and `QMD_POSTGRES_URL`. It
+was closed 2026-05-20 in a backlog sweep with a form message — "over two
+months old and has either been superseded or is too stale to keep
+actionable" — not on any recorded technical objection. Its predecessor
+#342 was closed by the author in favour of #375.
+
+Closed-in-a-sweep is not rejected, and it is also not review. No
+maintainer vouched for this code.
+
+### It keeps the synchronous API
+
+`src/pg-worker.ts` runs the async `postgres` driver inside a
+`worker_threads` Worker. The main thread posts a query and blocks on a
+`SharedArrayBuffer` via `Atomics.wait` until the worker signals with
+`Atomics.notify`. The pool is `max: 1`, explicitly "matching synchronous
+caller semantics."
+
+So `store.ts` keeps calling `.get()` / `.all()` / `.run()` synchronously
+and none of its 134 sync call sites move. An earlier reading of this
+fork concluded a Postgres backend required converting 97 sync exports to
+async and propagating `await` through 16 import sites. That was wrong,
+and it was wrong in the direction that makes the work look five times
+larger than it is.
+
+### Two things are decisions, not tuning values
+
+**1. Does qmd's full-text search OR or AND its terms?**
+
+The PR uses `websearch_to_tsquery`, which ANDs unquoted terms. SQLite
+FTS5 as this fork calls it does not. Measured 2026-08-25 across 15
+probes on the same corpus: two returned 0 and 1 hits under
+`websearch_to_tsquery` where FTS5 returned 10. `reranker batch size
+ubatch` requires all four words in one document.
+
+The failure is a silent empty result — no error, no warning, and
+indistinguishable to the user from "there is nothing to find." Matching
+FTS5's behaviour needs the explicit OR spelling via `to_tsquery`, which
+costs more because it scans more of the GIN index (19-29ms against
+1.5-3.6ms, measured).
+
+Whichever is chosen, write it down here. "It depends on `QMD_BACKEND`"
+produces a bug report nobody can reproduce.
+
+**2. `bm25()` and `ts_rank_cd` rank differently.**
+
+SQLite ranks with `bm25()`. The PR uses `ts_rank`; this fork's
+measurements used `ts_rank_cd`, which weights term proximity. All three
+order results differently. Supporting both backends means maintaining
+two ranking behaviours or accepting that results change with the
+backend. Neither is wrong; leaving it undecided is.
+
+### A latent defect the backend swap would expose
+
+`src/mcp/server.ts` line 809:
+
+```
+// Session map: each client gets its own McpServer + Transport pair (MCP
+// spec requirement). The store is shared — it's stateless SQLite, safe
+// for concurrent access.
+```
+
+True for `better-sqlite3`: calls are synchronous, so a handler finishes
+its query before yielding and concurrent sessions interleave safely.
+
+False under the Atomics bridge, and in a worse way than serialization.
+`Atomics.wait` blocks the calling thread, which is the main thread,
+which is the event loop. While one MCP session's query is in flight
+every other handler is frozen rather than queued, the HTTP server
+accepts nothing, and health checks do not answer. With `max: 1` that is
+one query at a time across all sessions.
+
+This does not affect the librarian, which spawns qmd as a CLI
+subprocess — its `executor.py` opens with "The only module that runs
+qmd. One child process at a time, ever." It affects anyone running
+`qmd mcp --http`, which is the shared multi-agent deployment the PR was
+written for.
+
+The comment is the defect's whole surface. It is correct today, becomes
+false after a backend swap, and nothing fails when it does — it will not
+error, it will just be wrong. A comment cannot fail a test. If the
+backend lands, the fix is something executable, not an edited comment.
+
+### The write path is row-by-row
+
+`insertEmbedding()` in the PR issues two INSERTs per embedding — one to
+`vectors`, one to `content_vectors` — and calls `db.prepare()` on both
+inside the function, so every embedding re-prepares two statements. No
+COPY, no multi-row VALUES, no batching.
+
+Measured 2026-08-26 against a real cluster:
+
+| operation | time |
+|---|---|
+| single-row INSERT, committed, `halfvec(768)` | 3.04 ms |
+| 500 rows in one statement | 7.7 ms |
+| same 500 rows row-by-row | ~1,550 ms |
+
+**The 3ms is fsync, not network.** The same INSERT measured 3.18ms
+in-cluster and 3.04ms across a LAN hop — within 5%. With
+`synchronous_commit=off` it drops to 0.45ms from the same client.
+
+That matters for a reason worth stating: the write cost is not a
+consequence of the database being remote. The same code committing per
+row against a local Postgres pays the same 3ms. Batching is the fix in
+either topology, and `synchronous_commit=off` only makes a bad write
+pattern survivable rather than fixing it.
+
+### Tuning the PR does not carry
+
+Measured on the same corpus and cluster. The PR's schema is the untuned
+baseline; these are what this fork's measurements arrived at.
+
+| | PR #375 | measured better | evidence |
+|---|---|---|---|
+| vector type | `vector(768)` | `halfvec(768)` | table 1398→394 MB, index 570→296 MB, 26% faster, **identical recall** (83.60% both, same run, float32-exact ground truth) |
+| HNSW params | defaults (m=16, ef_c=64) | `m=32, ef_construction=128` | recall 84.8% → 87.6% for 11 MB |
+| FTS parser | `websearch_to_tsquery` | `to_tsquery` OR-terms | see decision 1 above — this one is not tuning |
+| ranking | `ts_rank` | `ts_rank_cd` | see decision 2 above |
+
+Absolute recall percentages moved between 83% and 93% across runs
+depending on probe sample and cache state. What is solid is the
+comparison within a single run against the same ground truth. Do not
+quote the absolute number.
