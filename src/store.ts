@@ -17,7 +17,7 @@ import {
   openPgDatabase,
   loadSqliteVec,
 } from "./db.js";
-import type { Backend, Database } from "./db.js";
+import type { Backend, Database, SQLiteValue } from "./db.js";
 import picomatch from "picomatch";
 import { createHash } from "crypto";
 import {
@@ -2418,6 +2418,9 @@ export async function generateEmbeddings(
   const now = new Date().toISOString();
   const { maxDocsPerBatch, maxBatchBytes } = resolveEmbedOptions(options);
   const encoder = new TextEncoder();
+  // Only the batch path benefits; the single-chunk retry path below stays
+  // row-by-row so a bad chunk still fails alone instead of poisoning a batch.
+  const usePostgresBatchInsert = isPostgresDb(db);
 
   if (options?.force) {
     clearAllEmbeddings(db, options?.collection);
@@ -2672,21 +2675,39 @@ export async function generateEmbeddings(
 
           try {
             const embeddings = await session.embedBatch(texts, { model });
+            // On Postgres the whole batch is written in one transaction below;
+            // per-chunk autocommit through the Atomics bridge dominated the
+            // embed wall time. SQLite keeps the per-chunk path unchanged.
+            const pendingRows: EmbeddingRow[] = [];
             for (let i = 0; i < chunkBatch.length; i++) {
               const chunk = chunkBatch[i]!;
               const embedding = embeddings[i];
               if (embedding) {
-                insertEmbedding(
-                  db,
-                  chunk.hash,
-                  chunk.seq,
-                  chunk.pos,
-                  new Float32Array(embedding.embedding),
-                  model,
-                  now,
-                  chunk.expectedTotalChunks,
-                  fingerprint,
-                );
+                const vector = new Float32Array(embedding.embedding);
+                if (usePostgresBatchInsert) {
+                  pendingRows.push({
+                    hash: chunk.hash,
+                    seq: chunk.seq,
+                    pos: chunk.pos,
+                    embedding: vector,
+                    model,
+                    embeddedAt: now,
+                    totalChunks: chunk.expectedTotalChunks,
+                    fingerprint,
+                  });
+                } else {
+                  insertEmbedding(
+                    db,
+                    chunk.hash,
+                    chunk.seq,
+                    chunk.pos,
+                    vector,
+                    model,
+                    now,
+                    chunk.expectedTotalChunks,
+                    fingerprint,
+                  );
+                }
                 chunksEmbedded++;
                 successesSinceRetry++;
                 clearFailure(chunk);
@@ -2695,6 +2716,7 @@ export async function generateEmbeddings(
               }
               batchChunkBytesProcessed += chunk.bytes;
             }
+            if (pendingRows.length > 0) insertEmbeddings(db, pendingRows);
             await retryFailedChunks();
           } catch (error) {
             // Batch failed — try individual embeddings as fallback. If an
@@ -5624,6 +5646,105 @@ export function insertEmbedding(
     deleteVecStmt.run(hashSeq);
     insertVecStmt.run(hashSeq, embedding);
   });
+}
+
+/** One chunk's embedding, as accepted by {@link insertEmbeddings}. */
+export type EmbeddingRow = {
+  hash: string;
+  seq: number;
+  pos: number;
+  embedding: Float32Array;
+  model: string;
+  embeddedAt: string;
+  totalChunks: number;
+  fingerprint: string;
+};
+
+/**
+ * Rows per INSERT statement. Postgres caps a statement at 65535 bind
+ * parameters; content_vectors binds 7 per row, so 500 rows (3500 params) is
+ * comfortably under it while still amortising the round trip.
+ */
+const EMBEDDING_INSERT_CHUNK_SIZE = 500;
+
+/**
+ * Insert a batch of embeddings in ONE transaction (Postgres only).
+ *
+ * Equivalent to calling insertEmbedding once per row, but the whole batch
+ * commits together instead of each of the 2N statements autocommitting on its
+ * own round trip through the Atomics bridge. That per-statement commit is what
+ * made the Development embed take 287s against ~5s of inference.
+ *
+ * Callers must pass a Postgres db; SQLite keeps the per-chunk path, whose vec0
+ * DELETE+INSERT has no multi-row form.
+ */
+export function insertEmbeddings(db: Database, rows: EmbeddingRow[]): void {
+  if (rows.length === 0) return;
+  if (!isPostgresDb(db)) {
+    throw new Error("insertEmbeddings requires a Postgres database");
+  }
+
+  // A multi-row ON CONFLICT DO UPDATE aborts with "cannot affect row a second
+  // time" if the same key appears twice in one statement, and a batch CAN carry
+  // the same (hash, seq) twice when two indexed paths hold identical content.
+  // Row-by-row inserts tolerated that (the second simply overwrote the first),
+  // so collapse duplicates here, last write winning, to preserve the behaviour.
+  const deduped = new Map<string, EmbeddingRow>();
+  for (const row of rows) deduped.set(`${row.hash}_${row.seq}`, row);
+  const uniqueRows = [...deduped.values()];
+
+  db.transaction(() => {
+    for (
+      let start = 0;
+      start < uniqueRows.length;
+      start += EMBEDDING_INSERT_CHUNK_SIZE
+    ) {
+      const slice = uniqueRows.slice(
+        start,
+        start + EMBEDDING_INSERT_CHUNK_SIZE,
+      );
+
+      const vecParams: SQLiteValue[] = [];
+      const vecTuples = slice
+        .map((row) => {
+          vecParams.push(`${row.hash}_${row.seq}`, row.embedding);
+          return "(?, ?::halfvec)";
+        })
+        .join(", ");
+      db.prepare(
+        `INSERT INTO vectors (hash_seq, embedding)
+         VALUES ${vecTuples}
+         ON CONFLICT(hash_seq) DO UPDATE SET
+           embedding = excluded.embedding`,
+      ).run(...vecParams);
+
+      const contentParams: SQLiteValue[] = [];
+      const contentTuples = slice
+        .map((row) => {
+          contentParams.push(
+            row.hash,
+            row.seq,
+            row.pos,
+            row.model,
+            row.fingerprint,
+            row.totalChunks,
+            row.embeddedAt,
+          );
+          return "(?, ?, ?, ?, ?, ?, ?)";
+        })
+        .join(", ");
+      db.prepare(
+        `INSERT INTO content_vectors (hash, seq, pos, model, embed_fingerprint, total_chunks, embedded_at)
+         VALUES ${contentTuples}
+         ON CONFLICT(hash, seq) DO UPDATE SET
+           pos = excluded.pos,
+           model = excluded.model,
+           embed_fingerprint = excluded.embed_fingerprint,
+           total_chunks = excluded.total_chunks,
+           embedded_at = excluded.embedded_at`,
+      ).run(...contentParams);
+    }
+  })();
 }
 
 function removeIncompleteEmbeddings(

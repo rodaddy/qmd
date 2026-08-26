@@ -32,6 +32,16 @@ function createSql() {
     max: 1,
     idle_timeout: 60,
     connect_timeout: 10,
+    // Opt-in durability trade for bulk embed writes: the commit returns before
+    // the WAL is flushed, so a server crash can lose recent transactions. The
+    // vector index is rebuildable from the documents, hence the knob — but it
+    // stays off unless QMD_PG_SYNCHRONOUS_COMMIT is exactly "off". Sent as a
+    // startup parameter so it is session-scoped and survives a reconnect,
+    // rather than a SET that a new connection would silently drop.
+    connection:
+      process.env.QMD_PG_SYNCHRONOUS_COMMIT === "off"
+        ? { synchronous_commit: "off" }
+        : {},
     // Server NOTICEs (e.g. from CREATE EXTENSION IF NOT EXISTS) are printed as
     // raw objects on stdout by the default handler, corrupting CLI output.
     onnotice: () => {},
