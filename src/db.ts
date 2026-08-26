@@ -1,5 +1,5 @@
 /**
- * db.ts - Cross-runtime SQLite compatibility layer
+ * db.ts - Cross-runtime SQLite compatibility layer + backend selection.
  *
  * Provides a unified Database export that works under both Bun (bun:sqlite)
  * and Node.js (better-sqlite3). The APIs are nearly identical — the main
@@ -9,6 +9,10 @@
  * which prevents loading native extensions like sqlite-vec. When running under
  * Bun we call Database.setCustomSQLite() to swap in Homebrew's full-featured
  * SQLite build before creating any database instances.
+ *
+ * Backend selection (QMD_BACKEND env var):
+ *   - 'sqlite' (default): uses SQLite via bun:sqlite or better-sqlite3
+ *   - 'postgres': uses PostgreSQL via pg-worker + Atomics sync wrapper
  */
 
 export const isBun = "Bun" in globalThis;
@@ -18,6 +22,45 @@ export type SQLiteParams = readonly SQLiteValue[];
 
 type DatabaseConstructor = new (path: string) => Database;
 type LoadableSqliteDatabase = Pick<Database, "loadExtension">;
+
+// ---------------------------------------------------------------------------
+// Backend selection
+// ---------------------------------------------------------------------------
+
+export type Backend = 'sqlite' | 'postgres';
+
+/**
+ * Return the active backend. Reads QMD_BACKEND env; defaults to 'sqlite'.
+ */
+export function getBackend(): Backend {
+  const v = process.env.QMD_BACKEND;
+  if (v === 'postgres') return 'postgres';
+  return 'sqlite';
+}
+
+// Loaded eagerly so backend can be switched before createStore() in tests.
+let _openPgDatabase: ((url: string) => Database) | null = null;
+
+try {
+  const pg = await import('./pg.js');
+  _openPgDatabase = pg.openPgDatabase;
+} catch (err) {
+  if (getBackend() === 'postgres') {
+    throw err;
+  }
+}
+
+/**
+ * Open a PostgreSQL database. Returns a Database-compatible object that
+ * wraps a worker thread + Atomics for synchronous-looking access.
+ * Only available when QMD_BACKEND=postgres.
+ */
+export function openPgDatabase(url: string): Database {
+  if (!_openPgDatabase) {
+    throw new Error('PostgreSQL backend is unavailable in this runtime.');
+  }
+  return _openPgDatabase(url);
+}
 
 let _Database: DatabaseConstructor;
 let _sqliteVecLoad: ((db: LoadableSqliteDatabase) => void) | null;

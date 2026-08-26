@@ -1048,7 +1048,10 @@ grouping — it does not change search behavior.
 
 ## Data Storage
 
-Index stored in: `~/.cache/qmd/index.sqlite`
+Default index (SQLite) stored in: `~/.cache/qmd/index.sqlite`
+
+When using PostgreSQL (`QMD_BACKEND=postgres`), QMD stores all index data in the
+database specified by `QMD_POSTGRES_URL`.
 
 ### Schema
 
@@ -1072,6 +1075,26 @@ llm_cache       -- Cached LLM responses (query expansion, rerank scores)
 | `QMD_LLAMA_GPU` | `auto` | Force llama.cpp GPU backend (`metal`, `vulkan`, `cuda`) or disable GPU with `false` |
 | `QMD_FORCE_CPU` | unset | Set to `1`/`true` to force CPU mode before any CUDA/Vulkan/Metal probing. Equivalent CLI flag: `--no-gpu`. |
 | `QMD_EMBED_PARALLELISM` | automatic | Override embedding/reranking context parallelism (1-8). Windows CUDA defaults to `1` because parallel CUDA contexts can crash with `ggml-cuda.cu:98`; use Vulkan or raise this only if your driver is stable. |
+| `QMD_BACKEND` | `sqlite` | Storage backend (`sqlite` or `postgres`) |
+| `QMD_POSTGRES_URL` | _(unset)_ | PostgreSQL URL used when `QMD_BACKEND=postgres` |
+
+### PostgreSQL Backend
+
+QMD supports PostgreSQL + pgvector as an alternative backend for shared or
+multi-agent deployments where multiple processes need concurrent access to the
+same index. SQLite remains the simplest default for single-user local use.
+
+```sh
+export QMD_BACKEND=postgres
+export QMD_POSTGRES_URL=postgresql://user:pass@localhost:5432/qmd
+
+# initialize / migrate schema on first run
+qmd status
+```
+
+Requirements:
+- PostgreSQL with `pgvector` installed
+- `vector` extension available in the target database (`CREATE EXTENSION vector;`)
 
 ## How It Works
 

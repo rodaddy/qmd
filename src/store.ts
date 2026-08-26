@@ -11,8 +11,8 @@
  *   const store = createStore();
  */
 
-import { openDatabase, loadSqliteVec } from "./db.js";
-import type { Database } from "./db.js";
+import { getBackend, openDatabase, openPgDatabase, loadSqliteVec } from "./db.js";
+import type { Backend, Database } from "./db.js";
 import picomatch from "picomatch";
 import { createHash } from "crypto";
 import {
@@ -63,6 +63,31 @@ export const DEFAULT_EMBED_MAX_DURATION_MS = 30 * 60 * 1000; // 30 minutes; see 
 const EMBED_FINGERPRINT_PROBE_QUERY = "__qmd_embedding_query_probe__";
 const EMBED_FINGERPRINT_PROBE_TITLE = "__qmd_embedding_title_probe__";
 const EMBED_FINGERPRINT_PROBE_DOC = "__qmd_embedding_document_probe__";
+
+// Track backend per opened DB so operations remain correct even if env changes.
+const dbBackendMap = new WeakMap<Database, Backend>();
+
+function registerDbBackend(db: Database, backend: Backend): void {
+  dbBackendMap.set(db, backend);
+}
+
+function getDbBackend(db: Database): Backend {
+  return dbBackendMap.get(db) ?? getBackend();
+}
+
+function isPostgresDb(db: Database): boolean {
+  return getDbBackend(db) === "postgres";
+}
+
+function getPostgresUrl(): string {
+  const url = process.env.QMD_POSTGRES_URL?.trim();
+  if (!url) {
+    throw new Error(
+      'QMD_BACKEND=postgres requires QMD_POSTGRES_URL (e.g. postgresql://user@localhost/qmd).',
+    );
+  }
+  return url;
+}
 
 // Chunking: 900 tokens per chunk with 15% overlap
 // Increased from 800 to accommodate smart chunking finding natural break points
@@ -1068,6 +1093,15 @@ function rebuildFTSForCjkNormalization(db: Database): void {
 }
 
 function initializeDatabase(db: Database): void {
+  if (isPostgresDb(db)) {
+    initializePostgresDatabase(db);
+    _sqliteVecAvailable = false;
+    return;
+  }
+  initializeSqliteDatabase(db);
+}
+
+function initializeSqliteDatabase(db: Database): void {
   try {
     loadSqliteVec(db);
     verifySqliteVecLoaded(db);
@@ -1175,6 +1209,67 @@ function initializeDatabase(db: Database): void {
   applyFtsSyncTriggers(db);
 
   rebuildFTSForCjkNormalization(db);
+}
+
+function initializePostgresDatabase(db: Database): void {
+  db.exec(`CREATE EXTENSION IF NOT EXISTS vector`);
+
+  // Drop legacy tables that are now managed in YAML
+  db.exec(`DROP TABLE IF EXISTS path_contexts`);
+  db.exec(`DROP TABLE IF EXISTS collections`);
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS content (
+      hash TEXT PRIMARY KEY,
+      doc TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      tsv tsvector GENERATED ALWAYS AS (
+        to_tsvector('english', COALESCE(doc, ''))
+      ) STORED
+    )
+  `);
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS documents (
+      id BIGSERIAL PRIMARY KEY,
+      collection TEXT NOT NULL,
+      path TEXT NOT NULL,
+      title TEXT NOT NULL,
+      hash TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      modified_at TEXT NOT NULL,
+      active INTEGER NOT NULL DEFAULT 1,
+      FOREIGN KEY (hash) REFERENCES content(hash) ON DELETE CASCADE,
+      UNIQUE(collection, path)
+    )
+  `);
+
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_documents_collection ON documents(collection, active)`);
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_documents_hash ON documents(hash)`);
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_documents_path ON documents(path, active)`);
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS llm_cache (
+      hash TEXT PRIMARY KEY,
+      result TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    )
+  `);
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS content_vectors (
+      hash TEXT NOT NULL,
+      seq INTEGER NOT NULL DEFAULT 0,
+      pos INTEGER NOT NULL DEFAULT 0,
+      model TEXT NOT NULL,
+      embedded_at TEXT NOT NULL,
+      PRIMARY KEY (hash, seq)
+    )
+  `);
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_content_vectors_hash ON content_vectors(hash)`);
+
+  // Native Postgres full-text search index.
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_content_tsv_gin ON content USING GIN (tsv)`);
 }
 
 // =============================================================================
@@ -1451,7 +1546,7 @@ export function isSqliteVecAvailable(): boolean {
   return _sqliteVecAvailable === true;
 }
 
-function ensureVecTableInternal(db: Database, dimensions: number): void {
+function ensureSqliteVecTableInternal(db: Database, dimensions: number): void {
   if (!_sqliteVecAvailable) {
     throw createSqliteVecUnavailableError(
       _sqliteVecUnavailableReason ??
@@ -1482,6 +1577,54 @@ function ensureVecTableInternal(db: Database, dimensions: number): void {
   );
 }
 
+function ensurePgVectorTableInternal(db: Database, dimensions: number): void {
+  db.exec(`CREATE EXTENSION IF NOT EXISTS vector`);
+  const tableInfo = db.prepare(`
+    SELECT format_type(a.atttypid, a.atttypmod) AS embedding_type
+    FROM pg_attribute a
+    JOIN pg_class c ON c.oid = a.attrelid
+    JOIN pg_namespace n ON n.oid = c.relnamespace
+    WHERE n.nspname = current_schema()
+      AND c.relname = 'vectors'
+      AND a.attname = 'embedding'
+      AND a.attnum > 0
+      AND NOT a.attisdropped
+    LIMIT 1
+  `).get() as { embedding_type: string } | null;
+
+  if (tableInfo) {
+    const match = tableInfo.embedding_type.match(/^vector\((\d+)\)$/);
+    const existingDims = match?.[1] ? parseInt(match[1], 10) : null;
+    if (existingDims !== dimensions) {
+      db.exec(`DROP TABLE IF EXISTS vectors`);
+    }
+  }
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS vectors (
+      hash_seq TEXT PRIMARY KEY,
+      embedding vector(${dimensions}) NOT NULL
+    )
+  `);
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_vectors_embedding_hnsw ON vectors USING hnsw (embedding vector_cosine_ops)`);
+}
+
+function ensureVecTableInternal(db: Database, dimensions: number): void {
+  if (isPostgresDb(db)) {
+    ensurePgVectorTableInternal(db, dimensions);
+    return;
+  }
+  ensureSqliteVecTableInternal(db, dimensions);
+}
+
+function hasVectorIndex(db: Database): boolean {
+  if (isPostgresDb(db)) {
+    const row = db.prepare(`SELECT to_regclass(current_schema() || '.vectors') AS table_name`).get() as { table_name: string | null } | null;
+    return !!row?.table_name;
+  }
+  return !!db.prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name='vectors_vec'`).get();
+}
+
 // =============================================================================
 // Store Factory
 // =============================================================================
@@ -1489,6 +1632,7 @@ function ensureVecTableInternal(db: Database, dimensions: number): void {
 export type Store = {
   db: Database;
   dbPath: string;
+  backend: Backend;
   /** Optional LlamaCpp instance for this store (overrides the global singleton) */
   llm?: LlamaCpp;
   close: () => void;
@@ -2561,19 +2705,26 @@ export async function generateEmbeddings(
 
 /**
  * Create a new store instance with the given database path.
- * If no path is provided, uses the default path (~/.cache/qmd/index.sqlite).
+ * If no path is provided:
+ * - sqlite backend: ~/.cache/qmd/index.sqlite
+ * - postgres backend: QMD_POSTGRES_URL
  *
- * @param dbPath - Path to the SQLite database file
+ * @param dbPath - SQLite file path or PostgreSQL connection URL
  * @returns Store instance with all methods bound to the database
  */
 export function createStore(dbPath?: string): Store {
-  const resolvedPath = dbPath || getDefaultDbPath();
-  const db = openDatabase(resolvedPath);
+  const backend = getBackend();
+  const resolvedPath = dbPath || (backend === "postgres" ? getPostgresUrl() : getDefaultDbPath());
+  const db = backend === "postgres"
+    ? openPgDatabase(resolvedPath)
+    : openDatabase(resolvedPath);
+  registerDbBackend(db, backend);
   initializeDatabase(db);
 
   const store: Store = {
     db,
     dbPath: resolvedPath,
+    backend,
     close: () => db.close(),
     ensureVecTable: (dimensions: number) =>
       ensureVecTableInternal(db, dimensions),
@@ -3231,9 +3382,19 @@ export function setCachedResult(
   result: string,
 ): void {
   const now = new Date().toISOString();
-  db.prepare(
-    `INSERT OR REPLACE INTO llm_cache (hash, result, created_at) VALUES (?, ?, ?)`,
-  ).run(cacheKey, result, now);
+  if (isPostgresDb(db)) {
+    db.prepare(`
+      INSERT INTO llm_cache (hash, result, created_at)
+      VALUES (?, ?, ?)
+      ON CONFLICT(hash) DO UPDATE SET
+        result = excluded.result,
+        created_at = excluded.created_at
+    `).run(cacheKey, result, now);
+  } else {
+    db.prepare(
+      `INSERT OR REPLACE INTO llm_cache (hash, result, created_at) VALUES (?, ?, ?)`,
+    ).run(cacheKey, result, now);
+  }
   cacheStats.writes++;
   if (Math.random() < 0.01) {
     db.exec(
@@ -3292,6 +3453,44 @@ export function cleanupOrphanedContent(db: Database): number {
  * Returns the number of orphaned embedding chunks deleted.
  */
 export function cleanupOrphanedVectors(db: Database): number {
+  if (isPostgresDb(db)) {
+    if (!hasVectorIndex(db)) {
+      return 0;
+    }
+
+    const countResult = db
+      .prepare(
+        `
+      SELECT COUNT(*) as c FROM content_vectors cv
+      WHERE NOT EXISTS (
+        SELECT 1 FROM documents d WHERE d.hash = cv.hash AND d.active = 1
+      )
+    `,
+      )
+      .get() as { c: number };
+
+    if (countResult.c === 0) {
+      return 0;
+    }
+
+    db.exec(`
+      DELETE FROM vectors v
+      USING content_vectors cv
+      WHERE v.hash_seq = cv.hash || '_' || cv.seq
+      AND NOT EXISTS (
+        SELECT 1 FROM documents d WHERE d.hash = cv.hash AND d.active = 1
+      )
+    `);
+
+    db.exec(`
+      DELETE FROM content_vectors WHERE hash NOT IN (
+        SELECT hash FROM documents WHERE active = 1
+      )
+    `);
+
+    return countResult.c;
+  }
+
   // sqlite-vec may not be loaded (e.g. Bun's bun:sqlite lacks loadExtension).
   // The vectors_vec virtual table can appear in sqlite_master from a prior
   // session, but querying it without the vec0 module loaded will crash (#380).
@@ -3416,9 +3615,17 @@ export function insertContent(
   content: string,
   createdAt: string,
 ): void {
-  db.prepare(
-    `INSERT OR IGNORE INTO content (hash, doc, created_at) VALUES (?, ?, ?)`,
-  ).run(hash, content, createdAt);
+  if (isPostgresDb(db)) {
+    db.prepare(`
+      INSERT INTO content (hash, doc, created_at)
+      VALUES (?, ?, ?)
+      ON CONFLICT(hash) DO NOTHING
+    `).run(hash, content, createdAt);
+  } else {
+    db.prepare(
+      `INSERT OR IGNORE INTO content (hash, doc, created_at) VALUES (?, ?, ?)`,
+    ).run(hash, content, createdAt);
+  }
 }
 
 function rebuildDocumentFTS(db: Database, documentId: number): void {
@@ -4683,6 +4890,70 @@ export function searchFTS(
   limit: number = 20,
   collectionName?: string,
 ): SearchResult[] {
+  if (isPostgresDb(db)) {
+    const rawQuery = query.trim();
+    if (!rawQuery) return [];
+
+    let sql = `
+      WITH q AS (
+        SELECT websearch_to_tsquery('english', ?) AS tsq
+      )
+      SELECT
+        'qmd://' || d.collection || '/' || d.path as filepath,
+        d.collection || '/' || d.path as display_path,
+        d.title,
+        content.doc as body,
+        d.hash,
+        ts_rank(content.tsv, q.tsq) as bm25_score
+      FROM q
+      JOIN documents d ON d.active = 1
+      JOIN content ON content.hash = d.hash
+      WHERE content.tsv @@ q.tsq
+    `;
+    const params: (string | number)[] = [rawQuery];
+
+    if (collectionName) {
+      sql += ` AND d.collection = ?`;
+      params.push(String(collectionName));
+    }
+
+    sql += ` ORDER BY bm25_score DESC LIMIT ?`;
+    params.push(limit);
+
+    try {
+      const rows = db.prepare(sql).all(...params) as {
+        filepath: string;
+        display_path: string;
+        title: string;
+        body: string;
+        hash: string;
+        bm25_score: number;
+      }[];
+
+      return rows.map((row) => {
+        const rowCollectionName = row.filepath.split("//")[1]?.split("/")[0] || "";
+        const rawScore = Number(row.bm25_score);
+        const score = rawScore > 0 ? rawScore / (1 + rawScore) : 0;
+        return {
+          filepath: row.filepath,
+          displayPath: row.display_path,
+          title: row.title,
+          hash: row.hash,
+          docid: getDocid(row.hash),
+          collectionName: rowCollectionName,
+          modifiedAt: "",
+          bodyLength: row.body.length,
+          body: row.body,
+          context: getContextForFile(db, row.filepath),
+          score,
+          source: "fts" as const,
+        };
+      });
+    } catch {
+      return [];
+    }
+  }
+
   const ftsQuery = buildFTS5Query(query);
   if (!ftsQuery) return [];
 
@@ -4740,8 +5011,8 @@ export function searchFTS(
     const collectionName = row.filepath.split("//")[1]?.split("/")[0] || "";
     // Convert bm25 (negative, lower is better) into a stable [0..1) score where higher is better.
     // FTS5 BM25 scores are negative (e.g., -10 is strong, -2 is weak).
-    // |x| / (1 + |x|) maps: strong(-10)→0.91, medium(-2)→0.67, weak(-0.5)→0.33, none(0)→0.
-    // Monotonic and query-independent — no per-query normalization needed.
+    // |x| / (1 + |x|) maps: strong(-10)->0.91, medium(-2)->0.67, weak(-0.5)->0.33, none(0)->0.
+    // Monotonic and query-independent - no per-query normalization needed.
     const score = Math.abs(row.bm25_score) / (1 + Math.abs(row.bm25_score));
     return {
       filepath: row.filepath,
@@ -4773,12 +5044,7 @@ export async function searchVec(
   session?: ILLMSession,
   precomputedEmbedding?: number[],
 ): Promise<SearchResult[]> {
-  const tableExists = db
-    .prepare(
-      `SELECT name FROM sqlite_master WHERE type='table' AND name='vectors_vec'`,
-    )
-    .get();
-  if (!tableExists) return [];
+  if (!hasVectorIndex(db)) return [];
 
   const embedding =
     precomputedEmbedding ?? (await getEmbedding(query, model, true, session));
@@ -4793,6 +5059,77 @@ export async function searchVec(
         `cannot run. Check that the embedding backend is reachable and the ` +
         `model name is correct.`,
     );
+  }
+
+  if (isPostgresDb(db)) {
+    let sql = `
+      WITH query_vec AS (SELECT ?::vector AS embedding)
+      SELECT
+        v.hash_seq,
+        cv.hash,
+        cv.pos,
+        'qmd://' || d.collection || '/' || d.path as filepath,
+        d.collection || '/' || d.path as display_path,
+        d.title,
+        content.doc as body,
+        (v.embedding <=> query_vec.embedding) as distance
+      FROM query_vec
+      JOIN vectors v ON TRUE
+      JOIN content_vectors cv ON cv.hash || '_' || cv.seq = v.hash_seq
+      JOIN documents d ON d.hash = cv.hash AND d.active = 1
+      JOIN content ON content.hash = d.hash
+    `;
+    const params: (string | number | Float32Array)[] = [new Float32Array(embedding)];
+
+    if (collectionName) {
+      sql += ` WHERE d.collection = ?`;
+      params.push(collectionName);
+    }
+
+    sql += ` ORDER BY distance ASC LIMIT ?`;
+    params.push(limit * 3);
+
+    const docRows = db.prepare(sql).all(...params) as {
+      hash_seq: string;
+      hash: string;
+      pos: number;
+      filepath: string;
+      display_path: string;
+      title: string;
+      body: string;
+      distance: number;
+    }[];
+
+    const seen = new Map<string, { row: typeof docRows[number]; bestDist: number }>();
+    for (const row of docRows) {
+      const distance = Number(row.distance);
+      const existing = seen.get(row.filepath);
+      if (!existing || distance < existing.bestDist) {
+        seen.set(row.filepath, { row, bestDist: distance });
+      }
+    }
+
+    return Array.from(seen.values())
+      .sort((a, b) => a.bestDist - b.bestDist)
+      .slice(0, limit)
+      .map(({ row, bestDist }) => {
+        const rowCollectionName = row.filepath.split('//')[1]?.split('/')[0] || "";
+        return {
+          filepath: row.filepath,
+          displayPath: row.display_path,
+          title: row.title,
+          hash: row.hash,
+          docid: getDocid(row.hash),
+          collectionName: rowCollectionName,
+          modifiedAt: "",
+          bodyLength: row.body.length,
+          body: row.body,
+          context: getContextForFile(db, row.filepath),
+          score: 1 - bestDist,
+          source: "vec" as const,
+          chunkPos: row.pos,
+        };
+      });
   }
 
   // IMPORTANT: We use a two-step query approach here because sqlite-vec virtual tables
@@ -4926,6 +5263,26 @@ export function getHashesForEmbedding(
   model: string = DEFAULT_EMBED_MODEL,
 ): { hash: string; body: string; path: string }[] {
   const fingerprint = getEmbeddingFingerprint(model);
+  if (isPostgresDb(db)) {
+    return db
+      .prepare(
+        `
+      SELECT d.hash, MIN(c.doc) as body, MIN(d.path) as path
+      FROM documents d
+      JOIN content c ON d.hash = c.hash
+      LEFT JOIN (
+        SELECT hash, model, COUNT(*) AS chunk_count, MAX(total_chunks) AS expected_chunks
+        FROM content_vectors
+        WHERE model = ? AND embed_fingerprint = ?
+        GROUP BY hash, model, embed_fingerprint
+      ) v ON d.hash = v.hash
+      WHERE d.active = 1
+        AND (v.hash IS NULL OR v.chunk_count < v.expected_chunks)
+      GROUP BY d.hash
+    `,
+      )
+      .all(model, fingerprint) as { hash: string; body: string; path: string }[];
+  }
   return withLazyContentVectorMigration(
     db,
     () =>
@@ -4973,7 +5330,11 @@ export function getHashesForEmbedding(
 export function clearAllEmbeddings(db: Database, collection?: string): void {
   if (!collection) {
     db.exec(`DELETE FROM content_vectors`);
-    db.exec(`DROP TABLE IF EXISTS vectors_vec`);
+    db.exec(
+      isPostgresDb(db)
+        ? `DROP TABLE IF EXISTS vectors`
+        : `DROP TABLE IF EXISTS vectors_vec`,
+    );
     return;
   }
 
@@ -5051,6 +5412,35 @@ export function insertEmbedding(
   fingerprint: string = getEmbeddingFingerprint(model),
 ): void {
   const hashSeq = `${hash}_${seq}`;
+  if (isPostgresDb(db)) {
+    const insertVecStmt = db.prepare(`
+      INSERT INTO vectors (hash_seq, embedding)
+      VALUES (?, ?::vector)
+      ON CONFLICT(hash_seq) DO UPDATE SET
+        embedding = excluded.embedding
+    `);
+    const insertContentVectorStmt = db.prepare(`
+      INSERT INTO content_vectors (hash, seq, pos, model, embed_fingerprint, total_chunks, embedded_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(hash, seq) DO UPDATE SET
+        pos = excluded.pos,
+        model = excluded.model,
+        embed_fingerprint = excluded.embed_fingerprint,
+        total_chunks = excluded.total_chunks,
+        embedded_at = excluded.embedded_at
+    `);
+    insertVecStmt.run(hashSeq, embedding);
+    insertContentVectorStmt.run(
+      hash,
+      seq,
+      pos,
+      model,
+      fingerprint,
+      totalChunks,
+      embeddedAt,
+    );
+    return;
+  }
 
   withLazyContentVectorMigration(db, () => {
     // Insert content_vectors first — crash-safe ordering (see getHashesForEmbedding)
@@ -5825,11 +6215,7 @@ export function getStatus(
       .get() as { c: number }
   ).c;
   const needsEmbedding = getHashesNeedingEmbedding(db, undefined, model);
-  const hasVectors = !!db
-    .prepare(
-      `SELECT name FROM sqlite_master WHERE type='table' AND name='vectors_vec'`,
-    )
-    .get();
+  const hasVectors = hasVectorIndex(db);
 
   return {
     totalDocuments: totalDocs,
@@ -6181,11 +6567,7 @@ export async function hybridQuery(
   const rankedLists: RankedResult[][] = [];
   const rankedListMeta: RankedListMeta[] = [];
   const docidMap = new Map<string, string>(); // filepath -> docid
-  const hasVectors = !!store.db
-    .prepare(
-      `SELECT name FROM sqlite_master WHERE type='table' AND name='vectors_vec'`,
-    )
-    .get();
+  const hasVectors = hasVectorIndex(store.db);
 
   // Step 1: BM25 probe — strong signal skips expensive LLM expansion
   // When intent is provided, disable strong-signal bypass — the obvious BM25
@@ -6578,11 +6960,7 @@ export async function vectorSearchQuery(
   const collection = options?.collection;
   const intent = options?.intent;
 
-  const hasVectors = !!store.db
-    .prepare(
-      `SELECT name FROM sqlite_master WHERE type='table' AND name='vectors_vec'`,
-    )
-    .get();
+  const hasVectors = hasVectorIndex(store.db);
   if (!hasVectors) return [];
 
   // Expand query — filter to vec/hyde only (lex queries target FTS, not vector)
@@ -6700,11 +7078,7 @@ export async function structuredSearch(
   const rankedLists: RankedResult[][] = [];
   const rankedListMeta: RankedListMeta[] = [];
   const docidMap = new Map<string, string>(); // filepath -> docid
-  const hasVectors = !!store.db
-    .prepare(
-      `SELECT name FROM sqlite_master WHERE type='table' AND name='vectors_vec'`,
-    )
-    .get();
+  const hasVectors = hasVectorIndex(store.db);
 
   // Helper to run search across collections (or all if undefined)
   const collectionList = collections ?? [undefined]; // undefined = all collections
