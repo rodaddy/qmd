@@ -20,3 +20,4 @@ change that turns them green; the RED run is recorded on the lane's issue.
 | `types-clean.sh` | `npm run test:types` exits 0 |
 | `pg-schema-tuned.sh` | the Postgres DDL matches FORK.md's measured configuration (halfvec, HNSW m=32/ef_construction=128, to_tsquery OR-terms, ts_rank_cd; no websearch_to_tsquery) |
 | `pg-benchmark-ran.sh` | a benchmark record with `qmd update` and `qmd embed` wall times against the 4m13s baseline exists |
+| `pg-bridge-fails-fast.sh` | the Postgres sync bridge throws (within 30s) on an unreachable URL instead of blocking forever in Atomics.wait; contacts no database |
