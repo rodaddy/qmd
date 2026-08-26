@@ -2751,8 +2751,14 @@ export async function generateEmbeddings(
  */
 export function createStore(dbPath?: string): Store {
   const backend = getBackend();
+  // `dbPath` is a SQLite FILE PATH and is meaningful only to the sqlite
+  // backend. Callers pass the project-local .qmd/index.sqlite whenever a
+  // .qmd/ directory exists; under postgres the connection target is ALWAYS
+  // QMD_POSTGRES_URL, never that path.
   const resolvedPath =
-    dbPath || (backend === "postgres" ? getPostgresUrl() : getDefaultDbPath());
+    backend === "postgres"
+      ? getPostgresUrl()
+      : dbPath || getDefaultDbPath();
   const db =
     backend === "postgres"
       ? openPgDatabase(resolvedPath)

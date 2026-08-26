@@ -85,6 +85,21 @@ function convertParams(params: unknown[]): unknown[] {
   });
 }
 
+const DEFAULT_QUERY_TIMEOUT_MS = 600_000;
+
+/**
+ * Deadline for a single synchronous bridge query, in milliseconds.
+ * Override with QMD_PG_QUERY_TIMEOUT_MS.
+ */
+function getQueryTimeoutMs(): number {
+  const raw = process.env.QMD_PG_QUERY_TIMEOUT_MS?.trim();
+  if (!raw) return DEFAULT_QUERY_TIMEOUT_MS;
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) && parsed > 0
+    ? parsed
+    : DEFAULT_QUERY_TIMEOUT_MS;
+}
+
 function resolveWorkerPath(): string {
   const thisFile = fileURLToPath(import.meta.url);
   const workerFile = thisFile.endsWith(".ts") ? "pg-worker.ts" : "pg-worker.js";
@@ -154,7 +169,19 @@ export class PgDatabase implements Database {
       params: convertParams(params),
     });
 
-    Atomics.wait(this.waitState, 0, 0);
+    // A deadline, not a hang. Without one, a worker that dies before it can
+    // notify (bad URL, crashed connection) leaves this thread blocked forever
+    // and unable to receive the worker's own 'error'/'exit' events. The default
+    // is deliberately generous: an HNSW build over hundreds of thousands of
+    // rows is a legitimate long query.
+    const timeoutMs = getQueryTimeoutMs();
+    const waitResult = Atomics.wait(this.waitState, 0, 0, timeoutMs);
+    if (waitResult === "timed-out") {
+      void this.worker.terminate();
+      throw new Error(
+        `[PgDatabase] no response from postgres worker within ${timeoutMs}ms`,
+      );
+    }
 
     const response = receiveMessageOnPort(this.port);
     if (!response?.message) {
