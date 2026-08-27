@@ -2409,7 +2409,7 @@ function getEmbeddingDocsForBatch(
 /**
  * Generate vector embeddings for documents that need them.
  * Pure function — no console output, no db lifecycle management.
- * Uses the store's LlamaCpp instance if set, otherwise the global singleton.
+ * Uses the store's backend if set, otherwise the global singleton.
  */
 export async function generateEmbeddings(
   store: Store,
@@ -2442,7 +2442,7 @@ export async function generateEmbeddings(
   const totalDocs = docsToEmbed.length;
   const startTime = Date.now();
 
-  // Use store's LlamaCpp or global singleton, wrapped in a session
+  // Use the store's backend or the global singleton, wrapped in a session
   const embedModelUri = model;
 
   // Create a session manager for this llm instance
@@ -5891,7 +5891,7 @@ export async function expandQuery(
   }
 
   const llm = llmOverride ?? getDefaultLlamaCpp();
-  // Note: LlamaCpp uses hardcoded model, model parameter is ignored
+  // Note: the backend uses its configured model; the model parameter is ignored
   const results = await llm.expandQuery(query, { intent });
 
   // Map Queryable[] → ExpandedQuery[] (same shape, decoupled from llm.ts internals).
@@ -5951,7 +5951,7 @@ export async function rerank(
     }
   }
 
-  // Rerank uncached documents using LlamaCpp
+  // Rerank uncached documents through the configured backend
   if (uncachedDocsByChunk.size > 0) {
     const llm = llmOverride ?? getDefaultLlamaCpp();
     const uncachedDocs = [...uncachedDocsByChunk.values()];

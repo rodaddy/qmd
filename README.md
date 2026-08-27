@@ -2,7 +2,7 @@
 
 An on-device search engine for everything you need to remember. Index your markdown notes, meeting transcripts, documentation, and knowledge bases. Search with keywords or natural language. Ideal for your agentic flows.
 
-QMD combines BM25 full-text search, vector semantic search, and LLM re-ranking—all running locally via node-llama-cpp with GGUF models.
+QMD combines BM25 full-text search, vector semantic search, and LLM re-ranking—with every model served by a remote llama-server (llama-swap) over HTTP; nothing runs on the local machine.
 
 ![QMD Architecture](assets/qmd-architecture.png)
 
@@ -510,17 +510,21 @@ The `query` command uses **Reciprocal Rank Fusion (RRF)** with position-aware bl
   brew install sqlite
   ```
 
-### GGUF Models (via node-llama-cpp)
+### Models (remote llama-server)
 
-QMD uses three local GGUF models (auto-downloaded on first use):
+QMD sends every model call to a llama-server reached through llama-swap.
+No model is downloaded or loaded locally.
 
-| Model | Purpose | Size |
-|-------|---------|------|
-| `embeddinggemma-300M-Q8_0` | Vector embeddings (default) | ~300MB |
-| `qwen3-reranker-0.6b-q8_0` | Re-ranking | ~640MB |
-| `qmd-query-expansion-1.7B-q4_k_m` | Query expansion (fine-tuned) | ~1.1GB |
+| Role | Default URI |
+|------|-------------|
+| embed | `https://llama-swap.rodaddy.live/v1#embed-gemma` |
+| rerank | `https://llama-swap.rodaddy.live/v1#rerank-qwen3` |
+| generate | `https://llama-swap.rodaddy.live/v1#qmd-query-expansion` |
 
-Models are downloaded from HuggingFace and cached in `~/.cache/qmd/models/`.
+A model URI is `https://<host>/v1#<model-name>`. Tokenization for
+chunking uses the same server (`/upstream/<model-name>/tokenize`).
+An `hf:` URI or a bare model name is refused with
+`LocalModelsDisabledError` (exit 3).
 
 ### Custom Embedding Model
 
@@ -530,15 +534,11 @@ This is useful for multilingual corpora (e.g. Chinese, Japanese, Korean) where
 
 ```sh
 # Use Qwen3-Embedding-0.6B for better multilingual (CJK) support
-export QMD_EMBED_MODEL="hf:Qwen/Qwen3-Embedding-0.6B-GGUF/Qwen3-Embedding-0.6B-Q8_0.gguf"
+export QMD_EMBED_MODEL="https://llama-swap.rodaddy.live/v1#embed-gemma"
 
 # After changing the model, re-embed all collections:
 qmd embed -f
 ```
-
-Supported model families:
-- **embeddinggemma** (default) — English-optimized, small footprint
-- **Qwen3-Embedding** — Multilingual (119 languages including CJK), MTEB top-ranked
 
 > **Note:** When switching embedding models, you must re-index with `qmd embed -f`
 > since vectors are not cross-compatible between models. The prompt format is
@@ -678,13 +678,11 @@ global_context: "Knowledge base for my projects"
 # Overridden by the QMD_EDITOR_URI env var. See "Editor Links" below.
 editor_uri: "vscode://file{path}:{line}:{col}"
 
-# Override the default GGUF models per role. Optional — omit to use the
-# built-in defaults. `qmd init` writes this block pre-filled with the
-# resolved defaults. See "Model Configuration" for the default URIs.
+# Override the model URI per role. Optional — omit to use the built-in defaults.
 models:
-  embed: "hf:ggml-org/embeddinggemma-300M-GGUF/embeddinggemma-300M-Q8_0.gguf"
-  rerank: "hf:ggml-org/Qwen3-Reranker-0.6B-Q8_0-GGUF/qwen3-reranker-0.6b-q8_0.gguf"
-  generate: "hf:tobil/qmd-query-expansion-1.7B-gguf/qmd-query-expansion-1.7B-q4_k_m.gguf"
+  embed: "https://llama-swap.rodaddy.live/v1#embed-gemma"
+  rerank: "https://llama-swap.rodaddy.live/v1#rerank-qwen3"
+  generate: "https://llama-swap.rodaddy.live/v1#qmd-query-expansion"
 
 # One entry per collection. The key is the collection name.
 collections:
@@ -705,7 +703,7 @@ collections:
 |-----|-------|---------|
 | `global_context` | top-level | Context prepended for every collection. Set via `qmd context add /`. |
 | `editor_uri` (alias `editor_uri_template`) | top-level | Hyperlink template for clickable result paths; `QMD_EDITOR_URI` overrides. |
-| `models.embed` / `.rerank` / `.generate` | top-level | HuggingFace GGUF URIs (`hf:<user>/<repo>/<file>`) overriding the built-in defaults per role. |
+| `models.embed` / `.rerank` / `.generate` | top-level | Remote model URIs (`https://<host>/v1#<model>`) overriding the built-in defaults per role. |
 | `collections.<name>.path` | per-collection | Absolute directory to index. |
 | `collections.<name>.pattern` | per-collection | Glob mask. Set via `qmd collection add --mask`. Default `**/*.md`. |
 | `collections.<name>.ignore` | per-collection | Glob patterns excluded from indexing — useful to stop nested collections double-indexing. **YAML-only — no CLI command sets this.** Additive with QMD's built-in exclusions (`node_modules`, `.git`, `.cache`, `vendor`, `dist`, `build`), which you cannot un-ignore. |
@@ -1118,7 +1116,7 @@ Collection ──► Glob Pattern ──► Markdown Files ──► Parse Title
 Documents are chunked into ~900-token pieces with 15% overlap using smart boundary detection:
 
 ```
-Document ──► Smart Chunk (~900 tokens) ──► Format each chunk ──► node-llama-cpp ──► Store Vectors
+Document ──► Smart Chunk (~900 tokens) ──► Format each chunk ──► remote llama-server ──► Store Vectors
                 │                           "title | text"        embedBatch()
                 │
                 └─► Chunks stored with:
@@ -1211,12 +1209,12 @@ Query ──► LLM Expansion ──► [Original, Variant 1, Variant 2]
 
 ## Model Configuration
 
-The default models are defined in `src/llm.ts` as HuggingFace URIs:
+The default models are defined in `src/llm.ts` as remote llama-server URIs:
 
 ```typescript
-const DEFAULT_EMBED_MODEL = "hf:ggml-org/embeddinggemma-300M-GGUF/embeddinggemma-300M-Q8_0.gguf";
-const DEFAULT_RERANK_MODEL = "hf:ggml-org/Qwen3-Reranker-0.6B-Q8_0-GGUF/qwen3-reranker-0.6b-q8_0.gguf";
-const DEFAULT_GENERATE_MODEL = "hf:tobil/qmd-query-expansion-1.7B-gguf/qmd-query-expansion-1.7B-q4_k_m.gguf";
+const DEFAULT_EMBED_MODEL = "https://llama-swap.rodaddy.live/v1#embed-gemma";
+const DEFAULT_RERANK_MODEL = "https://llama-swap.rodaddy.live/v1#rerank-qwen3";
+const DEFAULT_GENERATE_MODEL = "https://llama-swap.rodaddy.live/v1#qmd-query-expansion";
 ```
 
 Override them per-role without touching source via the `models:` block in
@@ -1235,11 +1233,11 @@ Override them per-role without touching source via the `models:` block in
 
 ### Qwen3-Reranker
 
-Uses node-llama-cpp's `createRankingContext()` and `rankAndSort()` API for cross-encoder reranking. Returns documents sorted by relevance score (0.0 - 1.0).
+Reranking is a `/v1/rerank` call to the configured server. Returns documents sorted by relevance score (0.0 - 1.0).
 
 ### Qwen3 (Query Expansion)
 
-Used for generating query variations via `LlamaChatSession`.
+Used for generating query variations via a chat completion on the configured server.
 
 ## License
 

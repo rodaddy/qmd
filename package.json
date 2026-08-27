@@ -59,7 +59,6 @@
     "@modelcontextprotocol/sdk": "1.29.0",
     "better-sqlite3": "12.10.0",
     "fast-glob": "3.3.3",
-    "node-llama-cpp": "3.18.1",
     "picomatch": "4.0.4",
     "pino": "^10.3.1",
     "postgres": "3.4.8",
@@ -88,7 +87,6 @@
     "onlyBuiltDependencies": [
       "better-sqlite3",
       "esbuild",
-      "node-llama-cpp",
       "tree-sitter-go",
       "tree-sitter-javascript",
       "tree-sitter-python",

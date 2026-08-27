@@ -21,7 +21,7 @@ qmd status                        # Show index status and collections
 qmd doctor                        # Diagnose config, index, model, and device issues
 qmd update                        # Re-index collections; configured update hooks run first
 qmd update <path>...              # Re-index only those files (add/update/remove, skips unchanged)
-qmd embed                         # Generate vector embeddings (uses node-llama-cpp)
+qmd embed                         # Generate vector embeddings (remote llama-server)
 qmd query <query>                 # Search with query expansion + reranking (recommended)
 qmd search <query>                # Full-text keyword search (BM25, no LLM)
 qmd vsearch <query>               # Vector similarity search (no reranking)
@@ -154,7 +154,7 @@ bun test --preload ./src/test-preload.ts test/
 
 - SQLite FTS5 for full-text search (BM25)
 - sqlite-vec for vector similarity search
-- node-llama-cpp for embeddings (embeddinggemma), reranking (qwen3-reranker), and query expansion (Qwen3)
+- Remote llama-server (via llama-swap) for embeddings (embed-gemma), reranking (rerank-qwen3), and query expansion (qmd-query-expansion); no local models
 - Reciprocal Rank Fusion (RRF) for combining results
 - Smart chunking: 900 tokens/chunk with 15% overlap, prefers markdown headings as boundaries
 - AST-aware chunking: use `--chunk-strategy auto` to chunk code files (.ts/.js/.py/.go/.rs) at function/class/import boundaries via tree-sitter. Default is `regex` (existing behavior). Markdown and unknown file types always use regex chunking.

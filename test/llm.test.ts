@@ -1,22 +1,16 @@
 /**
- * llm.test.ts - Unit tests for the LLM abstraction layer (node-llama-cpp)
+ * llm.test.ts - Unit tests for the LLM abstraction layer.
  *
- * Run with: bun test src/llm.test.ts
- *
- * These tests require the actual models to be downloaded. Run the embed or
- * rerank functions first to trigger model downloads.
+ * Every role is served by a remote llama-server, so the integration blocks
+ * below exercise real HTTP against the configured server rather than loading
+ * a model in-process. They are skipped under CI, which has no server to reach.
  */
 
-import { describe, test, expect, beforeAll, afterAll, vi } from "vitest";
+import { describe, test, expect, beforeAll, afterAll } from "vitest";
 import {
-  LlamaCpp,
+  createLLM,
   getDefaultLlamaCpp,
   disposeDefaultLlamaCpp,
-  resolveLlamaGpuMode,
-  setNodeLlamaCppModuleForTest,
-  withNativeStdoutRedirectedToStderr,
-  resolveParallelismOverride,
-  resolveSafeParallelism,
   resolveEmbedModel,
   resolveGenerateModel,
   resolveRerankModel,
@@ -74,7 +68,11 @@ describe("model name resolution", () => {
     );
   });
 
-  test("LlamaCpp constructor uses the same resolver as status/embed/query helpers", () => {
+  // The backend a config produces must report the same model fields the
+  // standalone resolvers do, or a caller reading embedModelName off the
+  // backend fingerprints its vectors against a different model than the one
+  // that computed them.
+  test("the built backend reports the same fields the resolvers do", () => {
     withModelEnv(
       {
         QMD_EMBED_MODEL: "env-embed",
@@ -82,20 +80,15 @@ describe("model name resolution", () => {
         QMD_RERANK_MODEL: "env-rerank",
       },
       () => {
-        const llm = new LlamaCpp({
-          embedModel: "config-embed",
-          generateModel: "config-generate",
-          rerankModel: "config-rerank",
-        });
-        expect(llm.embedModelName).toBe(
-          resolveEmbedModel({ embed: "config-embed" }),
-        );
-        expect(llm.generateModelName).toBe(
-          resolveGenerateModel({ generate: "config-generate" }),
-        );
-        expect(llm.rerankModelName).toBe(
-          resolveRerankModel({ rerank: "config-rerank" }),
-        );
+        const config = {
+          embed: "config-embed",
+          generate: "config-generate",
+          rerank: "config-rerank",
+        };
+        const llm = createLLM(config);
+        expect(llm.embedModelName).toBe(resolveEmbedModel(config));
+        expect(llm.generateModelName).toBe(resolveGenerateModel(config));
+        expect(llm.rerankModelName).toBe(resolveRerankModel(config));
       },
     );
   });
@@ -114,10 +107,10 @@ describe("Default backend singleton", () => {
   });
 
   // The defaults name the remote server, so the default backend is remote.
-  // This assertion used to read `toBeInstanceOf(LlamaCpp)`, which is exactly
-  // the thing this fork forbids: a local backend reached by default.
+  // Asserted by the model field it reports rather than by class: there is no
+  // local class left to be an instance of, and the field is what callers
+  // actually read to fingerprint vectors and pick a prompt format.
   test("the default backend is remote, not a local model", () => {
-    expect(getDefaultLlamaCpp()).not.toBeInstanceOf(LlamaCpp);
     expect(getDefaultLlamaCpp().embedModelName).toMatch(/^https?:\/\//);
   });
 });
@@ -126,527 +119,37 @@ describe("Default backend singleton", () => {
 // Model Existence Tests
 // =============================================================================
 
-describe("LlamaCpp.modelExists", () => {
-  // These probe the LOCAL backend's own resolution rules, so they construct
-  // one directly. They used to read the default backend, which is now remote
-  // -- and a remote server answering about `hf:org/repo/model.gguf` was
-  // testing the wrong object, not the rule these cases describe.
-  test("returns exists:true for HuggingFace model URIs", async () => {
-    const llm = new LlamaCpp({});
-    const result = await llm.modelExists("hf:org/repo/model.gguf");
+describe("modelExists for local model fields", () => {
+  // A build with no in-process runtime cannot serve any local model, so both
+  // an hf: ref and a path answer the same way: absent. This is a probe rather
+  // than a compute path, so it reports rather than throwing -- the throw is
+  // pinned separately in no-local-models.test.ts.
+  test("an hf: URI reports absent rather than resolving", async () => {
+    const uri = "hf:org/repo/model.gguf";
+    const llm = createLLM({ embed: uri, generate: uri, rerank: uri });
+    const result = await llm.modelExists(uri);
 
-    expect(result.exists).toBe(true);
-    expect(result.name).toBe("hf:org/repo/model.gguf");
+    expect(result.exists).toBe(false);
   });
 
-  test("returns exists:false for non-existent local paths", async () => {
-    const llm = new LlamaCpp({});
+  test("a local path reports absent", async () => {
+    const uri = "hf:org/repo/model.gguf";
+    const llm = createLLM({ embed: uri, generate: uri, rerank: uri });
     const result = await llm.modelExists("/nonexistent/path/model.gguf");
 
     expect(result.exists).toBe(false);
-    expect(result.name).toBe("/nonexistent/path/model.gguf");
-  });
-});
-
-describe("QMD_LLAMA_GPU resolution", () => {
-  test("uses auto when unset or blank", () => {
-    expect(resolveLlamaGpuMode(undefined)).toBe("auto");
-    expect(resolveLlamaGpuMode("   ")).toBe("auto");
-  });
-
-  test("maps CPU disable values to false", () => {
-    expect(resolveLlamaGpuMode("false")).toBe(false);
-    expect(resolveLlamaGpuMode("OFF")).toBe(false);
-    expect(resolveLlamaGpuMode(" none ")).toBe(false);
-    expect(resolveLlamaGpuMode("disabled")).toBe(false);
-    expect(resolveLlamaGpuMode("0")).toBe(false);
-  });
-
-  test("passes through supported GPU backends", () => {
-    expect(resolveLlamaGpuMode("metal")).toBe("metal");
-    expect(resolveLlamaGpuMode("VULKAN")).toBe("vulkan");
-    expect(resolveLlamaGpuMode(" cuda ")).toBe("cuda");
-  });
-
-  test("QMD_FORCE_CPU disables GPU before QMD_LLAMA_GPU auto-detection", () => {
-    const prevForceCpu = process.env.QMD_FORCE_CPU;
-    process.env.QMD_FORCE_CPU = "1";
-    try {
-      expect(resolveLlamaGpuMode(undefined)).toBe(false);
-      expect(resolveLlamaGpuMode("cuda")).toBe(false);
-    } finally {
-      if (prevForceCpu === undefined) delete process.env.QMD_FORCE_CPU;
-      else process.env.QMD_FORCE_CPU = prevForceCpu;
-    }
-  });
-
-  test("QMD_FORCE_CPU ignores false-ish values", () => {
-    const prevForceCpu = process.env.QMD_FORCE_CPU;
-    process.env.QMD_FORCE_CPU = "0";
-    try {
-      expect(resolveLlamaGpuMode(undefined)).toBe("auto");
-    } finally {
-      if (prevForceCpu === undefined) delete process.env.QMD_FORCE_CPU;
-      else process.env.QMD_FORCE_CPU = prevForceCpu;
-    }
-  });
-
-  test("warns and falls back to auto for unsupported values", () => {
-    const stderrSpy = vi.spyOn(process.stderr, "write").mockReturnValue(true);
-    try {
-      expect(resolveLlamaGpuMode("rocm")).toBe("auto");
-      expect(stderrSpy).toHaveBeenCalled();
-      expect(String(stderrSpy.mock.calls[0]?.[0] || "")).toContain(
-        "QMD_LLAMA_GPU",
-      );
-    } finally {
-      stderrSpy.mockRestore();
-    }
-  });
-});
-
-describe("native llama stdout containment", () => {
-  test("redirects native stdout noise to stderr while JSON callers are initializing llama", async () => {
-    const stdoutSpy = vi.spyOn(process.stdout, "write").mockReturnValue(true);
-    const stderrSpy = vi.spyOn(process.stderr, "write").mockReturnValue(true);
-    try {
-      await withNativeStdoutRedirectedToStderr(async () => {
-        process.stdout.write("cmake build spam\n");
-        return "ok";
-      });
-
-      expect(stdoutSpy).not.toHaveBeenCalled();
-      expect(stderrSpy).toHaveBeenCalledWith(
-        "cmake build spam\n",
-        undefined,
-        undefined,
-      );
-    } finally {
-      stdoutSpy.mockRestore();
-      stderrSpy.mockRestore();
-    }
-  });
-
-  test("keeps native GPU failure noise off stdout and caches failed GPU init", async () => {
-    const prevGpu = process.env.QMD_LLAMA_GPU;
-    const prevForceCpu = process.env.QMD_FORCE_CPU;
-    process.env.QMD_LLAMA_GPU = "cuda";
-    delete process.env.QMD_FORCE_CPU;
-
-    const calls: unknown[] = [];
-    const fakeLlama = { gpu: false, cpuMathCores: 4 };
-    setNodeLlamaCppModuleForTest({
-      LlamaLogLevel: { error: "error" },
-      resolveModelFile: vi.fn(),
-      LlamaChatSession: vi.fn() as any,
-      getLlama: vi.fn(async (options: Record<string, unknown>) => {
-        calls.push(options.gpu);
-        if (options.gpu === "cuda") {
-          process.stdout.write("cmake build spam\n");
-          throw new Error("CUDA unavailable");
-        }
-        return fakeLlama as any;
-      }),
-    });
-
-    const stdoutSpy = vi.spyOn(process.stdout, "write").mockReturnValue(true);
-    const stderrSpy = vi.spyOn(process.stderr, "write").mockReturnValue(true);
-    try {
-      const first = new LlamaCpp();
-      const second = new LlamaCpp();
-
-      await (first as any).ensureLlama();
-      await (second as any).ensureLlama();
-
-      expect(stdoutSpy).not.toHaveBeenCalled();
-      expect(stderrSpy).toHaveBeenCalledWith(
-        "cmake build spam\n",
-        undefined,
-        undefined,
-      );
-      expect(calls).toEqual(["cuda", false, false]);
-      expect(
-        String(stderrSpy.mock.calls.map((call) => call[0]).join("")),
-      ).toContain("skipping previously failed GPU init");
-    } finally {
-      stdoutSpy.mockRestore();
-      stderrSpy.mockRestore();
-      setNodeLlamaCppModuleForTest(null);
-      if (prevGpu === undefined) delete process.env.QMD_LLAMA_GPU;
-      else process.env.QMD_LLAMA_GPU = prevGpu;
-      if (prevForceCpu === undefined) delete process.env.QMD_FORCE_CPU;
-      else process.env.QMD_FORCE_CPU = prevForceCpu;
-    }
-  });
-
-  test("warns about CPU fallback only once per process", async () => {
-    const prevGpu = process.env.QMD_LLAMA_GPU;
-    const prevForceCpu = process.env.QMD_FORCE_CPU;
-    process.env.QMD_LLAMA_GPU = "false";
-    delete process.env.QMD_FORCE_CPU;
-
-    setNodeLlamaCppModuleForTest({
-      LlamaLogLevel: { error: "error" },
-      resolveModelFile: vi.fn(),
-      LlamaChatSession: vi.fn() as any,
-      getLlama: vi.fn(async () => ({ gpu: false, cpuMathCores: 4 }) as any),
-    });
-
-    const stderrSpy = vi.spyOn(process.stderr, "write").mockReturnValue(true);
-    try {
-      const first = new LlamaCpp();
-      const second = new LlamaCpp();
-
-      await (first as any).ensureLlama();
-      await (second as any).ensureLlama();
-
-      const stderr = String(
-        stderrSpy.mock.calls.map((call) => call[0]).join(""),
-      );
-      expect(stderr.match(/no GPU acceleration/g)?.length).toBe(1);
-      expect(stderr).toContain("qmd doctor");
-      expect(stderr).not.toContain("QMD_STATUS_DEVICE_PROBE");
-    } finally {
-      stderrSpy.mockRestore();
-      setNodeLlamaCppModuleForTest(null);
-      if (prevGpu === undefined) delete process.env.QMD_LLAMA_GPU;
-      else process.env.QMD_LLAMA_GPU = prevGpu;
-      if (prevForceCpu === undefined) delete process.env.QMD_FORCE_CPU;
-      else process.env.QMD_FORCE_CPU = prevForceCpu;
-    }
-  });
-
-  test("embeds hello world with QMD_FORCE_CPU=1 without throwing", async () => {
-    const prevGpu = process.env.QMD_LLAMA_GPU;
-    const prevForceCpu = process.env.QMD_FORCE_CPU;
-    process.env.QMD_FORCE_CPU = "1";
-    process.env.QMD_LLAMA_GPU = "metal";
-
-    const getEmbeddingFor = vi.fn(async (text: string) => ({
-      vector: new Float32Array([0.1, 0.2, 0.3]),
-      text,
-    }));
-    const createEmbeddingContext = vi.fn(async () => ({
-      getEmbeddingFor,
-      dispose: vi.fn(async () => {}),
-    }));
-    const loadModel = vi.fn(async () => ({
-      trainContextSize: 2048,
-      tokenize: (text: string) => Array.from(text),
-      detokenize: (tokens: string[]) => tokens.join(""),
-      createEmbeddingContext,
-      dispose: vi.fn(async () => {}),
-    }));
-    const getLlama = vi.fn(
-      async (options: Record<string, unknown>) =>
-        ({
-          gpu: false,
-          cpuMathCores: 4,
-          loadModel,
-          dispose: vi.fn(async () => {}),
-        }) as any,
-    );
-
-    setNodeLlamaCppModuleForTest({
-      LlamaLogLevel: { error: "error" },
-      resolveModelFile: vi.fn(async () => "/tmp/nonexistent-model.gguf"),
-      LlamaChatSession: vi.fn() as any,
-      getLlama,
-    });
-
-    const stderrSpy = vi.spyOn(process.stderr, "write").mockReturnValue(true);
-    const llm = new LlamaCpp();
-    try {
-      const result = await llm.embed("hello world");
-      expect(result).toEqual({
-        embedding: [
-          0.10000000149011612, 0.20000000298023224, 0.30000001192092896,
-        ],
-        model: llm.embedModelName,
-      });
-      expect(getLlama).toHaveBeenCalledWith(
-        expect.objectContaining({ gpu: false, build: "never" }),
-      );
-      expect(loadModel).toHaveBeenCalledWith(
-        expect.objectContaining({ gpuLayers: 0 }),
-      );
-      expect(getEmbeddingFor).toHaveBeenCalledWith("hello world");
-    } finally {
-      await llm.dispose();
-      stderrSpy.mockRestore();
-      setNodeLlamaCppModuleForTest(null);
-      if (prevGpu === undefined) delete process.env.QMD_LLAMA_GPU;
-      else process.env.QMD_LLAMA_GPU = prevGpu;
-      if (prevForceCpu === undefined) delete process.env.QMD_FORCE_CPU;
-      else process.env.QMD_FORCE_CPU = prevForceCpu;
-    }
-  });
-});
-
-describe("LLM context parallelism safety", () => {
-  test("defaults Windows CUDA to one context to avoid ggml-cuda.cu:98 crashes", () => {
-    expect(
-      resolveSafeParallelism({
-        gpu: "cuda",
-        platform: "win32",
-        computed: 8,
-        envValue: undefined,
-      }),
-    ).toBe(1);
-  });
-
-  test("keeps non-Windows and non-CUDA backends on computed parallelism", () => {
-    expect(
-      resolveSafeParallelism({ gpu: "cuda", platform: "linux", computed: 8 }),
-    ).toBe(8);
-    expect(
-      resolveSafeParallelism({ gpu: "vulkan", platform: "win32", computed: 8 }),
-    ).toBe(8);
-    expect(
-      resolveSafeParallelism({ gpu: false, platform: "win32", computed: 4 }),
-    ).toBe(4);
-  });
-
-  test("QMD_EMBED_PARALLELISM overrides the Windows CUDA safety default", () => {
-    expect(
-      resolveSafeParallelism({
-        gpu: "cuda",
-        platform: "win32",
-        computed: 8,
-        envValue: "2",
-      }),
-    ).toBe(2);
-  });
-
-  test("QMD_EMBED_PARALLELISM clamps invalid values and warns", () => {
-    const stderrSpy = vi.spyOn(process.stderr, "write").mockReturnValue(true);
-    try {
-      expect(resolveParallelismOverride("0")).toBeUndefined();
-      expect(resolveParallelismOverride("bad")).toBeUndefined();
-      expect(stderrSpy).toHaveBeenCalledTimes(2);
-      expect(String(stderrSpy.mock.calls[0]?.[0] || "")).toContain(
-        "QMD_EMBED_PARALLELISM",
-      );
-    } finally {
-      stderrSpy.mockRestore();
-    }
-  });
-});
-
-describe("LlamaCpp expand context size config", () => {
-  const defaultExpandContextSize = 2048;
-
-  test("uses default expand context size when no config or env is set", () => {
-    const prev = process.env.QMD_EXPAND_CONTEXT_SIZE;
-    delete process.env.QMD_EXPAND_CONTEXT_SIZE;
-    try {
-      const llm = new LlamaCpp({}) as any;
-      expect(llm.expandContextSize).toBe(defaultExpandContextSize);
-    } finally {
-      if (prev === undefined) delete process.env.QMD_EXPAND_CONTEXT_SIZE;
-      else process.env.QMD_EXPAND_CONTEXT_SIZE = prev;
-    }
-  });
-
-  test("uses QMD_EXPAND_CONTEXT_SIZE when set to a positive integer", () => {
-    const prev = process.env.QMD_EXPAND_CONTEXT_SIZE;
-    process.env.QMD_EXPAND_CONTEXT_SIZE = "3072";
-    try {
-      const llm = new LlamaCpp({}) as any;
-      expect(llm.expandContextSize).toBe(3072);
-    } finally {
-      if (prev === undefined) delete process.env.QMD_EXPAND_CONTEXT_SIZE;
-      else process.env.QMD_EXPAND_CONTEXT_SIZE = prev;
-    }
-  });
-
-  test("config value overrides QMD_EXPAND_CONTEXT_SIZE", () => {
-    const prev = process.env.QMD_EXPAND_CONTEXT_SIZE;
-    process.env.QMD_EXPAND_CONTEXT_SIZE = "4096";
-    try {
-      const llm = new LlamaCpp({ expandContextSize: 1536 }) as any;
-      expect(llm.expandContextSize).toBe(1536);
-    } finally {
-      if (prev === undefined) delete process.env.QMD_EXPAND_CONTEXT_SIZE;
-      else process.env.QMD_EXPAND_CONTEXT_SIZE = prev;
-    }
-  });
-
-  test("falls back to default and warns when QMD_EXPAND_CONTEXT_SIZE is invalid", () => {
-    const prev = process.env.QMD_EXPAND_CONTEXT_SIZE;
-    process.env.QMD_EXPAND_CONTEXT_SIZE = "bad";
-    const stderrSpy = vi.spyOn(process.stderr, "write").mockReturnValue(true);
-    try {
-      const llm = new LlamaCpp({}) as any;
-      expect(llm.expandContextSize).toBe(defaultExpandContextSize);
-      expect(stderrSpy).toHaveBeenCalled();
-      expect(String(stderrSpy.mock.calls[0]?.[0] || "")).toContain(
-        "QMD_EXPAND_CONTEXT_SIZE",
-      );
-    } finally {
-      stderrSpy.mockRestore();
-      if (prev === undefined) delete process.env.QMD_EXPAND_CONTEXT_SIZE;
-      else process.env.QMD_EXPAND_CONTEXT_SIZE = prev;
-    }
-  });
-
-  test("throws when config expandContextSize is invalid", () => {
-    expect(() => new LlamaCpp({ expandContextSize: 0 })).toThrow(
-      "Invalid expandContextSize: 0. Must be a positive integer.",
-    );
-  });
-});
-
-describe("LlamaCpp model resolution (config > env > default)", () => {
-  // The defaults name the remote server rather than a gguf to download, so a
-  // config that omits a role gets a working remote one instead of a local
-  // load that now throws. Kept as literals rather than imported from llm.ts:
-  // asserting a constant against itself would pass however it changed.
-  const HARDCODED_EMBED = "https://llama-swap.rodaddy.live/v1#embed-gemma";
-  const HARDCODED_RERANK = "https://llama-swap.rodaddy.live/v1#rerank-qwen3";
-  const HARDCODED_GENERATE =
-    "https://llama-swap.rodaddy.live/v1#qmd-query-expansion";
-
-  test("uses hardcoded default when no config or env is set", () => {
-    const prev = process.env.QMD_EMBED_MODEL;
-    delete process.env.QMD_EMBED_MODEL;
-    try {
-      const llm = new LlamaCpp({}) as any;
-      expect(llm.embedModelUri).toBe(HARDCODED_EMBED);
-      expect(llm.rerankModelUri).toBe(HARDCODED_RERANK);
-      expect(llm.generateModelUri).toBe(HARDCODED_GENERATE);
-    } finally {
-      if (prev === undefined) delete process.env.QMD_EMBED_MODEL;
-      else process.env.QMD_EMBED_MODEL = prev;
-    }
-  });
-
-  test("env var overrides hardcoded default", () => {
-    const prev = process.env.QMD_EMBED_MODEL;
-    process.env.QMD_EMBED_MODEL = "hf:custom/embed-model.gguf";
-    try {
-      const llm = new LlamaCpp({}) as any;
-      expect(llm.embedModelUri).toBe("hf:custom/embed-model.gguf");
-    } finally {
-      if (prev === undefined) delete process.env.QMD_EMBED_MODEL;
-      else process.env.QMD_EMBED_MODEL = prev;
-    }
-  });
-
-  test("config overrides env var", () => {
-    const prev = process.env.QMD_EMBED_MODEL;
-    process.env.QMD_EMBED_MODEL = "hf:env/model.gguf";
-    try {
-      const llm = new LlamaCpp({ embedModel: "hf:config/model.gguf" }) as any;
-      expect(llm.embedModelUri).toBe("hf:config/model.gguf");
-    } finally {
-      if (prev === undefined) delete process.env.QMD_EMBED_MODEL;
-      else process.env.QMD_EMBED_MODEL = prev;
-    }
-  });
-});
-
-describe("LlamaCpp embedding truncation", () => {
-  test("truncates against the active embedding context limit, not the model train context", async () => {
-    const llm = new LlamaCpp({}) as any;
-    const getEmbeddingFor = vi.fn(async (text: string) => ({
-      vector: new Float32Array([0.25, 0.5]),
-      text,
-    }));
-
-    llm.touchActivity = vi.fn();
-    llm.embedModel = {
-      trainContextSize: 8192,
-      tokenize: (text: string) => Array.from({ length: text.length }, () => 1),
-      detokenize: (tokens: readonly number[]) => "x".repeat(tokens.length),
-    };
-    llm.ensureEmbedContext = vi.fn().mockResolvedValue({ getEmbeddingFor });
-
-    const result = await llm.embed("x".repeat(3000));
-
-    expect(getEmbeddingFor).toHaveBeenCalledWith("x".repeat(2044));
-    expect(result).toEqual({
-      embedding: [0.25, 0.5],
-      model: llm.embedModelUri,
-    });
-  });
-});
-
-describe("LlamaCpp rerank deduping", () => {
-  test("deduplicates identical document texts before scoring", async () => {
-    const llm = new LlamaCpp({}) as any;
-    llm._ciMode = false; // allow unit test even in CI (mocked, no real models)
-    const rankAll = vi.fn(async (_query: string, docs: string[]) =>
-      docs.map((doc) => (doc === "shared chunk" ? 0.9 : 0.2)),
-    );
-
-    llm.touchActivity = vi.fn();
-    llm.ensureRerankContexts = vi.fn().mockResolvedValue([{ rankAll }]);
-    llm.ensureRerankModel = vi.fn().mockResolvedValue({
-      tokenize: (text: string) => Array.from(text),
-      detokenize: (tokens: string[]) => tokens.join(""),
-    });
-
-    const result = await llm.rerank("query", [
-      { file: "a.md", text: "shared chunk" },
-      { file: "b.md", text: "shared chunk" },
-      { file: "c.md", text: "different chunk" },
-    ]);
-
-    expect(rankAll).toHaveBeenCalledTimes(1);
-    expect(rankAll).toHaveBeenCalledWith("query", [
-      "shared chunk",
-      "different chunk",
-    ]);
-    expect(result.results).toHaveLength(3);
-
-    const scoreByFile = new Map(
-      result.results.map((item) => [item.file, item.score]),
-    );
-    expect(scoreByFile.get("a.md")).toBe(0.9);
-    expect(scoreByFile.get("b.md")).toBe(0.9);
-    expect(scoreByFile.get("c.md")).toBe(0.2);
-  });
-});
-
-describe("LlamaCpp.getDeviceInfo", () => {
-  test("can skip build attempts for status probes", async () => {
-    const llm = new LlamaCpp({}) as any;
-    const fakeLlama = {
-      gpu: "metal",
-      supportsGpuOffloading: true,
-      cpuMathCores: 8,
-      getGpuDeviceNames: vi.fn().mockResolvedValue(["Apple GPU"]),
-      getVramState: vi
-        .fn()
-        .mockResolvedValue({ total: 1024, used: 256, free: 768 }),
-    };
-
-    llm.ensureLlama = vi.fn().mockResolvedValue(fakeLlama);
-
-    const device = await llm.getDeviceInfo({ allowBuild: false });
-
-    expect(llm.ensureLlama).toHaveBeenCalledWith(false);
-    expect(device).toEqual({
-      gpu: "metal",
-      gpuOffloading: true,
-      gpuDevices: ["Apple GPU"],
-      vram: { total: 1024, used: 256, free: 768 },
-      cpuCores: 8,
-    });
   });
 });
 
 // =============================================================================
-// Integration Tests (require actual models)
+// Integration Tests (require a reachable remote llama-server)
 // =============================================================================
 
-describe.skipIf(!!process.env.CI)("LlamaCpp Integration", () => {
-  // Use the singleton to avoid multiple Metal contexts
+describe.skipIf(!!process.env.CI)("Remote backend integration", () => {
+  // The configured default backend, which serves every role over HTTP.
   const llm = getDefaultLlamaCpp();
 
   afterAll(async () => {
-    // Ensure native resources are released to avoid ggml-metal asserts on process exit.
     await disposeDefaultLlamaCpp();
   });
 
@@ -738,109 +241,6 @@ describe.skipIf(!!process.env.CI)("LlamaCpp Integration", () => {
       const results = await llm.embedBatch([]);
       expect(results).toHaveLength(0);
     });
-
-    test("splits work across embedding contexts and preserves input order", async () => {
-      const freshLlm = new LlamaCpp({}) as any;
-      const ctx1 = {
-        getEmbeddingFor: vi.fn(async (text: string) => ({
-          vector: Float32Array.from([text.length, 1]),
-        })),
-      };
-      const ctx2 = {
-        getEmbeddingFor: vi.fn(async (text: string) => ({
-          vector: Float32Array.from([text.length, 2]),
-        })),
-      };
-
-      freshLlm.touchActivity = vi.fn();
-      freshLlm.ensureEmbedContexts = vi.fn().mockResolvedValue([ctx1, ctx2]);
-
-      const texts = ["one", "two", "three", "four"];
-      const results: (EmbeddingResult | null)[] =
-        await freshLlm.embedBatch(texts);
-
-      expect(freshLlm.ensureEmbedContexts).toHaveBeenCalledTimes(1);
-      expect(
-        ctx1.getEmbeddingFor.mock.calls.map(([text]: [string]) => text),
-      ).toEqual(["one", "two"]);
-      expect(
-        ctx2.getEmbeddingFor.mock.calls.map(([text]: [string]) => text),
-      ).toEqual(["three", "four"]);
-      expect(results.map((result) => result?.embedding[0])).toEqual([
-        3, 3, 5, 4,
-      ]);
-      expect(results.map((result) => result?.embedding[1])).toEqual([
-        1, 1, 2, 2,
-      ]);
-    });
-
-    test("handles concurrent embedBatch calls on fresh instance without race condition", async () => {
-      // This test verifies the fix for a race condition where concurrent calls to
-      // ensureEmbedContext() could create multiple contexts. Without the promise guard,
-      // each concurrent embedBatch call sees embedContext === null and creates its own
-      // context, causing resource leaks and potential "Context is disposed" errors.
-      //
-      // See: https://github.com/tobi/qmd/pull/54
-      //
-      // The fix uses a promise guard to ensure only one context creation runs at a time.
-      // We verify this by instrumenting createEmbeddingContext to count invocations.
-
-      const freshLlm = new LlamaCpp({});
-      let contextCreateCount = 0;
-
-      // Instrument the model's createEmbeddingContext to count calls
-      const originalEnsureEmbedModel = (freshLlm as any).ensureEmbedModel.bind(
-        freshLlm,
-      );
-      let modelInstrumented = false;
-      (freshLlm as any).ensureEmbedModel = async function () {
-        const model = await originalEnsureEmbedModel();
-        if (!modelInstrumented) {
-          modelInstrumented = true;
-          const originalCreate = model.createEmbeddingContext.bind(model);
-          model.createEmbeddingContext = async function (...args: any[]) {
-            contextCreateCount++;
-            return originalCreate(...args);
-          };
-        }
-        return model;
-      };
-
-      const texts = Array(10)
-        .fill(null)
-        .map((_, i) => `Document ${i}`);
-
-      // Call embedBatch 5 TIMES in parallel on fresh instance.
-      // Without the promise guard fix, this would create 5 contexts (one per call).
-      // With the fix, only 1 context should be created.
-      const batches = await Promise.all([
-        freshLlm.embedBatch(texts.slice(0, 2)),
-        freshLlm.embedBatch(texts.slice(2, 4)),
-        freshLlm.embedBatch(texts.slice(4, 6)),
-        freshLlm.embedBatch(texts.slice(6, 8)),
-        freshLlm.embedBatch(texts.slice(8, 10)),
-      ]);
-
-      const allResults = batches.flat();
-      expect(allResults).toHaveLength(10);
-
-      const successCount = allResults.filter((r) => r !== null).length;
-      expect(successCount).toBe(10);
-
-      // THE KEY ASSERTION: Contexts should be created once (by ensureEmbedContexts),
-      // not duplicated per concurrent embedBatch call. The exact count depends on
-      // available VRAM (computeParallelism), but should not be 5 (one per call).
-      // Without the fix, contextCreateCount would be 5× the intended count (one set per concurrent call).
-      // With the promise guard, contexts are created exactly once regardless of concurrent callers.
-      // The count depends on VRAM (computeParallelism), but should be ≤ 8 (the cap).
-      console.log(
-        `Context creation count: ${contextCreateCount} (expected: ≤ 8, not 5× duplicated)`,
-      );
-      expect(contextCreateCount).toBeGreaterThanOrEqual(1);
-      expect(contextCreateCount).toBeLessThanOrEqual(8);
-
-      await freshLlm.dispose();
-    }, 60000);
   });
 
   describe("rerank", () => {
@@ -1004,37 +404,6 @@ describe.skipIf(!!process.env.CI)("LlamaCpp Integration", () => {
 
       // Log timing for monitoring batch performance
       console.log(`Batch rerank of 10 docs took ${elapsed}ms`);
-    });
-
-    test("uses fewer active rerank contexts for small batches", async () => {
-      const freshLlm = new LlamaCpp({});
-      const calls: number[] = [];
-      const fakeModel = {
-        tokenize: (text: string) => Array.from(text),
-        detokenize: (tokens: string[]) => tokens.join(""),
-      };
-      const fakeContexts = Array.from({ length: 4 }, (_, idx) => ({
-        rankAll: async (_query: string, docs: string[]) => {
-          calls.push(idx);
-          return docs.map(() => 0.5);
-        },
-      }));
-
-      (freshLlm as any).ensureRerankModel = async () => fakeModel;
-      (freshLlm as any).ensureRerankContexts = async () => fakeContexts;
-
-      const documents: RerankDocument[] = Array.from(
-        { length: 20 },
-        (_, i) => ({
-          file: `doc${i}.md`,
-          text: `Document number ${i}`,
-        }),
-      );
-
-      const result = await freshLlm.rerank("topic 1", documents);
-
-      expect(result.results).toHaveLength(20);
-      expect(calls).toEqual([0, 1]);
     });
 
     test("truncates and reranks document exceeding 2048 token context size", async () => {
