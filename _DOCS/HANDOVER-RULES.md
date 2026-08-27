@@ -59,3 +59,14 @@ only when a session actually needed it.
     inserts (4.5s) was misread as index-maintenance cost and produced a
     bulk-mode lane that measured zero gain and was reverted (c9aa2f9). The
     lever for a full load is the embedding endpoint, not storage.
+
+11. The runtime is the node@24 keg, `/opt/homebrew/opt/node@24/bin/node`,
+    never PATH `node` (v26 on this Mac). `better-sqlite3` is built for the
+    keg (ABI 137); run the suite as
+    `env -u QMD_FORCE_CPU /opt/homebrew/opt/node@24/bin/node scripts/test-all.mjs`
+    and `npm rebuild better-sqlite3` only with the keg first on PATH and
+    from this directory (from anywhere else `npm rebuild` reports success and
+    touches nothing). `_ob/bin/qmd` exports `QMD_NODE` to the keg before its
+    ABI guard runs; a wrapper or guard pointed at PATH node rebuilds the
+    binary for v26 on the next `embed`/`update` and every keg caller breaks
+    (2026-08-27 14:03, qmd#1).
