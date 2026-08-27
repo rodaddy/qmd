@@ -278,14 +278,6 @@ const DEFAULT_EMBED_MODEL = `${REMOTE_MODEL_BASE_URL}#embed-gemma`;
 const DEFAULT_RERANK_MODEL = `${REMOTE_MODEL_BASE_URL}#rerank-qwen3`;
 const DEFAULT_GENERATE_MODEL = `${REMOTE_MODEL_BASE_URL}#qmd-query-expansion`;
 
-// Alternative generation models for query expansion:
-// LiquidAI LFM2 - hybrid architecture optimized for edge/on-device inference
-// Use these as base for fine-tuning with configs/sft_lfm2.yaml
-export const LFM2_GENERATE_MODEL =
-  "hf:LiquidAI/LFM2-1.2B-GGUF/LFM2-1.2B-Q4_K_M.gguf";
-export const LFM2_INSTRUCT_MODEL =
-  "hf:LiquidAI/LFM2.5-1.2B-Instruct-GGUF/LFM2.5-1.2B-Instruct-Q4_K_M.gguf";
-
 export const DEFAULT_EMBED_MODEL_URI = DEFAULT_EMBED_MODEL;
 export const DEFAULT_RERANK_MODEL_URI = DEFAULT_RERANK_MODEL;
 export const DEFAULT_GENERATE_MODEL_URI = DEFAULT_GENERATE_MODEL;
@@ -320,120 +312,10 @@ export function resolveModels(
   };
 }
 
-// Local model cache directory
-const MODEL_CACHE_DIR = process.env.XDG_CACHE_HOME
-  ? join(process.env.XDG_CACHE_HOME, "qmd", "models")
-  : join(homedir(), ".cache", "qmd", "models");
-export const DEFAULT_MODEL_CACHE_DIR = MODEL_CACHE_DIR;
-
-export type PullResult = {
-  model: string;
-  path: string;
-  sizeBytes: number;
-  refreshed: boolean;
-};
-
-const GGUF_MAGIC = Buffer.from("GGUF");
-
-export type GgufFileInspection = {
-  exists: boolean;
-  valid: boolean;
-  kind: "missing" | "gguf" | "html" | "invalid";
-  sizeBytes?: number;
-  magic?: string;
-  details: string;
-};
-
-function formatModelFileSize(sizeBytes: number): string {
-  return `${(sizeBytes / 1024).toFixed(0)} KB`;
-}
-
-function printableMagic(header: Buffer): string {
-  const text = header.toString("utf-8");
-  return /^[\x20-\x7e]{1,4}$/.test(text) ? text : `0x${header.toString("hex")}`;
-}
-
-/**
- * Inspect a potential GGUF model file without mutating it.
- * Used by doctor for early diagnostics and by runtime validation before load.
- */
-export function inspectGgufFile(filePath: string): GgufFileInspection {
-  if (!existsSync(filePath)) {
-    return {
-      exists: false,
-      valid: false,
-      kind: "missing",
-      details: "file does not exist",
-    };
-  }
-
-  let sizeBytes = 0;
-  try {
-    sizeBytes = statSync(filePath).size;
-    const fd = openSync(filePath, "r");
-    const sniff = Buffer.alloc(512);
-    try {
-      readSync(fd, sniff, 0, 512, 0);
-    } finally {
-      closeSync(fd);
-    }
-
-    const header = sniff.subarray(0, 4);
-    if (header.equals(GGUF_MAGIC)) {
-      return {
-        exists: true,
-        valid: true,
-        kind: "gguf",
-        sizeBytes,
-        magic: "GGUF",
-        details: `valid GGUF (${formatModelFileSize(sizeBytes)})`,
-      };
-    }
-
-    const magic = printableMagic(header);
-    const text = sniff.toString("utf-8").toLowerCase();
-    const isHtml = text.includes("<!doctype") || text.includes("<html");
-    if (isHtml) {
-      return {
-        exists: true,
-        valid: false,
-        kind: "html",
-        sizeBytes,
-        magic,
-        details: `HTML page, not a GGUF model (${formatModelFileSize(sizeBytes)}); likely proxy/firewall/captive portal response`,
-      };
-    }
-
-    return {
-      exists: true,
-      valid: false,
-      kind: "invalid",
-      sizeBytes,
-      magic,
-      details: `not valid GGUF (expected magic "GGUF", got "${magic}", ${formatModelFileSize(sizeBytes)})`,
-    };
-  } catch (error) {
-    return {
-      exists: true,
-      valid: false,
-      kind: "invalid",
-      sizeBytes,
-      details: `cannot read model file: ${error instanceof Error ? error.message : String(error)}`,
-    };
-  }
-}
-
-export async function pullModels(
-  _models: string[],
-  _options: { refresh?: boolean; cacheDir?: string } = {},
-): Promise<PullResult[]> {
-  // Downloading a gguf is the one thing this command does, and this build
-  // cannot run one. Refusing here rather than at the download call is
-  // deliberate: the removed body unlinked cached files and etags BEFORE
-  // fetching, so a gate further in would have deleted a model and then
-  // declined to replace it -- worse than either outcome alone. A remote role
-  // needs no pull at all; the server holds the weights.
-  throw new LocalModelsDisabledError("pull", _models[0]);
+export async function pullModels(models: string[]): Promise<never> {
+  // A remote role needs no pull; the server holds the weights. This build
+  // cannot download or run a gguf, so the command refuses up front.
+  throw new LocalModelsDisabledError("pull", models[0]);
 }
 
 // =============================================================================

@@ -109,7 +109,6 @@ import {
   getDefaultLlamaCpp,
   withLLMSession,
   pullModels,
-  DEFAULT_MODEL_CACHE_DIR,
   resolveEmbedModel,
   resolveGenerateModel,
   resolveRerankModel,
@@ -118,7 +117,6 @@ import {
   assertKnownModelScheme,
   LocalModelsDisabledError,
   isRemoteModelUri,
-  inspectGgufFile,
   isDarwinMetalMitigationActive,
 } from "../llm.js";
 import {
@@ -4389,52 +4387,6 @@ function cosineDistance(a: ArrayLike<number>, b: ArrayLike<number>): number {
   return 1 - dot / (Math.sqrt(normA) * Math.sqrt(normB));
 }
 
-type CachedModelInspection = {
-  path: string | null;
-  invalid: string[];
-};
-
-function formatModelDiagnosticPath(path: string): string {
-  return sanitizeDiagnosticMessage(path);
-}
-
-function findCachedModelInspection(model: string): CachedModelInspection {
-  const invalid: string[] = [];
-  if (model.startsWith("hf:")) {
-    const filename = model.split("/").pop();
-    if (!filename || !existsSync(DEFAULT_MODEL_CACHE_DIR))
-      return { path: null, invalid };
-    const entries = readdirSync(DEFAULT_MODEL_CACHE_DIR, {
-      withFileTypes: true,
-    });
-    for (const entry of entries) {
-      // Skip the `<filename>.etag` HTTP sidecar that `qmd pull` writes next to
-      // each blob. It satisfies `includes(filename)` but is not a GGUF, so
-      // inspecting it as one surfaces a spurious "invalid" model in `qmd
-      // doctor` whenever readdir happens to yield the sidecar before the blob.
-      if (
-        !entry.isFile() ||
-        entry.name.endsWith(".etag") ||
-        !entry.name.includes(filename)
-      )
-        continue;
-      const candidate = pathJoin(DEFAULT_MODEL_CACHE_DIR, entry.name);
-      const inspection = inspectGgufFile(candidate);
-      if (inspection.valid) return { path: candidate, invalid };
-      invalid.push(
-        `${formatModelDiagnosticPath(candidate)}: ${inspection.details}`,
-      );
-    }
-    return { path: null, invalid };
-  }
-
-  const inspection = inspectGgufFile(model);
-  if (inspection.valid) return { path: model, invalid };
-  if (inspection.exists)
-    invalid.push(`${formatModelDiagnosticPath(model)}: ${inspection.details}`);
-  return { path: null, invalid };
-}
-
 type EnvOverride = {
   name: string;
   value: string;
@@ -4467,7 +4419,7 @@ function collectEnvironmentOverrides(
     const consequence =
       configured && configured !== raw
         ? `set but ignored because index models.${key} is configured as ${configured}`
-        : `sets the active ${key} model to ${active}; changes embedding/search semantics and may require \`qmd pull\` plus \`qmd embed\``;
+        : `sets the active ${key} model to ${active}; changes embedding/search semantics and may require \`qmd embed\``;
     overrides.push({ name, value: envValueForDisplay(raw), consequence });
   };
 
@@ -4703,55 +4655,13 @@ function checkModelCache(
     return;
   }
 
-  const unique = new Map<string, string[]>();
-  for (const [role, model] of localModels) {
-    unique.set(model, [...(unique.get(model) ?? []), role]);
-  }
-
-  const missing: string[] = [];
-  const cached: string[] = [];
-  const invalid: string[] = [];
-  for (const [model, roles] of unique) {
-    const label = `${roles.join("+")}: ${model}`;
-    const inspection = findCachedModelInspection(model);
-    invalid.push(...inspection.invalid.map((detail) => `${label} (${detail})`));
-    if (inspection.path) {
-      cached.push(label);
-    } else {
-      missing.push(label);
-    }
-  }
-
-  if (missing.length === 0 && invalid.length === 0) {
-    doctorCheck(
-      "model cache",
-      true,
-      `${cached.length} active ${cached.length === 1 ? "model is" : "models are"} downloaded and valid GGUF`,
-    );
-    return;
-  }
-
-  const parts: string[] = [];
-  if (invalid.length > 0)
-    parts.push(`invalid ${invalid.length}: ${invalid.join("; ")}`);
-  if (missing.length > 0)
-    parts.push(
-      `missing ${missing.length}/${unique.size}: ${missing.join("; ")}`,
-    );
-  const next =
-    invalid.length > 0
-      ? "Next: run `qmd pull --refresh` (or remove the bad cached file)"
-      : "Next: run `qmd pull`";
-  doctorCheck("model cache", false, `${parts.join("; ")}. ${next}`);
-  if (invalid.length > 0) {
-    nextSteps.push(
-      "Run `qmd pull --refresh` to replace invalid cached model files, or delete the listed file and rerun `qmd pull`.",
-    );
-  } else {
-    nextSteps.push(
-      "Run `qmd pull` to download missing embedding/generation/reranking models before `qmd embed` or `qmd query`.",
-    );
-  }
+  const pinned = localModels.map(([role, model]) => `${role}: ${model}`);
+  doctorCheck(
+    "model cache",
+    false,
+    `local model pins refused by this build: ${pinned.join("; ")}. ` +
+      "Next: set each role to a remote URI of the form https://<host>/v1#<model>",
+  );
 }
 
 async function checkEmbeddingVectorSamples(
@@ -5679,24 +5589,12 @@ if (isMain) {
       break;
 
     case "pull": {
-      const refresh =
-        cli.values.refresh === undefined ? false : Boolean(cli.values.refresh);
       const activeModels = resolveModelsForCli();
-      const models = [
+      await pullModels([
         activeModels.embed,
         activeModels.generate,
         activeModels.rerank,
-      ];
-      console.log(`${c.bold}Pulling models${c.reset}`);
-      const results = await pullModels(models, {
-        refresh,
-        cacheDir: DEFAULT_MODEL_CACHE_DIR,
-      });
-      for (const result of results) {
-        const size = formatBytes(result.sizeBytes);
-        const note = result.refreshed ? "refreshed" : "cached/checked";
-        console.log(`- ${result.model} -> ${result.path} (${size}, ${note})`);
-      }
+      ]);
       break;
     }
 
