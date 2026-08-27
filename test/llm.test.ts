@@ -30,7 +30,10 @@ import {
 } from "../src/llm.js";
 
 describe("model name resolution", () => {
-  function withModelEnv(env: Record<string, string | undefined>, fn: () => void): void {
+  function withModelEnv(
+    env: Record<string, string | undefined>,
+    fn: () => void,
+  ): void {
     const previous = {
       QMD_EMBED_MODEL: process.env.QMD_EMBED_MODEL,
       QMD_GENERATE_MODEL: process.env.QMD_GENERATE_MODEL,
@@ -51,38 +54,50 @@ describe("model name resolution", () => {
   }
 
   test("all model roles resolve config hints before env fallbacks", () => {
-    withModelEnv({
-      QMD_EMBED_MODEL: "env-embed",
-      QMD_GENERATE_MODEL: "env-generate",
-      QMD_RERANK_MODEL: "env-rerank",
-    }, () => {
-      const config = {
-        embed: "config-embed",
-        generate: "config-generate",
-        rerank: "config-rerank",
-      };
-      expect(resolveEmbedModel(config)).toBe("config-embed");
-      expect(resolveGenerateModel(config)).toBe("config-generate");
-      expect(resolveRerankModel(config)).toBe("config-rerank");
-      expect(resolveModels(config)).toEqual(config);
-    });
+    withModelEnv(
+      {
+        QMD_EMBED_MODEL: "env-embed",
+        QMD_GENERATE_MODEL: "env-generate",
+        QMD_RERANK_MODEL: "env-rerank",
+      },
+      () => {
+        const config = {
+          embed: "config-embed",
+          generate: "config-generate",
+          rerank: "config-rerank",
+        };
+        expect(resolveEmbedModel(config)).toBe("config-embed");
+        expect(resolveGenerateModel(config)).toBe("config-generate");
+        expect(resolveRerankModel(config)).toBe("config-rerank");
+        expect(resolveModels(config)).toEqual(config);
+      },
+    );
   });
 
   test("LlamaCpp constructor uses the same resolver as status/embed/query helpers", () => {
-    withModelEnv({
-      QMD_EMBED_MODEL: "env-embed",
-      QMD_GENERATE_MODEL: "env-generate",
-      QMD_RERANK_MODEL: "env-rerank",
-    }, () => {
-      const llm = new LlamaCpp({
-        embedModel: "config-embed",
-        generateModel: "config-generate",
-        rerankModel: "config-rerank",
-      });
-      expect(llm.embedModelName).toBe(resolveEmbedModel({ embed: "config-embed" }));
-      expect(llm.generateModelName).toBe(resolveGenerateModel({ generate: "config-generate" }));
-      expect(llm.rerankModelName).toBe(resolveRerankModel({ rerank: "config-rerank" }));
-    });
+    withModelEnv(
+      {
+        QMD_EMBED_MODEL: "env-embed",
+        QMD_GENERATE_MODEL: "env-generate",
+        QMD_RERANK_MODEL: "env-rerank",
+      },
+      () => {
+        const llm = new LlamaCpp({
+          embedModel: "config-embed",
+          generateModel: "config-generate",
+          rerankModel: "config-rerank",
+        });
+        expect(llm.embedModelName).toBe(
+          resolveEmbedModel({ embed: "config-embed" }),
+        );
+        expect(llm.generateModelName).toBe(
+          resolveGenerateModel({ generate: "config-generate" }),
+        );
+        expect(llm.rerankModelName).toBe(
+          resolveRerankModel({ rerank: "config-rerank" }),
+        );
+      },
+    );
   });
 });
 
@@ -90,13 +105,20 @@ describe("model name resolution", () => {
 // Singleton Tests (no model loading required)
 // =============================================================================
 
-describe("Default LlamaCpp Singleton", () => {
+describe("Default backend singleton", () => {
   // Test singleton behavior without resetting to avoid orphan instances
   test("getDefaultLlamaCpp returns same instance on subsequent calls", () => {
     const llm1 = getDefaultLlamaCpp();
     const llm2 = getDefaultLlamaCpp();
     expect(llm1).toBe(llm2);
-    expect(llm1).toBeInstanceOf(LlamaCpp);
+  });
+
+  // The defaults name the remote server, so the default backend is remote.
+  // This assertion used to read `toBeInstanceOf(LlamaCpp)`, which is exactly
+  // the thing this fork forbids: a local backend reached by default.
+  test("the default backend is remote, not a local model", () => {
+    expect(getDefaultLlamaCpp()).not.toBeInstanceOf(LlamaCpp);
+    expect(getDefaultLlamaCpp().embedModelName).toMatch(/^https?:\/\//);
   });
 });
 
@@ -105,8 +127,12 @@ describe("Default LlamaCpp Singleton", () => {
 // =============================================================================
 
 describe("LlamaCpp.modelExists", () => {
+  // These probe the LOCAL backend's own resolution rules, so they construct
+  // one directly. They used to read the default backend, which is now remote
+  // -- and a remote server answering about `hf:org/repo/model.gguf` was
+  // testing the wrong object, not the rule these cases describe.
   test("returns exists:true for HuggingFace model URIs", async () => {
-    const llm = getDefaultLlamaCpp();
+    const llm = new LlamaCpp({});
     const result = await llm.modelExists("hf:org/repo/model.gguf");
 
     expect(result.exists).toBe(true);
@@ -114,7 +140,7 @@ describe("LlamaCpp.modelExists", () => {
   });
 
   test("returns exists:false for non-existent local paths", async () => {
-    const llm = getDefaultLlamaCpp();
+    const llm = new LlamaCpp({});
     const result = await llm.modelExists("/nonexistent/path/model.gguf");
 
     expect(result.exists).toBe(false);
@@ -170,7 +196,9 @@ describe("QMD_LLAMA_GPU resolution", () => {
     try {
       expect(resolveLlamaGpuMode("rocm")).toBe("auto");
       expect(stderrSpy).toHaveBeenCalled();
-      expect(String(stderrSpy.mock.calls[0]?.[0] || "")).toContain("QMD_LLAMA_GPU");
+      expect(String(stderrSpy.mock.calls[0]?.[0] || "")).toContain(
+        "QMD_LLAMA_GPU",
+      );
     } finally {
       stderrSpy.mockRestore();
     }
@@ -188,7 +216,11 @@ describe("native llama stdout containment", () => {
       });
 
       expect(stdoutSpy).not.toHaveBeenCalled();
-      expect(stderrSpy).toHaveBeenCalledWith("cmake build spam\n", undefined, undefined);
+      expect(stderrSpy).toHaveBeenCalledWith(
+        "cmake build spam\n",
+        undefined,
+        undefined,
+      );
     } finally {
       stdoutSpy.mockRestore();
       stderrSpy.mockRestore();
@@ -227,9 +259,15 @@ describe("native llama stdout containment", () => {
       await (second as any).ensureLlama();
 
       expect(stdoutSpy).not.toHaveBeenCalled();
-      expect(stderrSpy).toHaveBeenCalledWith("cmake build spam\n", undefined, undefined);
+      expect(stderrSpy).toHaveBeenCalledWith(
+        "cmake build spam\n",
+        undefined,
+        undefined,
+      );
       expect(calls).toEqual(["cuda", false, false]);
-      expect(String(stderrSpy.mock.calls.map(call => call[0]).join(""))).toContain("skipping previously failed GPU init");
+      expect(
+        String(stderrSpy.mock.calls.map((call) => call[0]).join("")),
+      ).toContain("skipping previously failed GPU init");
     } finally {
       stdoutSpy.mockRestore();
       stderrSpy.mockRestore();
@@ -262,7 +300,9 @@ describe("native llama stdout containment", () => {
       await (first as any).ensureLlama();
       await (second as any).ensureLlama();
 
-      const stderr = String(stderrSpy.mock.calls.map(call => call[0]).join(""));
+      const stderr = String(
+        stderrSpy.mock.calls.map((call) => call[0]).join(""),
+      );
       expect(stderr.match(/no GPU acceleration/g)?.length).toBe(1);
       expect(stderr).toContain("qmd doctor");
       expect(stderr).not.toContain("QMD_STATUS_DEVICE_PROBE");
@@ -297,12 +337,15 @@ describe("native llama stdout containment", () => {
       createEmbeddingContext,
       dispose: vi.fn(async () => {}),
     }));
-    const getLlama = vi.fn(async (options: Record<string, unknown>) => ({
-      gpu: false,
-      cpuMathCores: 4,
-      loadModel,
-      dispose: vi.fn(async () => {}),
-    }) as any);
+    const getLlama = vi.fn(
+      async (options: Record<string, unknown>) =>
+        ({
+          gpu: false,
+          cpuMathCores: 4,
+          loadModel,
+          dispose: vi.fn(async () => {}),
+        }) as any,
+    );
 
     setNodeLlamaCppModuleForTest({
       LlamaLogLevel: { error: "error" },
@@ -316,11 +359,17 @@ describe("native llama stdout containment", () => {
     try {
       const result = await llm.embed("hello world");
       expect(result).toEqual({
-        embedding: [0.10000000149011612, 0.20000000298023224, 0.30000001192092896],
+        embedding: [
+          0.10000000149011612, 0.20000000298023224, 0.30000001192092896,
+        ],
         model: llm.embedModelName,
       });
-      expect(getLlama).toHaveBeenCalledWith(expect.objectContaining({ gpu: false, build: "never" }));
-      expect(loadModel).toHaveBeenCalledWith(expect.objectContaining({ gpuLayers: 0 }));
+      expect(getLlama).toHaveBeenCalledWith(
+        expect.objectContaining({ gpu: false, build: "never" }),
+      );
+      expect(loadModel).toHaveBeenCalledWith(
+        expect.objectContaining({ gpuLayers: 0 }),
+      );
       expect(getEmbeddingFor).toHaveBeenCalledWith("hello world");
     } finally {
       await llm.dispose();
@@ -336,27 +385,37 @@ describe("native llama stdout containment", () => {
 
 describe("LLM context parallelism safety", () => {
   test("defaults Windows CUDA to one context to avoid ggml-cuda.cu:98 crashes", () => {
-    expect(resolveSafeParallelism({
-      gpu: "cuda",
-      platform: "win32",
-      computed: 8,
-      envValue: undefined,
-    })).toBe(1);
+    expect(
+      resolveSafeParallelism({
+        gpu: "cuda",
+        platform: "win32",
+        computed: 8,
+        envValue: undefined,
+      }),
+    ).toBe(1);
   });
 
   test("keeps non-Windows and non-CUDA backends on computed parallelism", () => {
-    expect(resolveSafeParallelism({ gpu: "cuda", platform: "linux", computed: 8 })).toBe(8);
-    expect(resolveSafeParallelism({ gpu: "vulkan", platform: "win32", computed: 8 })).toBe(8);
-    expect(resolveSafeParallelism({ gpu: false, platform: "win32", computed: 4 })).toBe(4);
+    expect(
+      resolveSafeParallelism({ gpu: "cuda", platform: "linux", computed: 8 }),
+    ).toBe(8);
+    expect(
+      resolveSafeParallelism({ gpu: "vulkan", platform: "win32", computed: 8 }),
+    ).toBe(8);
+    expect(
+      resolveSafeParallelism({ gpu: false, platform: "win32", computed: 4 }),
+    ).toBe(4);
   });
 
   test("QMD_EMBED_PARALLELISM overrides the Windows CUDA safety default", () => {
-    expect(resolveSafeParallelism({
-      gpu: "cuda",
-      platform: "win32",
-      computed: 8,
-      envValue: "2",
-    })).toBe(2);
+    expect(
+      resolveSafeParallelism({
+        gpu: "cuda",
+        platform: "win32",
+        computed: 8,
+        envValue: "2",
+      }),
+    ).toBe(2);
   });
 
   test("QMD_EMBED_PARALLELISM clamps invalid values and warns", () => {
@@ -365,7 +424,9 @@ describe("LLM context parallelism safety", () => {
       expect(resolveParallelismOverride("0")).toBeUndefined();
       expect(resolveParallelismOverride("bad")).toBeUndefined();
       expect(stderrSpy).toHaveBeenCalledTimes(2);
-      expect(String(stderrSpy.mock.calls[0]?.[0] || "")).toContain("QMD_EMBED_PARALLELISM");
+      expect(String(stderrSpy.mock.calls[0]?.[0] || "")).toContain(
+        "QMD_EMBED_PARALLELISM",
+      );
     } finally {
       stderrSpy.mockRestore();
     }
@@ -419,7 +480,9 @@ describe("LlamaCpp expand context size config", () => {
       const llm = new LlamaCpp({}) as any;
       expect(llm.expandContextSize).toBe(defaultExpandContextSize);
       expect(stderrSpy).toHaveBeenCalled();
-      expect(String(stderrSpy.mock.calls[0]?.[0] || "")).toContain("QMD_EXPAND_CONTEXT_SIZE");
+      expect(String(stderrSpy.mock.calls[0]?.[0] || "")).toContain(
+        "QMD_EXPAND_CONTEXT_SIZE",
+      );
     } finally {
       stderrSpy.mockRestore();
       if (prev === undefined) delete process.env.QMD_EXPAND_CONTEXT_SIZE;
@@ -429,15 +492,20 @@ describe("LlamaCpp expand context size config", () => {
 
   test("throws when config expandContextSize is invalid", () => {
     expect(() => new LlamaCpp({ expandContextSize: 0 })).toThrow(
-      "Invalid expandContextSize: 0. Must be a positive integer."
+      "Invalid expandContextSize: 0. Must be a positive integer.",
     );
   });
 });
 
 describe("LlamaCpp model resolution (config > env > default)", () => {
-  const HARDCODED_EMBED = "hf:ggml-org/embeddinggemma-300M-GGUF/embeddinggemma-300M-Q8_0.gguf";
-  const HARDCODED_RERANK = "hf:ggml-org/Qwen3-Reranker-0.6B-Q8_0-GGUF/qwen3-reranker-0.6b-q8_0.gguf";
-  const HARDCODED_GENERATE = "hf:tobil/qmd-query-expansion-1.7B-gguf/qmd-query-expansion-1.7B-q4_k_m.gguf";
+  // The defaults name the remote server rather than a gguf to download, so a
+  // config that omits a role gets a working remote one instead of a local
+  // load that now throws. Kept as literals rather than imported from llm.ts:
+  // asserting a constant against itself would pass however it changed.
+  const HARDCODED_EMBED = "https://llama-swap.rodaddy.live/v1#embed-gemma";
+  const HARDCODED_RERANK = "https://llama-swap.rodaddy.live/v1#rerank-qwen3";
+  const HARDCODED_GENERATE =
+    "https://llama-swap.rodaddy.live/v1#qmd-query-expansion";
 
   test("uses hardcoded default when no config or env is set", () => {
     const prev = process.env.QMD_EMBED_MODEL;
@@ -509,7 +577,7 @@ describe("LlamaCpp rerank deduping", () => {
     const llm = new LlamaCpp({}) as any;
     llm._ciMode = false; // allow unit test even in CI (mocked, no real models)
     const rankAll = vi.fn(async (_query: string, docs: string[]) =>
-      docs.map((doc) => doc === "shared chunk" ? 0.9 : 0.2)
+      docs.map((doc) => (doc === "shared chunk" ? 0.9 : 0.2)),
     );
 
     llm.touchActivity = vi.fn();
@@ -526,10 +594,15 @@ describe("LlamaCpp rerank deduping", () => {
     ]);
 
     expect(rankAll).toHaveBeenCalledTimes(1);
-    expect(rankAll).toHaveBeenCalledWith("query", ["shared chunk", "different chunk"]);
+    expect(rankAll).toHaveBeenCalledWith("query", [
+      "shared chunk",
+      "different chunk",
+    ]);
     expect(result.results).toHaveLength(3);
 
-    const scoreByFile = new Map(result.results.map((item) => [item.file, item.score]));
+    const scoreByFile = new Map(
+      result.results.map((item) => [item.file, item.score]),
+    );
     expect(scoreByFile.get("a.md")).toBe(0.9);
     expect(scoreByFile.get("b.md")).toBe(0.9);
     expect(scoreByFile.get("c.md")).toBe(0.2);
@@ -544,7 +617,9 @@ describe("LlamaCpp.getDeviceInfo", () => {
       supportsGpuOffloading: true,
       cpuMathCores: 8,
       getGpuDeviceNames: vi.fn().mockResolvedValue(["Apple GPU"]),
-      getVramState: vi.fn().mockResolvedValue({ total: 1024, used: 256, free: 768 }),
+      getVramState: vi
+        .fn()
+        .mockResolvedValue({ total: 1024, used: 256, free: 768 }),
     };
 
     llm.ensureLlama = vi.fn().mockResolvedValue(fakeLlama);
@@ -642,14 +717,19 @@ describe.skipIf(!!process.env.CI)("LlamaCpp Integration", () => {
       const batchResults = await llm.embedBatch(texts);
 
       // Get individual embeddings
-      const individualResults = await Promise.all(texts.map(t => llm.embed(t)));
+      const individualResults = await Promise.all(
+        texts.map((t) => llm.embed(t)),
+      );
 
       // Compare - should be identical
       for (let i = 0; i < texts.length; i++) {
         expect(batchResults[i]).not.toBeNull();
         expect(individualResults[i]).not.toBeNull();
         for (let j = 0; j < batchResults[i]!.embedding.length; j++) {
-          expect(batchResults[i]!.embedding[j]).toBeCloseTo(individualResults[i]!.embedding[j]!, 5);
+          expect(batchResults[i]!.embedding[j]).toBeCloseTo(
+            individualResults[i]!.embedding[j]!,
+            5,
+          );
         }
       }
     });
@@ -676,13 +756,22 @@ describe.skipIf(!!process.env.CI)("LlamaCpp Integration", () => {
       freshLlm.ensureEmbedContexts = vi.fn().mockResolvedValue([ctx1, ctx2]);
 
       const texts = ["one", "two", "three", "four"];
-      const results: (EmbeddingResult | null)[] = await freshLlm.embedBatch(texts);
+      const results: (EmbeddingResult | null)[] =
+        await freshLlm.embedBatch(texts);
 
       expect(freshLlm.ensureEmbedContexts).toHaveBeenCalledTimes(1);
-      expect(ctx1.getEmbeddingFor.mock.calls.map(([text]: [string]) => text)).toEqual(["one", "two"]);
-      expect(ctx2.getEmbeddingFor.mock.calls.map(([text]: [string]) => text)).toEqual(["three", "four"]);
-      expect(results.map((result) => result?.embedding[0])).toEqual([3, 3, 5, 4]);
-      expect(results.map((result) => result?.embedding[1])).toEqual([1, 1, 2, 2]);
+      expect(
+        ctx1.getEmbeddingFor.mock.calls.map(([text]: [string]) => text),
+      ).toEqual(["one", "two"]);
+      expect(
+        ctx2.getEmbeddingFor.mock.calls.map(([text]: [string]) => text),
+      ).toEqual(["three", "four"]);
+      expect(results.map((result) => result?.embedding[0])).toEqual([
+        3, 3, 5, 4,
+      ]);
+      expect(results.map((result) => result?.embedding[1])).toEqual([
+        1, 1, 2, 2,
+      ]);
     });
 
     test("handles concurrent embedBatch calls on fresh instance without race condition", async () => {
@@ -695,27 +784,31 @@ describe.skipIf(!!process.env.CI)("LlamaCpp Integration", () => {
       //
       // The fix uses a promise guard to ensure only one context creation runs at a time.
       // We verify this by instrumenting createEmbeddingContext to count invocations.
-      
+
       const freshLlm = new LlamaCpp({});
       let contextCreateCount = 0;
-      
+
       // Instrument the model's createEmbeddingContext to count calls
-      const originalEnsureEmbedModel = (freshLlm as any).ensureEmbedModel.bind(freshLlm);
+      const originalEnsureEmbedModel = (freshLlm as any).ensureEmbedModel.bind(
+        freshLlm,
+      );
       let modelInstrumented = false;
-      (freshLlm as any).ensureEmbedModel = async function() {
+      (freshLlm as any).ensureEmbedModel = async function () {
         const model = await originalEnsureEmbedModel();
         if (!modelInstrumented) {
           modelInstrumented = true;
           const originalCreate = model.createEmbeddingContext.bind(model);
-          model.createEmbeddingContext = async function(...args: any[]) {
+          model.createEmbeddingContext = async function (...args: any[]) {
             contextCreateCount++;
             return originalCreate(...args);
           };
         }
         return model;
       };
-      
-      const texts = Array(10).fill(null).map((_, i) => `Document ${i}`);
+
+      const texts = Array(10)
+        .fill(null)
+        .map((_, i) => `Document ${i}`);
 
       // Call embedBatch 5 TIMES in parallel on fresh instance.
       // Without the promise guard fix, this would create 5 contexts (one per call).
@@ -730,8 +823,8 @@ describe.skipIf(!!process.env.CI)("LlamaCpp Integration", () => {
 
       const allResults = batches.flat();
       expect(allResults).toHaveLength(10);
-      
-      const successCount = allResults.filter(r => r !== null).length;
+
+      const successCount = allResults.filter((r) => r !== null).length;
       expect(successCount).toBe(10);
 
       // THE KEY ASSERTION: Contexts should be created once (by ensureEmbedContexts),
@@ -740,10 +833,12 @@ describe.skipIf(!!process.env.CI)("LlamaCpp Integration", () => {
       // Without the fix, contextCreateCount would be 5× the intended count (one set per concurrent call).
       // With the promise guard, contexts are created exactly once regardless of concurrent callers.
       // The count depends on VRAM (computeParallelism), but should be ≤ 8 (the cap).
-      console.log(`Context creation count: ${contextCreateCount} (expected: ≤ 8, not 5× duplicated)`);
+      console.log(
+        `Context creation count: ${contextCreateCount} (expected: ≤ 8, not 5× duplicated)`,
+      );
       expect(contextCreateCount).toBeGreaterThanOrEqual(1);
       expect(contextCreateCount).toBeLessThanOrEqual(8);
-      
+
       await freshLlm.dispose();
     }, 60000);
   });
@@ -752,7 +847,10 @@ describe.skipIf(!!process.env.CI)("LlamaCpp Integration", () => {
     test("scores capital of France question correctly", async () => {
       const query = "What is the capital of France?";
       const documents: RerankDocument[] = [
-        { file: "butterflies.txt", text: "Butterflies indeed fly through the garden." },
+        {
+          file: "butterflies.txt",
+          text: "Butterflies indeed fly through the garden.",
+        },
         { file: "france.txt", text: "The capital of France is Paris." },
         { file: "canada.txt", text: "The capital of Canada is Ottawa." },
       ];
@@ -776,10 +874,22 @@ describe.skipIf(!!process.env.CI)("LlamaCpp Integration", () => {
     test("scores authentication query correctly", async () => {
       const query = "How do I configure authentication?";
       const documents: RerankDocument[] = [
-        { file: "weather.md", text: "The weather today is sunny with mild temperatures." },
-        { file: "auth.md", text: "Authentication can be configured by setting the AUTH_SECRET environment variable." },
-        { file: "pizza.md", text: "Our restaurant serves the best pizza in town." },
-        { file: "jwt.md", text: "JWT authentication requires a secret key and expiration time." },
+        {
+          file: "weather.md",
+          text: "The weather today is sunny with mild temperatures.",
+        },
+        {
+          file: "auth.md",
+          text: "Authentication can be configured by setting the AUTH_SECRET environment variable.",
+        },
+        {
+          file: "pizza.md",
+          text: "Our restaurant serves the best pizza in town.",
+        },
+        {
+          file: "jwt.md",
+          text: "JWT authentication requires a secret key and expiration time.",
+        },
       ];
 
       const result = await llm.rerank(query, documents);
@@ -800,9 +910,18 @@ describe.skipIf(!!process.env.CI)("LlamaCpp Integration", () => {
     test("handles programming queries correctly", async () => {
       const query = "How do I handle errors in JavaScript?";
       const documents: RerankDocument[] = [
-        { file: "cooking.md", text: "To make a good pasta, boil water and add salt." },
-        { file: "errors.md", text: "Use try-catch blocks to handle JavaScript errors gracefully." },
-        { file: "python.md", text: "Python uses try-except for exception handling." },
+        {
+          file: "cooking.md",
+          text: "To make a good pasta, boil water and add salt.",
+        },
+        {
+          file: "errors.md",
+          text: "Use try-catch blocks to handle JavaScript errors gracefully.",
+        },
+        {
+          file: "python.md",
+          text: "Python uses try-except for exception handling.",
+        },
       ];
 
       const result = await llm.rerank(query, documents);
@@ -822,7 +941,9 @@ describe.skipIf(!!process.env.CI)("LlamaCpp Integration", () => {
     });
 
     test("handles single document", async () => {
-      const result = await llm.rerank("test", [{ file: "doc.md", text: "content" }]);
+      const result = await llm.rerank("test", [
+        { file: "doc.md", text: "content" },
+      ]);
       expect(result.results).toHaveLength(1);
       expect(result.results[0]!.file).toBe("doc.md");
     });
@@ -842,8 +963,14 @@ describe.skipIf(!!process.env.CI)("LlamaCpp Integration", () => {
     test("returns scores between 0 and 1", async () => {
       const documents: RerankDocument[] = [
         { file: "a.md", text: "The quick brown fox jumps over the lazy dog." },
-        { file: "b.md", text: "Machine learning algorithms process data efficiently." },
-        { file: "c.md", text: "React components use JSX syntax for rendering." },
+        {
+          file: "b.md",
+          text: "Machine learning algorithms process data efficiently.",
+        },
+        {
+          file: "c.md",
+          text: "React components use JSX syntax for rendering.",
+        },
       ];
 
       const result = await llm.rerank("Tell me about animals", documents);
@@ -896,10 +1023,13 @@ describe.skipIf(!!process.env.CI)("LlamaCpp Integration", () => {
       (freshLlm as any).ensureRerankModel = async () => fakeModel;
       (freshLlm as any).ensureRerankContexts = async () => fakeContexts;
 
-      const documents: RerankDocument[] = Array.from({ length: 20 }, (_, i) => ({
-        file: `doc${i}.md`,
-        text: `Document number ${i}`,
-      }));
+      const documents: RerankDocument[] = Array.from(
+        { length: 20 },
+        (_, i) => ({
+          file: `doc${i}.md`,
+          text: `Document number ${i}`,
+        }),
+      );
 
       const result = await freshLlm.rerank("topic 1", documents);
 
@@ -911,7 +1041,8 @@ describe.skipIf(!!process.env.CI)("LlamaCpp Integration", () => {
       // The reranker context is created with contextSize=2048. Documents that
       // exceed the token budget (contextSize - template overhead - query tokens)
       // should be silently truncated rather than crashing.
-      const paragraph = "The quick brown fox jumps over the lazy dog near the riverbank. " +
+      const paragraph =
+        "The quick brown fox jumps over the lazy dog near the riverbank. " +
         "Authentication tokens must be validated on every request to ensure security. " +
         "Database queries should use prepared statements to prevent SQL injection attacks. " +
         "The deployment pipeline includes linting, testing, building, and publishing stages. ";
@@ -920,12 +1051,17 @@ describe.skipIf(!!process.env.CI)("LlamaCpp Integration", () => {
 
       const query = "How do I configure authentication?";
       const documents: RerankDocument[] = [
-        { file: "short-relevant.md", text: "Authentication can be configured by setting AUTH_SECRET." },
+        {
+          file: "short-relevant.md",
+          text: "Authentication can be configured by setting AUTH_SECRET.",
+        },
         { file: "long-doc.md", text: longText },
         { file: "short-irrelevant.md", text: "The weather is sunny today." },
       ];
 
-      console.log(`Long doc length: ${longText.length} chars (~${Math.round(longText.length / 4)} tokens)`);
+      console.log(
+        `Long doc length: ${longText.length} chars (~${Math.round(longText.length / 4)} tokens)`,
+      );
 
       const result = await llm.rerank(query, documents);
 
@@ -962,10 +1098,12 @@ describe.skipIf(!!process.env.CI)("LlamaCpp Integration", () => {
     }, 30000); // 30s timeout for model loading
 
     test("can exclude lexical queries", async () => {
-      const result = await llm.expandQuery("authentication setup", { includeLexical: false });
+      const result = await llm.expandQuery("authentication setup", {
+        includeLexical: false,
+      });
 
       // Should not contain any 'lex' type entries
-      const lexEntries = result.filter(q => q.type === "lex");
+      const lexEntries = result.filter((q) => q.type === "lex");
       expect(lexEntries).toHaveLength(0);
     });
   });
@@ -1056,11 +1194,16 @@ describe.skipIf(!!process.env.CI)("LLM Session Management", () => {
           { file: "b.txt", text: "Dogs are great pets." },
         ];
 
-        const result = await session.rerank("What is the capital of France?", documents);
+        const result = await session.rerank(
+          "What is the capital of France?",
+          documents,
+        );
 
         expect(result.results).toHaveLength(2);
         expect(result.results[0]!.file).toBe("a.txt");
-        expect(result.results[0]!.score).toBeGreaterThan(result.results[1]!.score);
+        expect(result.results[0]!.score).toBeGreaterThan(
+          result.results[1]!.score,
+        );
       });
     });
 
@@ -1068,13 +1211,16 @@ describe.skipIf(!!process.env.CI)("LLM Session Management", () => {
       let aborted = false;
 
       try {
-        await withLLMSession(async (session) => {
-          // Wait longer than max duration
-          await new Promise(resolve => setTimeout(resolve, 150));
+        await withLLMSession(
+          async (session) => {
+            // Wait longer than max duration
+            await new Promise((resolve) => setTimeout(resolve, 150));
 
-          // This operation should throw because session was aborted
-          await session.embed("test");
-        }, { maxDuration: 50 }); // 50ms max
+            // This operation should throw because session was aborted
+            await session.embed("test");
+          },
+          { maxDuration: 50 },
+        ); // 50ms max
       } catch (err) {
         if (err instanceof SessionReleasedError) {
           aborted = true;
@@ -1090,17 +1236,20 @@ describe.skipIf(!!process.env.CI)("LLM Session Management", () => {
       const abortController = new AbortController();
       let sessionAborted = false;
 
-      const promise = withLLMSession(async (session) => {
-        // Wait a bit then check if aborted
-        await new Promise(resolve => setTimeout(resolve, 100));
+      const promise = withLLMSession(
+        async (session) => {
+          // Wait a bit then check if aborted
+          await new Promise((resolve) => setTimeout(resolve, 100));
 
-        if (!session.isValid) {
-          sessionAborted = true;
-          throw new SessionReleasedError("Session aborted");
-        }
+          if (!session.isValid) {
+            sessionAborted = true;
+            throw new SessionReleasedError("Session aborted");
+          }
 
-        return "should not reach";
-      }, { signal: abortController.signal });
+          return "should not reach";
+        },
+        { signal: abortController.signal },
+      );
 
       // Abort after 20ms
       setTimeout(() => abortController.abort(), 20);
@@ -1136,7 +1285,7 @@ describe.skipIf(!!process.env.CI)("LLM Session Management", () => {
       await expect(
         withLLMSession(async () => {
           throw customError;
-        })
+        }),
       ).rejects.toThrow("Custom test error");
     });
   });

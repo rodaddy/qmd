@@ -43,11 +43,67 @@ type NodeLlamaCppModule = {
   LlamaLogLevel: { error: unknown };
 };
 
+/**
+ * Raised when something asks for a model that would run in this process.
+ *
+ * This fork serves every role from a remote server, so a local load is never
+ * a slower-but-working fallback: it is a configuration that has silently
+ * stopped doing what it says. The failure modes it replaces are both worse
+ * than an error -- `qmd embed` handing a `https://` model field to
+ * node-llama-cpp, which treats it as something to DOWNLOAD (404, exit 1), and
+ * a stripped-to-undefined role falling back to a built-in `hf:` default and
+ * embedding locally while reporting success.
+ *
+ * The message names the role, the URI that produced it, and the one fix,
+ * because every instance of this is a config field that needs editing.
+ */
+/**
+ * Rethrow a local-model refusal past a catch that degrades to null.
+ *
+ * The embed paths treat a per-item failure as "this document did not embed"
+ * and continue, which is right for a bad document and wrong for a
+ * misconfiguration: every item fails the same way, the run reports partial
+ * success, and the operator learns nothing. A configuration error is not a
+ * data error, so it must not be absorbed by the data error path.
+ */
+export function rethrowIfLocalModelsDisabled(err: unknown): void {
+  if (err instanceof LocalModelsDisabledError) throw err;
+}
+
+export class LocalModelsDisabledError extends Error {
+  readonly role: string;
+  readonly uri: string | undefined;
+  /** CLI exit code, distinct from the generic 1 so scripts can branch on it. */
+  static readonly EXIT_CODE = 3;
+
+  constructor(role: string, uri?: string) {
+    super(
+      `Local models are disabled in this build, but the ${role} role asked ` +
+        `to load one${uri ? `: ${JSON.stringify(uri)}` : ""}. ` +
+        `Set models.${role} (or QMD_${role.toUpperCase()}_MODEL) to a remote ` +
+        `URI of the form https://host/v1#model-name.`,
+    );
+    this.name = "LocalModelsDisabledError";
+    this.role = role;
+    this.uri = uri;
+  }
+}
+
+/**
+ * The one door to the native runtime, closed.
+ *
+ * Every local path -- model resolve, context creation, tokenize, device
+ * probe, `qmd pull` -- goes through this import, so refusing here means no
+ * gguf can be opened however the caller got there. Guarding the constructors
+ * individually would leave whichever one nobody thought of.
+ */
 let nodeLlamaCppImport: Promise<NodeLlamaCppModule> | null = null;
-async function loadNodeLlamaCpp(): Promise<NodeLlamaCppModule> {
-  nodeLlamaCppImport ??= withNativeStdoutRedirectedToStderr(
-    () => import("node-llama-cpp") as Promise<NodeLlamaCppModule>,
-  );
+async function loadNodeLlamaCpp(
+  role = "model",
+  uri?: string,
+): Promise<NodeLlamaCppModule> {
+  if (nodeLlamaCppImport === null)
+    throw new LocalModelsDisabledError(role, uri);
   return nodeLlamaCppImport;
 }
 
@@ -307,16 +363,18 @@ export type RerankDocument = {
 // Model Configuration
 // =============================================================================
 
-// HuggingFace model URIs for node-llama-cpp
-// Format: hf:<user>/<repo>/<file>
-// Override via QMD_EMBED_MODEL env var (e.g. hf:Qwen/Qwen3-Embedding-0.6B-GGUF/Qwen3-Embedding-0.6B-Q8_0.gguf)
-const DEFAULT_EMBED_MODEL =
-  "hf:ggml-org/embeddinggemma-300M-GGUF/embeddinggemma-300M-Q8_0.gguf";
-const DEFAULT_RERANK_MODEL =
-  "hf:ggml-org/Qwen3-Reranker-0.6B-Q8_0-GGUF/qwen3-reranker-0.6b-q8_0.gguf";
-// const DEFAULT_GENERATE_MODEL = "hf:ggml-org/Qwen3-0.6B-GGUF/Qwen3-0.6B-Q8_0.gguf";
-const DEFAULT_GENERATE_MODEL =
-  "hf:tobil/qmd-query-expansion-1.7B-gguf/qmd-query-expansion-1.7B-q4_k_m.gguf";
+// Remote model URIs: base URL plus the model name the server routes on.
+// Format: https://host/v1#model-name -- see parseRemoteModelUri.
+//
+// This fork runs no model in-process (LocalModelsDisabledError), so the
+// defaults must name the server rather than a gguf to download. A fresh
+// index.yml therefore pins remote, and a config that omits a role gets a
+// working remote one instead of a local load that now throws.
+// Override via QMD_EMBED_MODEL / QMD_RERANK_MODEL / QMD_GENERATE_MODEL.
+const REMOTE_MODEL_BASE_URL = "https://llama-swap.rodaddy.live/v1";
+const DEFAULT_EMBED_MODEL = `${REMOTE_MODEL_BASE_URL}#embed-gemma`;
+const DEFAULT_RERANK_MODEL = `${REMOTE_MODEL_BASE_URL}#rerank-qwen3`;
+const DEFAULT_GENERATE_MODEL = `${REMOTE_MODEL_BASE_URL}#qmd-query-expansion`;
 
 // Alternative generation models for query expansion:
 // LiquidAI LFM2 - hybrid architecture optimized for edge/on-device inference
@@ -529,66 +587,16 @@ function validateGgufFile(filePath: string, modelUri: string): void {
 }
 
 export async function pullModels(
-  models: string[],
-  options: { refresh?: boolean; cacheDir?: string } = {},
+  _models: string[],
+  _options: { refresh?: boolean; cacheDir?: string } = {},
 ): Promise<PullResult[]> {
-  const cacheDir = options.cacheDir || MODEL_CACHE_DIR;
-  if (!existsSync(cacheDir)) {
-    mkdirSync(cacheDir, { recursive: true });
-  }
-
-  const results: PullResult[] = [];
-  for (const model of models) {
-    let refreshed = false;
-    const hfRef = parseHfUri(model);
-    const filename = model.split("/").pop();
-    const entries = readdirSync(cacheDir, { withFileTypes: true });
-    const cached = filename
-      ? entries
-          .filter((entry) => entry.isFile() && entry.name.includes(filename))
-          .map((entry) => join(cacheDir, entry.name))
-      : [];
-
-    if (hfRef && filename) {
-      const etagPath = join(cacheDir, `${filename}.etag`);
-      const remoteEtag = await getRemoteEtag(hfRef);
-      const localEtag = existsSync(etagPath)
-        ? readFileSync(etagPath, "utf-8").trim()
-        : null;
-      const shouldRefresh =
-        options.refresh ||
-        !remoteEtag ||
-        remoteEtag !== localEtag ||
-        cached.length === 0;
-
-      if (shouldRefresh) {
-        for (const candidate of cached) {
-          if (existsSync(candidate)) unlinkSync(candidate);
-        }
-        if (existsSync(etagPath)) unlinkSync(etagPath);
-        refreshed = cached.length > 0;
-      }
-    } else if (options.refresh && filename) {
-      for (const candidate of cached) {
-        if (existsSync(candidate)) unlinkSync(candidate);
-        refreshed = true;
-      }
-    }
-
-    const { resolveModelFile } = await loadNodeLlamaCpp();
-    const path = await resolveModelFile(model, cacheDir);
-    validateGgufFile(path, model);
-    const sizeBytes = existsSync(path) ? statSync(path).size : 0;
-    if (hfRef && filename) {
-      const remoteEtag = await getRemoteEtag(hfRef);
-      if (remoteEtag) {
-        const etagPath = join(cacheDir, `${filename}.etag`);
-        writeFileSync(etagPath, remoteEtag + "\n", "utf-8");
-      }
-    }
-    results.push({ model, path, sizeBytes, refreshed });
-  }
-  return results;
+  // Downloading a gguf is the one thing this command does, and this build
+  // cannot run one. Refusing here rather than at the download call is
+  // deliberate: the removed body unlinked cached files and etags BEFORE
+  // fetching, so a gate further in would have deleted a model and then
+  // declined to replace it -- worse than either outcome alone. A remote role
+  // needs no pull at all; the server holds the weights.
+  throw new LocalModelsDisabledError("pull", _models[0]);
 }
 
 // =============================================================================
@@ -649,6 +657,22 @@ export interface LLM {
   ): Promise<RerankResult>;
 
   /**
+   * Tokenize text with the embedding model's own tokenizer.
+   *
+   * On the interface because chunking is sized in tokens and a chunk must be
+   * measured by the tokenizer that will actually embed it. store.ts previously
+   * reached past this interface to the local backend, which loaded a gguf on a
+   * machine whose embed role was remote -- the exact failure the remote
+   * backend exists to prevent.
+   */
+  tokenize(text: string): Promise<readonly number[]>;
+
+  /**
+   * Turn token ids back into text, for truncating a chunk to a token budget.
+   */
+  detokenize(tokens: readonly number[]): Promise<string>;
+
+  /**
    * The embed model field this backend was configured with.
    *
    * On the interface because callers use it to fingerprint stored vectors and
@@ -656,6 +680,17 @@ export interface LLM {
    * actually computes the embeddings, not a global default.
    */
   readonly embedModelName: string;
+
+  /**
+   * The generate and rerank model fields this backend was configured with.
+   *
+   * Alongside embedModelName for the same reason: callers default a model
+   * argument from the active backend, and a default read from a global
+   * constant rather than the live backend is how a remote configuration ends
+   * up sending `hf:ggml-org/...` to a server that has no such route.
+   */
+  readonly generateModelName: string;
+  readonly rerankModelName: string;
 
   /**
    * Dispose of resources
@@ -1013,8 +1048,12 @@ export class LlamaCpp implements LLM {
     if (!this.llama) {
       const gpuMode = resolveLlamaGpuMode();
 
+      // The runtime loads before any model is resolved, so this is the first
+      // refusal point on every local path. It names the embed role because
+      // that is the role whose URI put us here in practice (chunking and
+      // embedding); resolveModel names the exact role and URI further in.
       const { getLlama, getLlamaGpuTypes, LlamaLogLevel } =
-        await loadNodeLlamaCpp();
+        await loadNodeLlamaCpp("embed", this.embedModelUri);
       const loadLlama = async (
         gpu: LlamaGpuMode,
         sourceBuildAllowed = allowBuild,
@@ -1138,7 +1177,7 @@ export class LlamaCpp implements LLM {
   private async resolveModel(modelUri: string): Promise<string> {
     this.ensureModelCacheDir();
     // resolveModelFile handles HF URIs and downloads to the cache dir
-    const { resolveModelFile } = await loadNodeLlamaCpp();
+    const { resolveModelFile } = await loadNodeLlamaCpp("embed", modelUri);
     const modelPath = await resolveModelFile(modelUri, this.modelCacheDir);
     validateGgufFile(modelPath, modelUri);
     return modelPath;
@@ -1415,14 +1454,19 @@ export class LlamaCpp implements LLM {
   }
 
   /**
-   * Detokenize token IDs back to text
+   * Detokenize token IDs back to text.
+   *
+   * Takes plain numbers to satisfy the LLM interface, which both backends
+   * implement: node-llama-cpp's Token is a branded number, and a remote
+   * tokenizer returns unbranded ids off the wire. The brand is a compile-time
+   * marker with no runtime representation, so the cast is a re-labelling.
    */
-  async detokenize(tokens: readonly LlamaToken[]): Promise<string> {
+  async detokenize(tokens: readonly number[]): Promise<string> {
     await this.ensureEmbedContext();
     if (!this.embedModel) {
       throw new Error("Embed model not loaded");
     }
-    return this.embedModel.detokenize(tokens);
+    return this.embedModel.detokenize(tokens as readonly LlamaToken[]);
   }
 
   // ==========================================================================
@@ -1499,6 +1543,7 @@ export class LlamaCpp implements LLM {
         model: options.model ?? this.embedModelUri,
       };
     } catch (error) {
+      rethrowIfLocalModelsDisabled(error);
       console.error("Embedding error:", error);
       return null;
     }
@@ -1547,6 +1592,7 @@ export class LlamaCpp implements LLM {
               model: options.model ?? this.embedModelUri,
             });
           } catch (err) {
+            rethrowIfLocalModelsDisabled(err);
             console.error("Embedding error for text:", err);
             embeddings.push(null);
           }
@@ -1583,6 +1629,7 @@ export class LlamaCpp implements LLM {
                 model: options.model ?? this.embedModelUri,
               });
             } catch (err) {
+              rethrowIfLocalModelsDisabled(err);
               console.error("Embedding error for text:", err);
               results.push(null);
             }
@@ -2498,6 +2545,14 @@ class HybridLLM implements LLM {
     return this.models.embed;
   }
 
+  get generateModelName(): string {
+    return this.models.generate;
+  }
+
+  get rerankModelName(): string {
+    return this.models.rerank;
+  }
+
   embed(text: string, options?: EmbedOptions): Promise<EmbeddingResult | null> {
     return this.backend("embed").embed(text, options);
   }
@@ -2535,6 +2590,20 @@ class HybridLLM implements LLM {
     return isRemoteModelUri(model)
       ? this.remote.modelExists(model)
       : getLocalLlamaCpp(this.models).modelExists(model);
+  }
+
+  /**
+   * Tokenization follows the EMBED role specifically, not the generic
+   * backend: chunk sizes must be measured by the tokenizer of the model that
+   * will embed the chunk, even in a split configuration where generate or
+   * rerank live on the other side.
+   */
+  tokenize(text: string): Promise<readonly number[]> {
+    return this.backend("embed").tokenize(text);
+  }
+
+  detokenize(tokens: readonly number[]): Promise<string> {
+    return this.backend("embed").detokenize(tokens);
   }
 
   async dispose(): Promise<void> {

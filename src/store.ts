@@ -31,11 +31,9 @@ import {
 import fastGlob from "fast-glob";
 import { qmdHomedir } from "./paths.js";
 import {
-  LlamaCpp,
   type LLM,
   createLLM,
   getDefaultLlamaCpp,
-  getLocalLlamaCpp,
   formatQueryForEmbedding,
   formatDocForEmbedding,
   withLLMSessionForLlm,
@@ -1706,8 +1704,14 @@ export type Store = {
   db: Database;
   dbPath: string;
   backend: Backend;
-  /** Optional LlamaCpp instance for this store (overrides the global singleton) */
-  llm?: LlamaCpp;
+  /**
+   * Optional backend for this store, overriding the global singleton.
+   *
+   * Typed as the interface, not LlamaCpp: a store whose config names a remote
+   * server holds a RemoteLLM (or a HybridLLM), and naming the local class here
+   * is what forced index.ts to construct one regardless of configuration.
+   */
+  llm?: LLM;
   close: () => void;
   ensureVecTable: (dimensions: number) => void;
 
@@ -4113,6 +4117,10 @@ export async function chunkDocumentByTokens(
   chunkStrategy: ChunkStrategy = "regex",
   signal?: AbortSignal,
 ): Promise<{ text: string; pos: number; tokens: number }[]> {
+  // The configured backend, whatever its transport. Chunks are sized in
+  // tokens for the model that will embed them, so the count must come from
+  // that model's tokenizer -- reaching for the local backend here loaded a
+  // gguf even when the embed role was a remote URL.
   const llm = getDefaultLlamaCpp();
 
   // Use moderate chars/token estimate (prose ~4, code ~2, mixed ~3)
@@ -4146,7 +4154,7 @@ export async function chunkDocumentByTokens(
   ): Promise<void> => {
     if (signal?.aborted) return;
 
-    const tokens = await getLocalLlamaCpp().tokenize(text);
+    const tokens = await llm.tokenize(text);
     if (tokens.length <= maxTokens || text.length <= 1) {
       results.push({ text, pos, tokens: tokens.length });
       return;
@@ -4190,7 +4198,7 @@ export async function chunkDocumentByTokens(
 
     if (subChunks.length <= 1 || subChunks[0]?.text.length === text.length) {
       const fallbackTokens = tokens.slice(0, Math.max(1, maxTokens));
-      const truncatedText = await getLocalLlamaCpp().detokenize(fallbackTokens);
+      const truncatedText = await llm.detokenize(fallbackTokens);
       results.push({
         text: truncatedText,
         pos,
@@ -5445,7 +5453,7 @@ async function getEmbedding(
   model: string,
   isQuery: boolean,
   session?: ILLMSession,
-  llmOverride?: LlamaCpp,
+  llmOverride?: LLM,
 ): Promise<number[] | null> {
   // Format text using the appropriate prompt template
   const formattedText = isQuery
@@ -5851,7 +5859,7 @@ export async function expandQuery(
   model: string = DEFAULT_QUERY_MODEL,
   db: Database,
   intent?: string,
-  llmOverride?: LlamaCpp,
+  llmOverride?: LLM,
 ): Promise<ExpandedQuery[]> {
   // Check cache first — stored as JSON preserving types
   const cacheKey = getCacheKey("expandQuery", {
@@ -5909,7 +5917,7 @@ export async function rerank(
   model: string = DEFAULT_RERANK_MODEL,
   db: Database,
   intent?: string,
-  llmOverride?: LlamaCpp,
+  llmOverride?: LLM,
 ): Promise<{ file: string; score: number }[]> {
   // Prepend intent to rerank query so the reranker scores with domain context
   const rerankQuery = intent ? `${intent}\n\n${query}` : query;

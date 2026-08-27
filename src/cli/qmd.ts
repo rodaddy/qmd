@@ -116,7 +116,8 @@ import {
   resolveModels,
   setActiveModelConfig,
   assertKnownModelScheme,
-  getLocalLlamaCpp,
+  LocalModelsDisabledError,
+  isRemoteModelUri,
   inspectGgufFile,
   isDarwinMetalMitigationActive,
 } from "../llm.js";
@@ -516,32 +517,6 @@ function initLocalIndex(): void {
   localStore.close();
 
   console.log("ready to go with new local index");
-}
-
-function isForceCpuEnabled(): boolean {
-  const value = process.env.QMD_FORCE_CPU;
-  return (
-    !!value &&
-    !["false", "off", "none", "disable", "disabled", "0"].includes(
-      value.trim().toLowerCase(),
-    )
-  );
-}
-
-function configuredGpuModeLabel(): string {
-  return isForceCpuEnabled()
-    ? "CPU forced (QMD_FORCE_CPU)"
-    : process.env.QMD_LLAMA_GPU?.trim() || "auto";
-}
-
-function summarizeDeviceNames(names: string[]): string {
-  const counts = new Map<string, number>();
-  for (const name of names) {
-    counts.set(name, (counts.get(name) || 0) + 1);
-  }
-  return Array.from(counts.entries())
-    .map(([name, count]) => (count > 1 ? `${count}× ${name}` : name))
-    .join(", ");
 }
 
 function sanitizeDiagnosticMessage(message: string): string {
@@ -4669,7 +4644,15 @@ function checkModelDefaults(
 
   const notes: string[] = [];
   for (const check of checks) {
-    const envValue = check.envValue?.trim();
+    // An env var that names exactly the built-in default has changed nothing,
+    // so it is treated as unset: flagging it as a "non-default model
+    // configuration" is noise, but skipping the whole role would also hide a
+    // differing index pin, which is the value that actually wins.
+    const rawEnvValue = check.envValue?.trim();
+    const envValue =
+      rawEnvValue && rawEnvValue !== check.defaultModel
+        ? rawEnvValue
+        : undefined;
     if (envValue && check.active === envValue) {
       notes.push(
         `${check.role}: env ${check.envName}=${check.active} (default ${check.defaultModel}; might be ok)`,
@@ -4706,8 +4689,22 @@ function checkModelCache(
     ["generation", activeModels.generate],
     ["reranking", activeModels.rerank],
   ] as const;
+  // A remote role has no local file to cache, so looking for one always
+  // "misses" and the check then tells the operator to run `qmd pull` -- a
+  // command that now refuses by design. Reporting a healthy remote setup as
+  // broken, with a fix that cannot work, is worse than not reporting it.
+  const localModels = models.filter(([, model]) => !isRemoteModelUri(model));
+  if (localModels.length === 0) {
+    doctorCheck(
+      "model cache",
+      true,
+      "not applicable - every role runs on the configured server, nothing is cached locally",
+    );
+    return;
+  }
+
   const unique = new Map<string, string[]>();
-  for (const [role, model] of models) {
+  for (const [role, model] of localModels) {
     unique.set(model, [...(unique.get(model) ?? []), role]);
   }
 
@@ -4948,126 +4945,23 @@ function linuxCudaRuntimeDiagnostic(): string | null {
   return `NVIDIA driver libraries are visible, but CUDA user-space libraries are missing from loader paths (${missing.join(", ")})`;
 }
 
-async function runDoctorDeviceChecks(nextSteps: string[]): Promise<void> {
-  const mode = configuredGpuModeLabel();
-  doctorCheck("device mode", true, mode);
-
-  const skipProbe = ["0", "false", "off", "no", "skip"].includes(
-    (process.env.QMD_DOCTOR_DEVICE_PROBE ?? "").trim().toLowerCase(),
+/**
+ * Report the device situation, which in this build is "not local".
+ *
+ * The probe this replaces loaded the native llama backend to read GPU/VRAM
+ * state. Every role now runs on the configured server, so there is no local
+ * backend to interrogate and no device question the operator can act on --
+ * and attempting the probe would trip LocalModelsDisabledError inside a
+ * command whose whole job is to diagnose, not to fail. Reported as a passing
+ * informational check rather than omitted, so its absence is not read as a
+ * diagnostic that silently failed to run.
+ */
+async function runDoctorDeviceChecks(_nextSteps: string[]): Promise<void> {
+  doctorCheck(
+    "device mode",
+    true,
+    "remote - models run on the configured server; no local llama backend",
   );
-  if (skipProbe) {
-    doctorCheck(
-      "device probe",
-      false,
-      "skipped by QMD_DOCTOR_DEVICE_PROBE=0. Next: unset it and rerun `qmd doctor` to verify GPU/CPU acceleration",
-    );
-    nextSteps.push(
-      "Unset `QMD_DOCTOR_DEVICE_PROBE` and rerun `qmd doctor` when you want to verify llama.cpp device acceleration.",
-    );
-    return;
-  }
-
-  const crashHint =
-    "Probing native llama backend now. If qmd crashes here, rerun with `QMD_FORCE_CPU=1 qmd doctor` (or `QMD_DOCTOR_DEVICE_PROBE=0 qmd doctor` to skip this probe).";
-  if (process.stdout.isTTY) {
-    process.stdout.write(`${c.dim}${crashHint}${c.reset}`);
-  }
-
-  try {
-    const device = await getLocalLlamaCpp().getDeviceInfo({
-      allowBuild: false,
-    });
-    if (process.stdout.isTTY) {
-      process.stdout.write(`\r${" ".repeat(crashHint.length)}\r`);
-    }
-    if (device.gpu) {
-      const gpuLabel =
-        device.gpu === "metal" && process.platform === "darwin"
-          ? "metal (macOS Metal backend)"
-          : String(device.gpu);
-      const parts = [
-        `GPU ${gpuLabel}`,
-        `offloading ${device.gpuOffloading ? "enabled" : "disabled"}`,
-      ];
-      if (device.gpuDevices.length > 0)
-        parts.push(`devices: ${summarizeDeviceNames(device.gpuDevices)}`);
-      if (device.vram)
-        parts.push(
-          `VRAM ${formatBytes(device.vram.free)} free / ${formatBytes(device.vram.total)} total`,
-        );
-      parts.push(`${device.cpuCores} CPU math cores`);
-      doctorCheck(
-        "device probe",
-        device.gpuOffloading,
-        device.gpuOffloading
-          ? parts.join("; ")
-          : `${parts.join("; ")}. Next: check QMD_LLAMA_GPU and llama.cpp backend support`,
-      );
-      if (!device.gpuOffloading) {
-        nextSteps.push(
-          "GPU was detected but offloading is disabled; check `QMD_LLAMA_GPU=metal|cuda|vulkan` and rerun `qmd doctor`.",
-        );
-      }
-
-      // Surface the darwin residency-set mitigation. libggml-metal's
-      // process-static device dtor asserts on un-expired residency sets
-      // during libc exit() (ggml-org/llama.cpp#22593), producing a giant
-      // stderr backtrace after correct output. The bin/qmd launcher exports
-      // GGML_METAL_NO_RESIDENCY=1 on darwin to skip the assertion entirely.
-      // No measurable perf cost on short-lived CLI calls.
-      if (device.gpu === "metal" && process.platform === "darwin") {
-        if (isDarwinMetalMitigationActive()) {
-          doctorCheck(
-            "darwin metal residency",
-            true,
-            "GGML_METAL_NO_RESIDENCY=1 set by launcher; clean process exit (avoids ggml-org/llama.cpp#22593). Opt back in with QMD_METAL_KEEP_RESIDENCY=1 if you run long-lived qmd processes.",
-          );
-        } else {
-          doctorCheck(
-            "darwin metal residency",
-            false,
-            "residency sets active (QMD_METAL_KEEP_RESIDENCY=1 or launcher bypassed); llama-using commands may dump a libggml-metal backtrace at exit (ggml-org/llama.cpp#22593) even when output succeeded.",
-          );
-          nextSteps.push(
-            "Unset `QMD_METAL_KEEP_RESIDENCY` so the launcher can disable Metal residency sets; without this, query/vsearch/embed dump a stack trace at exit even on success.",
-          );
-        }
-      }
-    } else {
-      const cudaDiagnostic = linuxCudaRuntimeDiagnostic();
-      const diagnosticSuffix = cudaDiagnostic ? ` ${cudaDiagnostic}.` : "";
-      doctorCheck(
-        "device probe",
-        false,
-        `running on CPU (${device.cpuCores} math cores).${diagnosticSuffix} Next: install/configure Metal, CUDA, or Vulkan for faster embeddings, or set QMD_FORCE_CPU=1 to make CPU mode explicit`,
-      );
-      if (cudaDiagnostic) {
-        nextSteps.push(
-          `${cudaDiagnostic}; install CUDA runtime/cuBLAS libraries or add their directory to LD_LIBRARY_PATH, then rerun \`qmd doctor\`.`,
-        );
-      } else {
-        nextSteps.push(
-          "Vector operations are running on CPU; install/configure Metal, CUDA, or Vulkan if embedding/query performance is too slow.",
-        );
-      }
-    }
-  } catch (error) {
-    if (process.stdout.isTTY) {
-      process.stdout.write(`\r${" ".repeat(crashHint.length)}\r`);
-    }
-    const message =
-      error instanceof Error
-        ? sanitizeDiagnosticMessage(error.message)
-        : sanitizeDiagnosticMessage(String(error));
-    doctorCheck(
-      "device probe",
-      false,
-      `probe failed: ${message}. Next: run with QMD_FORCE_CPU=1 to bypass GPU probing, or set QMD_LLAMA_GPU=metal|cuda|vulkan and retry`,
-    );
-    nextSteps.push(
-      "GPU probe failed; try `QMD_FORCE_CPU=1 qmd doctor` to confirm CPU fallback, then fix GPU drivers/backend if acceleration is expected.",
-    );
-  }
 }
 
 async function showDoctor(): Promise<void> {
@@ -5347,6 +5241,27 @@ if (isMain) {
   // entrypoint, not when imported for its exports. Tests must set INDEX_PATH
   // or use createStore() with an explicit path.
   enableProductionMode();
+
+  // A local-model refusal gets its own exit code so a caller can tell "this
+  // machine is misconfigured, edit models.<role>" from any other failure.
+  // Installed as a process handler rather than a try/catch because the CLI
+  // body is top-level await: a throw from an awaited command arm surfaces
+  // here, not at a call site, and would otherwise exit 1 like everything else.
+  const exitForLocalModels = (error: unknown): void => {
+    if (error instanceof LocalModelsDisabledError) {
+      console.error(error.message);
+      process.exit(LocalModelsDisabledError.EXIT_CODE);
+    }
+    // Rethrowing from inside an uncaughtException handler makes Node exit 7,
+    // not the 1 every other error exited with before this handler existed.
+    // Reproduce the default: print the error, exit 1.
+    console.error(
+      error instanceof Error ? (error.stack ?? error.message) : String(error),
+    );
+    process.exit(1);
+  };
+  process.on("uncaughtException", exitForLocalModels);
+  process.on("unhandledRejection", exitForLocalModels);
 
   const cli = parseCLI();
 
