@@ -220,6 +220,8 @@ export class RemoteLLM implements LLM {
   private readonly generateUri?: RemoteModelUri;
   private readonly rerankUri?: RemoteModelUri;
   private readonly embedModelField?: string;
+  private readonly generateModelField?: string;
+  private readonly rerankModelField?: string;
   private readonly requestTimeoutMs: number;
   private readonly embedBatchSize: number;
   private readonly concurrency: number;
@@ -232,6 +234,8 @@ export class RemoteLLM implements LLM {
 
   constructor(config: RemoteLLMConfig = {}) {
     this.embedModelField = config.embedModel;
+    this.generateModelField = config.generateModel;
+    this.rerankModelField = config.rerankModel;
     this.embedUri =
       config.embedModel && isRemoteModelUri(config.embedModel)
         ? parseRemoteModelUri(config.embedModel)
@@ -262,6 +266,16 @@ export class RemoteLLM implements LLM {
   /** The embed model field as configured, for fingerprinting and logging. */
   get embedModelName(): string {
     return this.embedModelField ?? "";
+  }
+
+  /** The generate model field as configured, for caller-side defaulting. */
+  get generateModelName(): string {
+    return this.generateModelField ?? "";
+  }
+
+  /** The rerank model field as configured, for caller-side defaulting. */
+  get rerankModelName(): string {
+    return this.rerankModelField ?? "";
   }
 
   /**
@@ -788,6 +802,71 @@ export class RemoteLLM implements LLM {
       );
       return plain;
     }
+  }
+
+  /**
+   * The llama-server behind llama-swap for a given model.
+   *
+   * The OpenAI surface (`/v1/embeddings`) is the multiplexed front door and
+   * has no tokenizer endpoint -- tokenize/detokenize are llama-server's own,
+   * served per upstream. llama-swap exposes each one at
+   * `/upstream/<model>/...`, so `https://host/v1#embed-gemma` yields
+   * `https://host/upstream/embed-gemma`. Derived rather than configured
+   * because a second URL to keep in sync is a second thing to get wrong, and
+   * a stale one would silently chunk against the wrong tokenizer.
+   */
+  private upstreamBase(uri: RemoteModelUri): string {
+    const base = new URL(uri.baseUrl);
+    base.pathname = `/upstream/${encodeURIComponent(uri.model)}`;
+    return base.toString().replace(/\/+$/, "");
+  }
+
+  /**
+   * Tokenize with the embedding model's real tokenizer, on the server.
+   *
+   * Chunking sizes every chunk against this count, so an estimate is not good
+   * enough: the character-ratio heuristic elsewhere in this file exists only
+   * where no tokenizer is reachable, and it is measurably wrong on code and
+   * CJK (see CHARS_PER_TOKEN). Errors propagate -- a wrong chunk size is
+   * silently baked into the stored vectors, so failing the re-index is the
+   * cheaper outcome.
+   */
+  async tokenize(text: string): Promise<readonly number[]> {
+    const uri = this.require("embed");
+    const body = await withRetry(
+      () =>
+        this.post<{ tokens?: number[] }>(this.upstreamBase(uri), "/tokenize", {
+          content: text,
+        }),
+      { attempts: 3, operation: "remote.tokenize" },
+    );
+    if (!Array.isArray(body.tokens)) {
+      throw new Error(
+        `Remote tokenize at ${this.upstreamBase(uri)}/tokenize returned no ` +
+          `token array. Is this llama-swap in front of llama-server?`,
+      );
+    }
+    return body.tokens;
+  }
+
+  /** Turn token ids back into text, for truncating a chunk to its budget. */
+  async detokenize(tokens: readonly number[]): Promise<string> {
+    if (tokens.length === 0) return "";
+    const uri = this.require("embed");
+    const body = await withRetry(
+      () =>
+        this.post<{ content?: string }>(this.upstreamBase(uri), "/detokenize", {
+          tokens: Array.from(tokens),
+        }),
+      { attempts: 3, operation: "remote.detokenize" },
+    );
+    if (typeof body.content !== "string") {
+      throw new Error(
+        `Remote detokenize at ${this.upstreamBase(uri)}/detokenize returned ` +
+          `no content string.`,
+      );
+    }
+    return body.content;
   }
 
   /** No persistent resources: every call is a discrete HTTP request. */

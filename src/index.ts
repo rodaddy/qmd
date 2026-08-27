@@ -65,7 +65,7 @@ import {
   type EmbedResult,
   type ChunkStrategy,
 } from "./store.js";
-import { LlamaCpp } from "./llm.js";
+import { createLLM } from "./llm.js";
 import type { Backend } from "./db.js";
 import {
   setConfigSource,
@@ -214,7 +214,7 @@ export interface StoreOptions {
  * The QMD SDK store — provides search, retrieval, collection management,
  * context management, and indexing operations.
  *
- * All methods are async. The store manages its own LlamaCpp instance
+ * All methods are async. The store manages its own LLM backend instance
  * (lazy-loaded, auto-unloaded after inactivity) — no global singletons.
  */
 export interface QMDStore {
@@ -407,14 +407,15 @@ export async function createStore(options: StoreOptions): Promise<QMDStore> {
   }
   // else: DB-only mode — no external config, use existing store_collections
 
-  // Create a per-store LlamaCpp instance — lazy-loads models on first use,
-  // auto-unloads after 5 min inactivity to free VRAM.
-  const llm = new LlamaCpp({
-    embedModel: config?.models?.embed,
-    generateModel: config?.models?.generate,
-    rerankModel: config?.models?.rerank,
-    inactivityTimeoutMs: 5 * 60 * 1000,
-    disposeModelsOnInactivity: true,
+  // Build the backend this config describes, rather than hardcoding the local
+  // one. Constructing LlamaCpp here was why a `models.embed` naming a remote
+  // server was accepted, echoed back and then ignored: the SDK store handed
+  // the URL to node-llama-cpp, which tried to DOWNLOAD it (404, exit 1).
+  // createLLM validates every role and routes URL-valued ones to RemoteLLM.
+  const llm = createLLM({
+    embed: config?.models?.embed,
+    generate: config?.models?.generate,
+    rerank: config?.models?.rerank,
   });
   internal.llm = llm;
 
