@@ -70,3 +70,13 @@ only when a session actually needed it.
     ABI guard runs; a wrapper or guard pointed at PATH node rebuilds the
     binary for v26 on the next `embed`/`update` and every keg caller breaks
     (2026-08-27 14:03, qmd#1).
+
+12. A Luna `codex:codex-rescue` lane refuses a brief that touches more than
+    one file: it reads the Development AGENTS.md harness gate as "multi-file
+    work needs explicit approval" and stops, even when the brief grants
+    single-agent approval up front (twice on 2026-08-27, jobs
+    task-mtce2qrv-35kuba and task-mtce6lrh-l28uwj). Cut codex-rescue lanes
+    to one file, or route a multi-file lane to native Opus 5 low with that
+    reason (rule 8). Exit-code lanes prove the code with a subprocess run of
+    the CLI, not a unit assertion on the returned object:
+    `finishSuccessfulCliCommand` sat between the two and reset it (561abaa).

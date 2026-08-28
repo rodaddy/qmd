@@ -98,7 +98,7 @@ describe("CLI successful-exit lifecycle", () => {
     // process.exit() skips `beforeExit`, which is what trips the libggml-metal
     // assertion (ggml-org/llama.cpp#22593) even with explicit dispose.
     const prevCode = process.exitCode;
-    process.exitCode = 1; // poison the state to verify we set it
+    process.exitCode = undefined; // unset, so the 0 below is ours
     try {
       const calls: string[] = [];
       await finishSuccessfulCliCommand({
@@ -131,6 +131,39 @@ describe("CLI successful-exit lifecycle", () => {
 
       expect(calls).toEqual(["stdout-flush", "cleanup", "stderr-flush"]);
       expect(process.exitCode).toBe(0);
+    } finally {
+      process.exitCode = prevCode;
+    }
+  });
+
+  test("keeps a non-zero process.exitCode a command arm already set", async () => {
+    // The embed arm sets process.exitCode = 1 on the error-rate abort and
+    // returns normally (qmd#5). finishSuccessfulCliCommand owns flush and
+    // cleanup, not the verdict, so it must not reset that to 0.
+    const prevCode = process.exitCode;
+    process.exitCode = 1;
+    try {
+      const exits: number[] = [];
+      await finishSuccessfulCliCommand({
+        command: "embed",
+        format: "cli",
+        cleanup: async () => {},
+        stdout: { write: (_c, cb) => (cb?.(), true) },
+        stderr: { write: (_c, cb) => (cb?.(), true) },
+      });
+      expect(process.exitCode).toBe(1);
+
+      await finishSuccessfulCliCommand({
+        command: "embed",
+        format: "cli",
+        cleanup: async () => {},
+        exit: (code) => {
+          exits.push(code);
+        },
+        stdout: { write: (_c, cb) => (cb?.(), true) },
+        stderr: { write: (_c, cb) => (cb?.(), true) },
+      });
+      expect(exits).toEqual([1]);
     } finally {
       process.exitCode = prevCode;
     }
