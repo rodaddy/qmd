@@ -13,49 +13,60 @@ import { describe, expect, test, vi, beforeEach, afterEach } from "vitest";
 // Stub node:worker_threads before importing pg.ts so no real worker (and no
 // real postgres) is ever spawned. The fake worker simply never notifies the
 // shared Int32Array, which is exactly the "no response" condition.
+// Bun's vitest shim cannot stub node:worker_threads for the bridge: mock.module
+// is process-wide, so a silent worker here would hang every other Bun test
+// that spawns one, and the tests themselves hang on the real Atomics.wait
+// (qmd#8). Under Bun no mock is registered and the describe is skipped; the
+// Vitest leg covers the invariant.
+const underBun = typeof Bun !== "undefined";
 const terminateCalls: number[] = [];
 const portCloseCalls: number[] = [];
 
-vi.mock("node:worker_threads", async () => {
-  const actual = await vi.importActual<typeof import("node:worker_threads")>(
-    "node:worker_threads",
-  );
+// Not hoisted on purpose: pg.js is imported dynamically inside each test, so
+// the mock still applies under Vitest, and under Bun nothing is registered.
+// Called through an alias so Vitest's hoisting transform leaves the `if` alone.
+const mockModule = vi.mock;
+if (!underBun)
+  mockModule("node:worker_threads", async () => {
+    const actual = await vi.importActual<typeof import("node:worker_threads")>(
+      "node:worker_threads",
+    );
 
-  class SilentWorker {
-    constructor(_path: string, _opts: unknown) {}
-    terminate(): Promise<number> {
-      terminateCalls.push(Date.now());
-      return Promise.resolve(0);
+    class SilentWorker {
+      constructor(_path: string, _opts: unknown) {}
+      terminate(): Promise<number> {
+        terminateCalls.push(Date.now());
+        return Promise.resolve(0);
+      }
+      unref(): void {}
+      on(): void {}
     }
-    unref(): void {}
-    on(): void {}
-  }
 
-  class FakeMessageChannel {
-    port1: unknown;
-    port2: unknown;
-    constructor() {
-      this.port1 = {
-        postMessage: () => {},
-        close: () => {
-          portCloseCalls.push(Date.now());
-        },
-        on: () => {},
-        unref: () => {},
-      };
-      this.port2 = {};
+    class FakeMessageChannel {
+      port1: unknown;
+      port2: unknown;
+      constructor() {
+        this.port1 = {
+          postMessage: () => {},
+          close: () => {
+            portCloseCalls.push(Date.now());
+          },
+          on: () => {},
+          unref: () => {},
+        };
+        this.port2 = {};
+      }
     }
-  }
 
-  return {
-    ...actual,
-    Worker: SilentWorker,
-    MessageChannel: FakeMessageChannel,
-    // The port never carries a message; syncQuery must never get this far
-    // on the timeout path anyway.
-    receiveMessageOnPort: () => undefined,
-  };
-});
+    return {
+      ...actual,
+      Worker: SilentWorker,
+      MessageChannel: FakeMessageChannel,
+      // The port never carries a message; syncQuery must never get this far
+      // on the timeout path anyway.
+      receiveMessageOnPort: () => undefined,
+    };
+  });
 
 const TIMEOUT_MS = "200";
 
@@ -76,7 +87,7 @@ afterEach(() => {
   }
 });
 
-describe("PgDatabase timeout poisoning", () => {
+describe.skipIf(underBun)("PgDatabase timeout poisoning", () => {
   test("a second query after a timeout throws immediately as unusable", async () => {
     const { PgDatabase } = await import("../src/pg.js");
     const db = new PgDatabase("postgresql://unused/never-connects");
