@@ -342,12 +342,17 @@ export async function finishSuccessfulCliCommand(
   }
   await flushWritable(stderr);
 
+  // A command arm that completed its output but wants a non-zero exit (the
+  // embed error-rate abort sets 1) has already put it on process.exitCode;
+  // this function owns flush and cleanup, not the verdict, so keep it.
+  const exitCode = Number(process.exitCode ?? 0) || 0;
+
   if (options.exit) {
-    options.exit(0);
+    options.exit(exitCode);
     return;
   }
 
-  process.exitCode = 0;
+  process.exitCode = exitCode;
 }
 
 // Ensure cursor is restored on exit

@@ -12,6 +12,7 @@ import {
   beforeAll,
   afterAll,
   beforeEach,
+  afterEach,
 } from "vitest";
 import { chmod, copyFile, mkdtemp, rm, writeFile, mkdir } from "fs/promises";
 import {
@@ -26,6 +27,8 @@ import { tmpdir } from "os";
 import { join, dirname } from "path";
 import { fileURLToPath } from "url";
 import { spawn } from "child_process";
+import { createServer, type Server } from "http";
+import { AddressInfo } from "net";
 import { setTimeout as sleep } from "timers/promises";
 import {
   buildEditorUri,
@@ -2946,4 +2949,113 @@ fi
       await rm(tempPackage, { recursive: true, force: true });
     }
   });
+});
+
+// The abort path in generateEmbeddings() is a silent one: it stops mid-pass,
+// prints a warning, and leaves whatever chunks remain unembedded, so a scripted
+// `qmd embed && qmd query` would keep going against a half-embedded index. The
+// exit code is the only signal a caller has, so it gets an end-to-end test
+// rather than a unit assertion on EmbedResult.
+describe("embed exit code", () => {
+  let abortServer: Server | null = null;
+
+  afterEach(async () => {
+    if (abortServer) {
+      const s = abortServer;
+      abortServer = null;
+      await new Promise<void>((resolve) => s.close(() => resolve()));
+    }
+  });
+
+  test("qmd embed exits 1 when the error-rate abort writes off the pass", async () => {
+    // Answers the tokenizer so chunking succeeds (one token per word, matching
+    // the fake in no-local-models.test.ts) and fails the embedding batches with
+    // a 400 — a status withRetry does NOT retry, so the abort threshold is
+    // reached in one pass instead of three rounds of backoff.
+    //
+    // The single-input request is served rather than failed: generateEmbeddings
+    // probes chunk[0] through session.embed() to learn the vector dimension and
+    // throws outright if that returns nothing, exiting before the error-rate
+    // check can run. The main loop uses embedBatch(), and QMD_REMOTE_EMBED_BATCH
+    // below keeps its batches larger than one, so input length separates the
+    // probe from the work without counting requests.
+    const server = createServer((req, res) => {
+      let raw = "";
+      req.on("data", (chunk) => (raw += chunk));
+      req.on("end", () => {
+        const body = raw ? JSON.parse(raw) : {};
+        res.setHeader("Content-Type", "application/json");
+        if (req.url?.endsWith("/tokenize")) {
+          const words = String(body.content ?? "")
+            .split(/\s+/)
+            .filter(Boolean);
+          res.end(JSON.stringify({ tokens: words.map((_w, i) => 1000 + i) }));
+          return;
+        }
+        if (req.url?.endsWith("/detokenize")) {
+          const tokens = (body.tokens ?? []) as number[];
+          res.end(
+            JSON.stringify({ content: tokens.map((t) => `w${t}`).join(" ") }),
+          );
+          return;
+        }
+        if (
+          req.url?.endsWith("/embeddings") &&
+          Array.isArray(body.input) &&
+          body.input.length === 1
+        ) {
+          res.end(
+            JSON.stringify({
+              data: [{ embedding: new Array(768).fill(0.01), index: 0 }],
+            }),
+          );
+          return;
+        }
+        res.statusCode = 400;
+        res.end(JSON.stringify({ error: { message: "embedding rejected" } }));
+      });
+    });
+    abortServer = server;
+    const port = await new Promise<number>((resolve) => {
+      server.listen(0, "127.0.0.1", () =>
+        resolve((server.address() as AddressInfo).port),
+      );
+    });
+    const base = `http://127.0.0.1:${port}/v1`;
+
+    const env = await createIsolatedTestEnv("embed-abort");
+    await writeFile(
+      join(env.configDir, "index.yml"),
+      `collections: {}\nmodels:\n  embed: ${base}#embed-gemma\n  generate: ${base}#qmd-query-expansion\n  rerank: ${base}#rerank-qwen3\n`,
+    );
+
+    const docsDir = join(testDir, `embed-abort-docs-${testCounter}`);
+    await mkdir(docsDir, { recursive: true });
+    // Chunks target ~900 tokens and the fake tokenizer counts words, so 45k
+    // words is comfortably past the 32-chunk floor the abort check requires
+    // before it will fire at all.
+    await writeFile(
+      join(docsDir, "big.md"),
+      `# abort fixture\n\n${"abort regression word ".repeat(45000)}\n`,
+    );
+
+    const added = await runQmd(
+      ["collection", "add", ".", "--name", "abortfx"],
+      {
+        cwd: docsDir,
+        dbPath: env.dbPath,
+        configDir: env.configDir,
+      },
+    );
+    expect(added.exitCode).toBe(0);
+
+    const embedded = await runQmd(["embed"], {
+      cwd: docsDir,
+      dbPath: env.dbPath,
+      configDir: env.configDir,
+      env: { QMD_REMOTE_EMBED_BATCH: "8" },
+    });
+    expect(embedded.stderr).toContain("Error rate too high");
+    expect(embedded.exitCode).toBe(1);
+  }, 60000);
 });
