@@ -215,6 +215,17 @@ const CHARS_PER_TOKEN = 2.5;
  * GPU box while query expansion stays local. A role whose model field is not
  * a URL is not served here and throws if called.
  */
+/**
+ * JSON.stringify replacer that repairs lone UTF-16 surrogates in request
+ * strings. A chunk boundary can split a surrogate pair, and JSON.stringify
+ * then emits the half as `\udf4c`; llama-server's parser rejects that with
+ * a 500 ("surrogate U+DC00..U+DFFF must follow U+D800..U+DBFF"), which fails
+ * the whole batch for one bad character. U+FFFD in its place embeds fine.
+ */
+function wellFormedStrings(_key: string, value: unknown): unknown {
+  return typeof value === "string" ? value.toWellFormed() : value;
+}
+
 export class RemoteLLM implements LLM {
   private readonly embedUri?: RemoteModelUri;
   private readonly generateUri?: RemoteModelUri;
@@ -342,7 +353,7 @@ export class RemoteLLM implements LLM {
       response = await fetch(url, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
+        body: JSON.stringify(body, wellFormedStrings),
         signal: controller.signal,
       });
     } catch (err) {

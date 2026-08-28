@@ -24,6 +24,14 @@
   concurrent access to the same QMD index. Configure with `QMD_BACKEND=postgres`
   and `QMD_POSTGRES_URL`.
 
+### Fixed
+
+- Remote backend: a lone UTF-16 surrogate in a chunk (an astral character cut
+  in half at a chunk boundary) was serialized as `\udf4c`, which llama-server
+  rejects with a 500 and so failed every text in that batch. Request strings are
+  now passed through `String.prototype.toWellFormed()` before serialization;
+  the half becomes U+FFFD and the batch embeds.
+
 ## [2.6.3] - 2026-06-24
 
 ### Added

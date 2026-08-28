@@ -64,6 +64,15 @@ function startFakeServer(): Promise<{
         );
         return;
       }
+      if (req.url === "/v1/embeddings") {
+        const input = body.input as string[];
+        res.end(
+          JSON.stringify({
+            data: input.map((_t, index) => ({ index, embedding: [0.1, 0.2] })),
+          }),
+        );
+        return;
+      }
       res.statusCode = 404;
       res.end(JSON.stringify({ error: "not found" }));
     });
@@ -129,6 +138,27 @@ describe("remote tokenizer round-trip", () => {
     // #other routes to /upstream/other/..., which this server 404s.
     const llm = new RemoteLLM({ embedModel: `${fake.baseUrl}#other` });
     await expect(llm.tokenize("x")).rejects.toThrow();
+  });
+});
+
+describe("remote request bodies are valid JSON for llama-server", () => {
+  test("a lone surrogate is repaired before it reaches the wire", async () => {
+    const fake = await startFakeServer();
+    running = fake.server;
+    const llm = new RemoteLLM({ embedModel: `${fake.baseUrl}#embed-gemma` });
+
+    // A chunk cut through the middle of an astral character keeps only the
+    // low half; llama-server 500s on the resulting "\\udf4c" escape.
+    const lone = "kanban \udf4c board";
+    const out = await llm.embedBatch([lone, "plain"]);
+
+    expect(out.map((r) => (r ? r.embedding.length : null))).toEqual([2, 2]);
+    const sent = fake.bodies.find((b) =>
+      Array.isArray((b as { input?: unknown }).input),
+    ) as { input: string[] };
+    expect(sent.input[0]).toBe("kanban \ufffd board");
+    expect(sent.input[0].isWellFormed()).toBe(true);
+    expect(sent.input[1]).toBe("plain");
   });
 });
 
