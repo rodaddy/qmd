@@ -2779,7 +2779,15 @@ describe("mcp http daemon", () => {
     expect(existsSync(pidPath())).toBe(false);
 
     // Process should be dead
-    await sleep(500);
+    // Under full-suite load on node@24, SIGTERM teardown can exceed 500ms (qmd#4).
+    for (let elapsed = 0; elapsed < 5000; elapsed += 50) {
+      try {
+        process.kill(pid, 0);
+      } catch {
+        break;
+      }
+      await sleep(50);
+    }
     expect(() => process.kill(pid, 0)).toThrow();
   });
 
