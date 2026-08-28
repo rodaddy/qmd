@@ -6,10 +6,27 @@
  * LLM operations use LlamaCpp with local GGUF models (node-llama-cpp).
  */
 
-import { describe, test, expect, beforeAll, afterAll, beforeEach, afterEach, vi } from "vitest";
+import {
+  describe,
+  test,
+  expect,
+  beforeAll,
+  afterAll,
+  beforeEach,
+  afterEach,
+  vi,
+} from "vitest";
 import { openDatabase, loadSqliteVec } from "../src/db.js";
 import type { Database } from "../src/db.js";
-import { unlink, mkdtemp, rmdir, writeFile, rm, mkdir, rename } from "node:fs/promises";
+import {
+  unlink,
+  mkdtemp,
+  rmdir,
+  writeFile,
+  rm,
+  mkdir,
+  rename,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import YAML from "yaml";
@@ -83,10 +100,16 @@ let testConfigDir: string;
 let currentTestStore: Store | null = null;
 
 async function createTestStore(): Promise<Store> {
-  testDbPath = join(testDir, `test-${Date.now()}-${Math.random().toString(36).slice(2)}.sqlite`);
+  testDbPath = join(
+    testDir,
+    `test-${Date.now()}-${Math.random().toString(36).slice(2)}.sqlite`,
+  );
 
   // Set up test config directory
-  const configPrefix = join(testDir, `config-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+  const configPrefix = join(
+    testDir,
+    `config-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+  );
   testConfigDir = await mkdtemp(configPrefix);
 
   // Set environment variable to use test config
@@ -96,7 +119,7 @@ async function createTestStore(): Promise<Store> {
   const emptyConfig: CollectionConfig = { collections: {} };
   await writeFile(
     join(testConfigDir, "index.yml"),
-    YAML.stringify(emptyConfig)
+    YAML.stringify(emptyConfig),
   );
 
   const store = createStore(testDbPath);
@@ -115,7 +138,11 @@ async function cleanupTestDb(store: Store): Promise<void> {
 
   // Clean up test config directory
   try {
-    const { readdir, unlink: unlinkFile, rmdir: rmdirAsync } = await import("node:fs/promises");
+    const {
+      readdir,
+      unlink: unlinkFile,
+      rmdir: rmdirAsync,
+    } = await import("node:fs/promises");
     const files = await readdir(testConfigDir);
     for (const file of files) {
       await unlinkFile(join(testConfigDir, file));
@@ -141,7 +168,7 @@ async function insertTestDocument(
     filepath?: string;
     body?: string;
     active?: number;
-  }
+  },
 ): Promise<number> {
   const now = new Date().toISOString();
   const name = opts.name || "test-doc";
@@ -154,7 +181,7 @@ async function insertTestDocument(
   } else if (opts.filepath) {
     // Extract relative path from filepath by removing collection path
     // For tests, assume filepath is either relative or we want the whole path as the document path
-    path = opts.filepath.startsWith('/') ? opts.filepath : opts.filepath;
+    path = opts.filepath.startsWith("/") ? opts.filepath : opts.filepath;
   } else {
     path = `test/${name}.md`;
   }
@@ -163,15 +190,19 @@ async function insertTestDocument(
   const active = opts.active ?? 1;
 
   // Generate hash from body if not provided
-  const hash = opts.hash || await hashContent(body);
+  const hash = opts.hash || (await hashContent(body));
 
   // Insert content (with OR IGNORE for deduplication)
   insertContent(db, hash, body, now);
 
   insertDocument(db, collectionName, path, title, hash, now, now);
-  const row = db.prepare(`
+  const row = db
+    .prepare(
+      `
     SELECT id FROM documents WHERE collection = ? AND path = ?
-  `).get(collectionName, path) as { id: number } | undefined;
+  `,
+    )
+    .get(collectionName, path) as { id: number } | undefined;
 
   if (active === 0 && row) {
     db.prepare(`UPDATE documents SET active = 0 WHERE id = ?`).run(row.id);
@@ -188,17 +219,24 @@ async function syncTestConfig(): Promise<void> {
   const content = await readFile(configPath, "utf-8");
   const config = YAML.parse(content) as CollectionConfig;
   // Clear config hash to force re-sync
-  currentTestStore.db.prepare(`DELETE FROM store_config WHERE key = 'config_hash'`).run();
+  currentTestStore.db
+    .prepare(`DELETE FROM store_config WHERE key = 'config_hash'`)
+    .run();
   syncConfigToDb(currentTestStore.db, config);
 }
 
 // Helper to create a test collection in YAML config
 async function createTestCollection(
-  options: { pwd?: string; glob?: string; name?: string; ignore?: string[] } = {}
+  options: {
+    pwd?: string;
+    glob?: string;
+    name?: string;
+    ignore?: string[];
+  } = {},
 ): Promise<string> {
   const pwd = options.pwd || "/test/collection";
   const glob = options.glob || "**/*.md";
-  const name = options.name || pwd.split('/').filter(Boolean).pop() || 'test';
+  const name = options.name || pwd.split("/").filter(Boolean).pop() || "test";
 
   // Read current config
   const configPath = join(testConfigDir, "index.yml");
@@ -220,7 +258,11 @@ async function createTestCollection(
 }
 
 // Helper to add path context in YAML config
-async function addPathContext(collectionName: string, pathPrefix: string, contextText: string): Promise<void> {
+async function addPathContext(
+  collectionName: string,
+  pathPrefix: string,
+  contextText: string,
+): Promise<void> {
   // Read current config
   const configPath = join(testConfigDir, "index.yml");
   const { readFile } = await import("node:fs/promises");
@@ -281,7 +323,6 @@ afterAll(async () => {
   }
 });
 
-
 // =============================================================================
 // Store Creation Tests
 // =============================================================================
@@ -312,13 +353,17 @@ describe("Store Creation", () => {
     const store = await createTestStore();
 
     // Check tables exist
-    const tables = store.db.prepare(`
+    const tables = store.db
+      .prepare(
+        `
       SELECT name FROM sqlite_master
       WHERE type='table'
       ORDER BY name
-    `).all() as { name: string }[];
+    `,
+      )
+      .all() as { name: string }[];
 
-    const tableNames = tables.map(t => t.name);
+    const tableNames = tables.map((t) => t.name);
     expect(tableNames).toContain("documents");
     expect(tableNames).toContain("documents_fts");
     expect(tableNames).toContain("content_vectors");
@@ -330,7 +375,10 @@ describe("Store Creation", () => {
   });
 
   test("createStore defers content_vectors embed_fingerprint migration until embedding health needs it", async () => {
-    const dbPath = join(testDir, `legacy-${Date.now()}-${Math.random().toString(36).slice(2)}.sqlite`);
+    const dbPath = join(
+      testDir,
+      `legacy-${Date.now()}-${Math.random().toString(36).slice(2)}.sqlite`,
+    );
     const model = "hf:test/embed-model.gguf";
     const legacyDb = openDatabase(dbPath);
     legacyDb.exec(`
@@ -362,27 +410,46 @@ describe("Store Creation", () => {
       )
     `);
     const now = new Date().toISOString();
-    legacyDb.prepare(`INSERT INTO content (hash, doc, created_at) VALUES (?, ?, ?)`).run("hash1", "# Legacy\nbody", now);
-    legacyDb.prepare(`INSERT INTO documents (collection, path, title, hash, created_at, modified_at, active) VALUES (?, ?, ?, ?, ?, ?, 1)`).run("test", "legacy.md", "Legacy", "hash1", now, now);
-    legacyDb.prepare(`INSERT INTO content_vectors (hash, seq, pos, model, total_chunks, embedded_at) VALUES (?, ?, ?, ?, ?, ?)`).run("hash1", 0, 0, model, 1, now);
+    legacyDb
+      .prepare(`INSERT INTO content (hash, doc, created_at) VALUES (?, ?, ?)`)
+      .run("hash1", "# Legacy\nbody", now);
+    legacyDb
+      .prepare(
+        `INSERT INTO documents (collection, path, title, hash, created_at, modified_at, active) VALUES (?, ?, ?, ?, ?, ?, 1)`,
+      )
+      .run("test", "legacy.md", "Legacy", "hash1", now, now);
+    legacyDb
+      .prepare(
+        `INSERT INTO content_vectors (hash, seq, pos, model, total_chunks, embedded_at) VALUES (?, ?, ?, ?, ?, ?)`,
+      )
+      .run("hash1", 0, 0, model, 1, now);
     legacyDb.close();
 
     const store = createStore(dbPath);
-    let columns = store.db.prepare(`PRAGMA table_info(content_vectors)`).all() as { name: string }[];
-    expect(columns.map(col => col.name)).not.toContain("embed_fingerprint");
+    let columns = store.db
+      .prepare(`PRAGMA table_info(content_vectors)`)
+      .all() as { name: string }[];
+    expect(columns.map((col) => col.name)).not.toContain("embed_fingerprint");
 
     expect(store.getHashesNeedingEmbedding(model)).toBe(1);
 
-    columns = store.db.prepare(`PRAGMA table_info(content_vectors)`).all() as { name: string }[];
-    const migratedRow = store.db.prepare(`SELECT embed_fingerprint FROM content_vectors WHERE hash = ?`).get("hash1") as { embed_fingerprint: string };
-    expect(columns.map(col => col.name)).toContain("embed_fingerprint");
+    columns = store.db.prepare(`PRAGMA table_info(content_vectors)`).all() as {
+      name: string;
+    }[];
+    const migratedRow = store.db
+      .prepare(`SELECT embed_fingerprint FROM content_vectors WHERE hash = ?`)
+      .get("hash1") as { embed_fingerprint: string };
+    expect(columns.map((col) => col.name)).toContain("embed_fingerprint");
     expect(migratedRow.embed_fingerprint).toBe("");
 
     await cleanupTestDb(store);
   });
 
   test("content_vectors column repair runs the full ALTER series and retries the failed operation", async () => {
-    const dbPath = join(testDir, `legacy-no-seq-${Date.now()}-${Math.random().toString(36).slice(2)}.sqlite`);
+    const dbPath = join(
+      testDir,
+      `legacy-no-seq-${Date.now()}-${Math.random().toString(36).slice(2)}.sqlite`,
+    );
     const model = "hf:test/embed-model.gguf";
     const legacyDb = openDatabase(dbPath);
     legacyDb.exec(`
@@ -414,17 +481,44 @@ describe("Store Creation", () => {
     legacyDb.close();
 
     const store = createStore(dbPath);
-    let columns = store.db.prepare(`PRAGMA table_info(content_vectors)`).all() as { name: string }[];
-    expect(columns.map(col => col.name)).not.toContain("seq");
-    expect(columns.map(col => col.name)).not.toContain("pos");
+    let columns = store.db
+      .prepare(`PRAGMA table_info(content_vectors)`)
+      .all() as { name: string }[];
+    expect(columns.map((col) => col.name)).not.toContain("seq");
+    expect(columns.map((col) => col.name)).not.toContain("pos");
 
     store.ensureVecTable(3);
-    store.insertEmbedding("hash1", 1, 42, new Float32Array([1, 2, 3]), model, new Date().toISOString(), 2);
+    store.insertEmbedding(
+      "hash1",
+      1,
+      42,
+      new Float32Array([1, 2, 3]),
+      model,
+      new Date().toISOString(),
+      2,
+    );
 
-    columns = store.db.prepare(`PRAGMA table_info(content_vectors)`).all() as { name: string }[];
-    const columnNames = columns.map(col => col.name);
-    expect(columnNames).toEqual(expect.arrayContaining(["seq", "pos", "model", "embed_fingerprint", "total_chunks", "embedded_at"]));
-    expect(store.db.prepare(`SELECT seq, pos, model, total_chunks FROM content_vectors WHERE hash = ?`).get("hash1")).toEqual({
+    columns = store.db.prepare(`PRAGMA table_info(content_vectors)`).all() as {
+      name: string;
+    }[];
+    const columnNames = columns.map((col) => col.name);
+    expect(columnNames).toEqual(
+      expect.arrayContaining([
+        "seq",
+        "pos",
+        "model",
+        "embed_fingerprint",
+        "total_chunks",
+        "embedded_at",
+      ]),
+    );
+    expect(
+      store.db
+        .prepare(
+          `SELECT seq, pos, model, total_chunks FROM content_vectors WHERE hash = ?`,
+        )
+        .get("hash1"),
+    ).toEqual({
       seq: 1,
       pos: 42,
       model,
@@ -436,7 +530,9 @@ describe("Store Creation", () => {
 
   test("createStore sets WAL journal mode", async () => {
     const store = await createTestStore();
-    const result = store.db.prepare("PRAGMA journal_mode").get() as { journal_mode: string };
+    const result = store.db.prepare("PRAGMA journal_mode").get() as {
+      journal_mode: string;
+    };
     expect(result.journal_mode).toBe("wal");
     await cleanupTestDb(store);
   });
@@ -444,7 +540,9 @@ describe("Store Creation", () => {
   test("verifySqliteVecLoaded throws when sqlite-vec is not loaded", () => {
     const db = openDatabase(":memory:");
     try {
-      expect(() => verifySqliteVecLoaded(db)).toThrow("sqlite-vec extension is unavailable");
+      expect(() => verifySqliteVecLoaded(db)).toThrow(
+        "sqlite-vec extension is unavailable",
+      );
     } finally {
       db.close();
     }
@@ -466,8 +564,12 @@ describe("Store Creation", () => {
       if (typeof process.getBuiltinModule === "function") {
         expect(() => store.ensureVecTable(768)).not.toThrow();
       } else {
-        expect(() => store.ensureVecTable(768)).toThrow(/sqlite-vec extension is unavailable/);
-        expect(() => store.ensureVecTable(768)).toThrow(/Install Homebrew SQLite/);
+        expect(() => store.ensureVecTable(768)).toThrow(
+          /sqlite-vec extension is unavailable/,
+        );
+        expect(() => store.ensureVecTable(768)).toThrow(
+          /Install Homebrew SQLite/,
+        );
       }
     } finally {
       await cleanupTestDb(store);
@@ -580,7 +682,7 @@ describe("Document Chunking", () => {
 
   test("chunkDocument with overlap creates overlapping chunks", () => {
     const content = "A".repeat(3000);
-    const chunks = chunkDocument(content, 1000, 150);  // 15% overlap
+    const chunks = chunkDocument(content, 1000, 150); // 15% overlap
     expect(chunks.length).toBeGreaterThan(1);
 
     // With overlap, positions should be closer together than without
@@ -596,13 +698,15 @@ describe("Document Chunking", () => {
   });
 
   test("chunkDocument prefers paragraph breaks", () => {
-    const content = "First paragraph.\n\nSecond paragraph.\n\nThird paragraph.".repeat(50);
+    const content =
+      "First paragraph.\n\nSecond paragraph.\n\nThird paragraph.".repeat(50);
     const chunks = chunkDocument(content, 500, 0);
 
     // Chunks should end at paragraph breaks when possible
     for (const chunk of chunks.slice(0, -1)) {
       // Most chunks should end near a paragraph break
-      const endsNearParagraph = chunk.text.endsWith("\n\n") ||
+      const endsNearParagraph =
+        chunk.text.endsWith("\n\n") ||
         chunk.text.endsWith(".") ||
         chunk.text.endsWith("\n");
       // This is a soft check - not all chunks can end at breaks
@@ -622,7 +726,7 @@ describe("Document Chunking", () => {
 
   test("chunkDocument with default params uses 900-token chunks", () => {
     // Default is CHUNK_SIZE_CHARS (3600 chars) with CHUNK_OVERLAP_CHARS (540 chars)
-    const content = "Word ".repeat(2500);  // ~12500 chars
+    const content = "Word ".repeat(2500); // ~12500 chars
     const chunks = chunkDocument(content);
     expect(chunks.length).toBeGreaterThan(1);
     // Each chunk should be around 3600 chars (except last)
@@ -651,7 +755,7 @@ describe.skipIf(!!process.env.CI)("Token-based Chunking", () => {
 
     // Each chunk should have ~900 tokens or less
     for (const chunk of chunks) {
-      expect(chunk.tokens).toBeLessThanOrEqual(950);  // Allow slight overage
+      expect(chunk.tokens).toBeLessThanOrEqual(950); // Allow slight overage
       expect(chunk.tokens).toBeGreaterThan(0);
     }
 
@@ -665,8 +769,8 @@ describe.skipIf(!!process.env.CI)("Token-based Chunking", () => {
   });
 
   test("chunkDocumentByTokens creates overlapping chunks", async () => {
-    const content = "Word ".repeat(500);  // ~500 tokens
-    const chunks = await chunkDocumentByTokens(content, 200, 30);  // 15% overlap
+    const content = "Word ".repeat(500); // ~500 tokens
+    const chunks = await chunkDocumentByTokens(content, 200, 30); // 15% overlap
 
     expect(chunks.length).toBeGreaterThan(1);
 
@@ -686,7 +790,7 @@ describe.skipIf(!!process.env.CI)("Token-based Chunking", () => {
     expect(chunks).toHaveLength(1);
     // The token count should be reasonable (not 0, not equal to char count)
     expect(chunks[0]!.tokens).toBeGreaterThan(0);
-    expect(chunks[0]!.tokens).toBeLessThan(content.length);  // Tokens < chars for English
+    expect(chunks[0]!.tokens).toBeLessThan(content.length); // Tokens < chars for English
   });
 });
 
@@ -698,7 +802,7 @@ describe("scanBreakPoints", () => {
   test("detects h1 headings", () => {
     const text = "Intro\n# Heading 1\nMore text";
     const breaks = scanBreakPoints(text);
-    const h1 = breaks.find(b => b.type === 'h1');
+    const h1 = breaks.find((b) => b.type === "h1");
     expect(h1).toBeDefined();
     expect(h1!.score).toBe(100);
     expect(h1!.pos).toBe(5); // position of \n#
@@ -708,9 +812,9 @@ describe("scanBreakPoints", () => {
     const text = "Text\n# H1\n## H2\n### H3\nMore";
     const breaks = scanBreakPoints(text);
 
-    const h1 = breaks.find(b => b.type === 'h1');
-    const h2 = breaks.find(b => b.type === 'h2');
-    const h3 = breaks.find(b => b.type === 'h3');
+    const h1 = breaks.find((b) => b.type === "h1");
+    const h2 = breaks.find((b) => b.type === "h2");
+    const h3 = breaks.find((b) => b.type === "h3");
 
     expect(h1).toBeDefined();
     expect(h2).toBeDefined();
@@ -723,7 +827,7 @@ describe("scanBreakPoints", () => {
   test("detects code blocks", () => {
     const text = "Before\n```js\ncode\n```\nAfter";
     const breaks = scanBreakPoints(text);
-    const codeBlocks = breaks.filter(b => b.type === 'codeblock');
+    const codeBlocks = breaks.filter((b) => b.type === "codeblock");
     expect(codeBlocks.length).toBe(2); // opening and closing
     expect(codeBlocks[0]!.score).toBe(80);
   });
@@ -731,7 +835,7 @@ describe("scanBreakPoints", () => {
   test("detects horizontal rules", () => {
     const text = "Text\n---\nMore text";
     const breaks = scanBreakPoints(text);
-    const hr = breaks.find(b => b.type === 'hr');
+    const hr = breaks.find((b) => b.type === "hr");
     expect(hr).toBeDefined();
     expect(hr!.score).toBe(60);
   });
@@ -739,7 +843,7 @@ describe("scanBreakPoints", () => {
   test("detects blank lines (paragraph boundaries)", () => {
     const text = "First paragraph.\n\nSecond paragraph.";
     const breaks = scanBreakPoints(text);
-    const blank = breaks.find(b => b.type === 'blank');
+    const blank = breaks.find((b) => b.type === "blank");
     expect(blank).toBeDefined();
     expect(blank!.score).toBe(20);
   });
@@ -748,8 +852,8 @@ describe("scanBreakPoints", () => {
     const text = "Intro\n- Item 1\n- Item 2\n1. Numbered";
     const breaks = scanBreakPoints(text);
 
-    const lists = breaks.filter(b => b.type === 'list');
-    const numLists = breaks.filter(b => b.type === 'numlist');
+    const lists = breaks.filter((b) => b.type === "list");
+    const numLists = breaks.filter((b) => b.type === "numlist");
 
     expect(lists.length).toBe(2);
     expect(numLists.length).toBe(1);
@@ -760,7 +864,7 @@ describe("scanBreakPoints", () => {
   test("detects newlines as fallback", () => {
     const text = "Line 1\nLine 2\nLine 3";
     const breaks = scanBreakPoints(text);
-    const newlines = breaks.filter(b => b.type === 'newline');
+    const newlines = breaks.filter((b) => b.type === "newline");
     expect(newlines.length).toBe(2);
     expect(newlines[0]!.score).toBe(1);
   });
@@ -769,7 +873,7 @@ describe("scanBreakPoints", () => {
     const text = "A\n# B\n\nC\n## D";
     const breaks = scanBreakPoints(text);
     for (let i = 1; i < breaks.length; i++) {
-      expect(breaks[i]!.pos).toBeGreaterThan(breaks[i-1]!.pos);
+      expect(breaks[i]!.pos).toBeGreaterThan(breaks[i - 1]!.pos);
     }
   });
 
@@ -777,9 +881,9 @@ describe("scanBreakPoints", () => {
     // \n# matches both newline (score 1) and h1 (score 100)
     const text = "Text\n# Heading";
     const breaks = scanBreakPoints(text);
-    const atPos = breaks.filter(b => b.pos === 4);
+    const atPos = breaks.filter((b) => b.pos === 4);
     expect(atPos.length).toBe(1);
-    expect(atPos[0]!.type).toBe('h1');
+    expect(atPos[0]!.type).toBe("h1");
     expect(atPos[0]!.score).toBe(100);
   });
 });
@@ -836,7 +940,7 @@ describe("isInsideCodeFence", () => {
   test("handles multiple fences", () => {
     const fences: CodeFenceRegion[] = [
       { start: 10, end: 30 },
-      { start: 50, end: 70 }
+      { start: 50, end: 70 },
     ];
     expect(isInsideCodeFence(20, fences)).toBe(true);
     expect(isInsideCodeFence(60, fences)).toBe(true);
@@ -847,9 +951,9 @@ describe("isInsideCodeFence", () => {
 describe("findBestCutoff", () => {
   test("prefers higher-scoring break points", () => {
     const breakPoints: BreakPoint[] = [
-      { pos: 100, score: 1, type: 'newline' },
-      { pos: 150, score: 100, type: 'h1' },
-      { pos: 180, score: 20, type: 'blank' },
+      { pos: 100, score: 1, type: "newline" },
+      { pos: 150, score: 100, type: "h1" },
+      { pos: 180, score: 20, type: "blank" },
     ];
     // Target is 200, window is 100 (so 100-200 is valid)
     const cutoff = findBestCutoff(breakPoints, 200, 100, 0.7);
@@ -858,8 +962,8 @@ describe("findBestCutoff", () => {
 
   test("h2 at window edge beats blank at target (squared decay)", () => {
     const breakPoints: BreakPoint[] = [
-      { pos: 100, score: 90, type: 'h2' },  // at window edge
-      { pos: 195, score: 20, type: 'blank' }, // close to target
+      { pos: 100, score: 90, type: "h2" }, // at window edge
+      { pos: 195, score: 20, type: "blank" }, // close to target
     ];
     // Target is 200, window is 100
     // With squared decay:
@@ -871,8 +975,8 @@ describe("findBestCutoff", () => {
 
   test("high score easily overcomes distance", () => {
     const breakPoints: BreakPoint[] = [
-      { pos: 150, score: 100, type: 'h1' },  // h1 at middle
-      { pos: 195, score: 1, type: 'newline' }, // newline near target
+      { pos: 150, score: 100, type: "h1" }, // h1 at middle
+      { pos: 195, score: 1, type: "newline" }, // newline near target
     ];
     // Target is 200, window is 100
     // h1 at 150: dist=50, normalized=0.5, mult=1-0.25*0.7=0.825, final=82.5
@@ -883,7 +987,7 @@ describe("findBestCutoff", () => {
 
   test("returns target position when no breaks in window", () => {
     const breakPoints: BreakPoint[] = [
-      { pos: 10, score: 100, type: 'h1' }, // too far before window
+      { pos: 10, score: 100, type: "h1" }, // too far before window
     ];
     const cutoff = findBestCutoff(breakPoints, 200, 100, 0.7);
     expect(cutoff).toBe(200);
@@ -891,8 +995,8 @@ describe("findBestCutoff", () => {
 
   test("skips break points inside code fences", () => {
     const breakPoints: BreakPoint[] = [
-      { pos: 150, score: 100, type: 'h1' },  // inside fence
-      { pos: 180, score: 20, type: 'blank' }, // outside fence
+      { pos: 150, score: 100, type: "h1" }, // inside fence
+      { pos: 180, score: 20, type: "blank" }, // outside fence
     ];
     const codeFences: CodeFenceRegion[] = [{ start: 140, end: 160 }];
     const cutoff = findBestCutoff(breakPoints, 200, 100, 0.7, codeFences);
@@ -916,7 +1020,7 @@ describe("Smart Chunking Integration", () => {
     // With 2000 char chunks and 800 char window (searches 1200-2000)
     // Heading is at ~1680 which is in window
     const chunks = chunkDocument(content, 2000, 0, 800);
-    const headingPos = content.indexOf('\n# Main Section');
+    const headingPos = content.indexOf("\n# Main Section");
 
     // First chunk should end at the heading (best break point in window)
     expect(chunks.length).toBeGreaterThanOrEqual(2);
@@ -925,7 +1029,8 @@ describe("Smart Chunking Integration", () => {
 
   test("chunkDocument does not split inside code blocks", () => {
     const beforeCode = "Some intro text. ".repeat(30); // ~480 chars
-    const codeBlock = "```typescript\n" + "const x = 1;\n".repeat(100) + "```\n";
+    const codeBlock =
+      "```typescript\n" + "const x = 1;\n".repeat(100) + "```\n";
     const afterCode = "More text after code. ".repeat(30);
     const content = beforeCode + codeBlock + afterCode;
 
@@ -936,7 +1041,7 @@ describe("Smart Chunking Integration", () => {
       const hasOpenFence = (chunk.text.match(/\n```/g) || []).length;
       // If we have an odd number of fence markers, we're splitting inside a block
       // (unless it's the last chunk with unclosed fence)
-      if (hasOpenFence % 2 === 1 && !chunk.text.endsWith('```\n')) {
+      if (hasOpenFence % 2 === 1 && !chunk.text.endsWith("```\n")) {
         // This is acceptable only if it's an unclosed fence at document end
         const isLastChunk = chunks.indexOf(chunk) === chunks.length - 1;
         if (!isLastChunk) {
@@ -985,7 +1090,7 @@ Final section content.
 
     // All chunks should be valid strings
     for (const chunk of chunks) {
-      expect(typeof chunk.text).toBe('string');
+      expect(typeof chunk.text).toBe("string");
       expect(chunk.text.length).toBeGreaterThan(0);
       expect(chunk.pos).toBeGreaterThanOrEqual(0);
     }
@@ -1011,15 +1116,15 @@ describe("mergeBreakPoints", () => {
     expect(merged).toHaveLength(3);
 
     // pos 10: AST score (90) wins over regex (20)
-    const at10 = merged.find(p => p.pos === 10);
+    const at10 = merged.find((p) => p.pos === 10);
     expect(at10?.score).toBe(90);
     expect(at10?.type).toBe("ast:func");
 
     // pos 50: only regex
-    expect(merged.find(p => p.pos === 50)?.score).toBe(1);
+    expect(merged.find((p) => p.pos === 50)?.score).toBe(1);
 
     // pos 100: only AST
-    expect(merged.find(p => p.pos === 100)?.score).toBe(100);
+    expect(merged.find((p) => p.pos === 100)?.score).toBe(100);
   });
 
   test("returns sorted by position", () => {
@@ -1038,7 +1143,11 @@ describe("chunkDocumentWithBreakPoints", () => {
     const codeFences = findCodeFences(content);
 
     const chunksOriginal = chunkDocument(content);
-    const chunksNew = chunkDocumentWithBreakPoints(content, breakPoints, codeFences);
+    const chunksNew = chunkDocumentWithBreakPoints(
+      content,
+      breakPoints,
+      codeFences,
+    );
 
     expect(chunksNew.length).toBe(chunksOriginal.length);
     for (let i = 0; i < chunksNew.length; i++) {
@@ -1070,7 +1179,14 @@ export function hashPassword(password: string): string {
 `.repeat(10); // Repeat to make it large enough to trigger chunking
 
   test("returns chunks for code files with AST strategy", async () => {
-    const chunks = await chunkDocumentAsync(TS_CODE, undefined, undefined, undefined, "auth.ts", "auto");
+    const chunks = await chunkDocumentAsync(
+      TS_CODE,
+      undefined,
+      undefined,
+      undefined,
+      "auth.ts",
+      "auto",
+    );
     expect(chunks.length).toBeGreaterThan(0);
     // Each chunk should have text and pos
     for (const chunk of chunks) {
@@ -1081,7 +1197,14 @@ export function hashPassword(password: string): string {
   });
 
   test("regex strategy produces same output as chunkDocument for code files", async () => {
-    const asyncChunks = await chunkDocumentAsync(TS_CODE, undefined, undefined, undefined, "auth.ts", "regex");
+    const asyncChunks = await chunkDocumentAsync(
+      TS_CODE,
+      undefined,
+      undefined,
+      undefined,
+      "auth.ts",
+      "regex",
+    );
     const syncChunks = chunkDocument(TS_CODE);
 
     expect(asyncChunks.length).toBe(syncChunks.length);
@@ -1092,8 +1215,19 @@ export function hashPassword(password: string): string {
   });
 
   test("markdown files are unchanged in auto mode", async () => {
-    const mdContent = ("# Heading\n\n" + "Some text. ".repeat(200) + "\n\n").repeat(10);
-    const asyncChunks = await chunkDocumentAsync(mdContent, undefined, undefined, undefined, "readme.md", "auto");
+    const mdContent = (
+      "# Heading\n\n" +
+      "Some text. ".repeat(200) +
+      "\n\n"
+    ).repeat(10);
+    const asyncChunks = await chunkDocumentAsync(
+      mdContent,
+      undefined,
+      undefined,
+      undefined,
+      "readme.md",
+      "auto",
+    );
     const syncChunks = chunkDocument(mdContent);
 
     expect(asyncChunks.length).toBe(syncChunks.length);
@@ -1103,7 +1237,14 @@ export function hashPassword(password: string): string {
   });
 
   test("no filepath falls back to regex-only", async () => {
-    const asyncChunks = await chunkDocumentAsync(TS_CODE, undefined, undefined, undefined, undefined, "auto");
+    const asyncChunks = await chunkDocumentAsync(
+      TS_CODE,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      "auto",
+    );
     const syncChunks = chunkDocument(TS_CODE);
 
     expect(asyncChunks.length).toBe(syncChunks.length);
@@ -1168,7 +1309,10 @@ describe("Path Context", () => {
 
   test("getContextForFile returns matching context", async () => {
     const store = await createTestStore();
-    const collectionName = await createTestCollection({ pwd: "/test/collection", glob: "**/*.md" });
+    const collectionName = await createTestCollection({
+      pwd: "/test/collection",
+      glob: "**/*.md",
+    });
     await addPathContext(collectionName, "/docs", "Documentation files");
 
     // Insert a document so getContextForFile can find it
@@ -1185,7 +1329,10 @@ describe("Path Context", () => {
 
   test("getContextForFile returns all matching contexts", async () => {
     const store = await createTestStore();
-    const collectionName = await createTestCollection({ pwd: "/test/collection", glob: "**/*.md" });
+    const collectionName = await createTestCollection({
+      pwd: "/test/collection",
+      glob: "**/*.md",
+    });
     await addPathContext(collectionName, "/", "General test files");
     await addPathContext(collectionName, "/docs", "Documentation files");
     await addPathContext(collectionName, "/docs/api", "API documentation");
@@ -1205,9 +1352,15 @@ describe("Path Context", () => {
     });
 
     // Context now returns ALL matching contexts joined with \n\n
-    expect(store.getContextForFile("/test/collection/readme.md")).toBe("General test files");
-    expect(store.getContextForFile("/test/collection/docs/guide.md")).toBe("General test files\n\nDocumentation files");
-    expect(store.getContextForFile("/test/collection/docs/api/reference.md")).toBe("General test files\n\nDocumentation files\n\nAPI documentation");
+    expect(store.getContextForFile("/test/collection/readme.md")).toBe(
+      "General test files",
+    );
+    expect(store.getContextForFile("/test/collection/docs/guide.md")).toBe(
+      "General test files\n\nDocumentation files",
+    );
+    expect(
+      store.getContextForFile("/test/collection/docs/api/reference.md"),
+    ).toBe("General test files\n\nDocumentation files\n\nAPI documentation");
 
     await cleanupTestDb(store);
   });
@@ -1220,7 +1373,10 @@ describe("Path Context", () => {
 describe("Collections", () => {
   test("collections are managed via YAML config", async () => {
     const store = await createTestStore();
-    const collectionName = await createTestCollection({ pwd: "/home/user/projects/myapp", glob: "**/*.md" });
+    const collectionName = await createTestCollection({
+      pwd: "/home/user/projects/myapp",
+      glob: "**/*.md",
+    });
 
     // Collections are now in YAML, not in the database
     expect(collectionName).toBe("myapp");
@@ -1319,7 +1475,9 @@ describe("FTS Search", () => {
     const results = store.searchFTS("quantum", 10);
     expect(results.length).toBe(2);
     // Title-match doc should rank higher due to BM25 column weights boosting title
-    expect(results[0]!.displayPath).toBe(`${collectionName}/test/title-match.md`);
+    expect(results[0]!.displayPath).toBe(
+      `${collectionName}/test/title-match.md`,
+    );
 
     await cleanupTestDb(store);
   });
@@ -1345,8 +1503,16 @@ describe("FTS Search", () => {
 
   test("searchFTS filters by collection name", async () => {
     const store = await createTestStore();
-    const collection1 = await createTestCollection({ pwd: "/path/one", glob: "**/*.md", name: "one" });
-    const collection2 = await createTestCollection({ pwd: "/path/two", glob: "**/*.md", name: "two" });
+    const collection1 = await createTestCollection({
+      pwd: "/path/one",
+      glob: "**/*.md",
+      name: "one",
+    });
+    const collection2 = await createTestCollection({
+      pwd: "/path/two",
+      glob: "**/*.md",
+      name: "two",
+    });
 
     await insertTestDocument(store.db, collection1, {
       name: "doc1",
@@ -1394,10 +1560,18 @@ describe("FTS Search", () => {
       displayPath: "cjk/ko.md",
     });
 
-    expect(store.searchFTS("关键词检索", 10).map(r => r.displayPath)).toContain(`${collectionName}/cjk/zh.md`);
-    expect(store.searchFTS("検索品質", 10).map(r => r.displayPath)).toContain(`${collectionName}/cjk/ja.md`);
-    expect(store.searchFTS("검색 품질", 10).map(r => r.displayPath)).toContain(`${collectionName}/cjk/ko.md`);
-    expect(store.searchFTS("vector 关键词", 10).map(r => r.displayPath)).toContain(`${collectionName}/cjk/zh.md`);
+    expect(
+      store.searchFTS("关键词检索", 10).map((r) => r.displayPath),
+    ).toContain(`${collectionName}/cjk/zh.md`);
+    expect(store.searchFTS("検索品質", 10).map((r) => r.displayPath)).toContain(
+      `${collectionName}/cjk/ja.md`,
+    );
+    expect(
+      store.searchFTS("검색 품질", 10).map((r) => r.displayPath),
+    ).toContain(`${collectionName}/cjk/ko.md`);
+    expect(
+      store.searchFTS("vector 关键词", 10).map((r) => r.displayPath),
+    ).toContain(`${collectionName}/cjk/zh.md`);
 
     await cleanupTestDb(store);
   });
@@ -1420,8 +1594,12 @@ describe("FTS Search", () => {
     });
 
     const foxResults = store.searchFTS("quick fox", 10);
-    expect(foxResults.map(r => r.displayPath)).toContain(`${collectionName}/english.md`);
-    expect(foxResults.map(r => r.displayPath)).not.toContain(`${collectionName}/zh.md`);
+    expect(foxResults.map((r) => r.displayPath)).toContain(
+      `${collectionName}/english.md`,
+    );
+    expect(foxResults.map((r) => r.displayPath)).not.toContain(
+      `${collectionName}/zh.md`,
+    );
 
     await cleanupTestDb(store);
   });
@@ -1445,7 +1623,11 @@ describe("FTS Search", () => {
 
   // BM25 IDF requires corpus depth — helper adds non-matching docs so term frequency
   // differentiation produces meaningful scores (2-doc corpus has near-zero IDF).
-  async function addNoiseDocuments(db: Database, collectionName: string, count = 8) {
+  async function addNoiseDocuments(
+    db: Database,
+    collectionName: string,
+    count = 8,
+  ) {
     for (let i = 0; i < count; i++) {
       await insertTestDocument(db, collectionName, {
         name: `noise${i}`,
@@ -1481,8 +1663,8 @@ describe("FTS Search", () => {
     expect(results.length).toBe(2);
 
     // Verify score direction: stronger match (title + body) should score HIGHER
-    const strongResult = results.find(r => r.displayPath.includes("strong"))!;
-    const weakResult = results.find(r => r.displayPath.includes("weak"))!;
+    const strongResult = results.find((r) => r.displayPath.includes("strong"))!;
+    const weakResult = results.find((r) => r.displayPath.includes("weak"))!;
     expect(strongResult.score).toBeGreaterThan(weakResult.score);
 
     // Verify scores are in valid (0, 1) range
@@ -1519,12 +1701,16 @@ describe("FTS Search", () => {
     expect(allResults.length).toBe(2);
 
     // With a minScore threshold, strong match should survive, weak should be filterable
-    const strongScore = allResults.find(r => r.displayPath.includes("strong"))!.score;
-    const weakScore = allResults.find(r => r.displayPath.includes("weak"))!.score;
+    const strongScore = allResults.find((r) =>
+      r.displayPath.includes("strong"),
+    )!.score;
+    const weakScore = allResults.find((r) =>
+      r.displayPath.includes("weak"),
+    )!.score;
 
     // Find a threshold between them
     const threshold = (strongScore + weakScore) / 2;
-    const filtered = allResults.filter(r => r.score >= threshold);
+    const filtered = allResults.filter((r) => r.score >= threshold);
 
     // Strong match survives the filter, weak does not
     expect(filtered.length).toBe(1);
@@ -1579,7 +1765,8 @@ describe("FTS Search", () => {
     await insertTestDocument(store.db, collectionName, {
       name: "weak",
       title: "General Notes",
-      body: "Various topics covering many areas of technology and design. " +
+      body:
+        "Various topics covering many areas of technology and design. " +
         "One of them might relate to zephyr but mostly about other things entirely. " +
         "Additional content about databases, networking, security, performance, " +
         "monitoring, deployment, testing, and documentation practices.",
@@ -1600,7 +1787,8 @@ describe("FTS Search", () => {
     expect(gap).toBeGreaterThanOrEqual(STRONG_SIGNAL_MIN_GAP);
 
     // Full strong signal check should pass (this was dead code before the fix)
-    const hasStrongSignal = topScore >= STRONG_SIGNAL_MIN_SCORE && gap >= STRONG_SIGNAL_MIN_GAP;
+    const hasStrongSignal =
+      topScore >= STRONG_SIGNAL_MIN_SCORE && gap >= STRONG_SIGNAL_MIN_GAP;
     expect(hasStrongSignal).toBe(true);
 
     await cleanupTestDb(store);
@@ -1630,11 +1818,15 @@ describe("FTS Search", () => {
 
     const results = store.searchFTS("2026.4.10", 10);
     expect(results.length).toBeGreaterThan(0);
-    expect(results.map(r => r.displayPath)).toContain(`${collectionName}/test/release-notes.md`);
+    expect(results.map((r) => r.displayPath)).toContain(
+      `${collectionName}/test/release-notes.md`,
+    );
 
     // Partial version should also work
     const partial = store.searchFTS("2026.4", 10);
-    expect(partial.map(r => r.displayPath)).toContain(`${collectionName}/test/release-notes.md`);
+    expect(partial.map((r) => r.displayPath)).toContain(
+      `${collectionName}/test/release-notes.md`,
+    );
 
     await cleanupTestDb(store);
   });
@@ -1648,7 +1840,10 @@ describe("Document Retrieval", () => {
   describe("findDocument", () => {
     test("findDocument finds by exact filepath", async () => {
       const store = await createTestStore();
-      const collectionName = await createTestCollection({ pwd: "/exact/path", glob: "**/*.md" });
+      const collectionName = await createTestCollection({
+        pwd: "/exact/path",
+        glob: "**/*.md",
+      });
       await insertTestDocument(store.db, collectionName, {
         name: "mydoc",
         title: "My Document",
@@ -1670,7 +1865,10 @@ describe("Document Retrieval", () => {
 
     test("findDocument finds by display_path", async () => {
       const store = await createTestStore();
-      const collectionName = await createTestCollection({ pwd: "/some/path", glob: "**/*.md" });
+      const collectionName = await createTestCollection({
+        pwd: "/some/path",
+        glob: "**/*.md",
+      });
       await insertTestDocument(store.db, collectionName, {
         name: "mydoc",
         displayPath: "docs/mydoc.md",
@@ -1684,7 +1882,10 @@ describe("Document Retrieval", () => {
 
     test("findDocument finds by partial path match", async () => {
       const store = await createTestStore();
-      const collectionName = await createTestCollection({ pwd: "/very/long/path/to", glob: "**/*.md" });
+      const collectionName = await createTestCollection({
+        pwd: "/very/long/path/to",
+        glob: "**/*.md",
+      });
       await insertTestDocument(store.db, collectionName, {
         name: "mydoc",
         displayPath: "mydoc.md",
@@ -1698,14 +1899,19 @@ describe("Document Retrieval", () => {
 
     test("findDocument includes body when requested", async () => {
       const store = await createTestStore();
-      const collectionName = await createTestCollection({ pwd: "/path", glob: "**/*.md" });
+      const collectionName = await createTestCollection({
+        pwd: "/path",
+        glob: "**/*.md",
+      });
       await insertTestDocument(store.db, collectionName, {
         name: "mydoc",
         displayPath: "mydoc.md",
         body: "The actual body content",
       });
 
-      const result = store.findDocument("/path/mydoc.md", { includeBody: true });
+      const result = store.findDocument("/path/mydoc.md", {
+        includeBody: true,
+      });
       expect("error" in result).toBe(false);
       if (!("error" in result)) {
         expect(result.body).toBe("The actual body content");
@@ -1798,7 +2004,10 @@ describe("Document Retrieval", () => {
     test("findDocument expands ~ to home directory", async () => {
       const store = await createTestStore();
       const home = homedir();
-      const collectionName = await createTestCollection({ pwd: home, name: "home" });
+      const collectionName = await createTestCollection({
+        pwd: home,
+        name: "home",
+      });
       await insertTestDocument(store.db, collectionName, {
         name: "mydoc",
         filepath: `${home}/docs/mydoc.md`,
@@ -1831,7 +2040,10 @@ describe("Document Retrieval", () => {
 
     test("findDocument includes hierarchical contexts (global + collection + path)", async () => {
       const store = await createTestStore();
-      const collectionName = await createTestCollection({ pwd: "/archive", name: "archive" });
+      const collectionName = await createTestCollection({
+        pwd: "/archive",
+        name: "archive",
+      });
 
       // Add global context
       await addGlobalContext("Global context for all documents");
@@ -1841,7 +2053,11 @@ describe("Document Retrieval", () => {
 
       // Add path-specific contexts at different levels
       await addPathContext(collectionName, "/podcasts", "Podcast episodes");
-      await addPathContext(collectionName, "/podcasts/external", "External podcast interviews");
+      await addPathContext(
+        collectionName,
+        "/podcasts/external",
+        "External podcast interviews",
+      );
 
       // Insert document in nested path
       await insertTestDocument(store.db, collectionName, {
@@ -1849,15 +2065,17 @@ describe("Document Retrieval", () => {
         displayPath: "podcasts/external/2024-jan-interview.md",
       });
 
-      const result = store.findDocument("/archive/podcasts/external/2024-jan-interview.md");
+      const result = store.findDocument(
+        "/archive/podcasts/external/2024-jan-interview.md",
+      );
       expect("error" in result).toBe(false);
       if (!("error" in result)) {
         // Should have all contexts joined with double newlines
         expect(result.context).toBe(
           "Global context for all documents\n\n" +
-          "Archive collection context\n\n" +
-          "Podcast episodes\n\n" +
-          "External podcast interviews"
+            "Archive collection context\n\n" +
+            "Podcast episodes\n\n" +
+            "External podcast interviews",
         );
       }
 
@@ -1912,7 +2130,11 @@ describe("Document Retrieval", () => {
         body: "Line 1\nLine 2\nLine 3\nLine 4\nLine 5",
       });
 
-      const body = store.getDocumentBody({ filepath: "/path/mydoc.md" }, -19, 80);
+      const body = store.getDocumentBody(
+        { filepath: "/path/mydoc.md" },
+        -19,
+        80,
+      );
       expect(body).toBe("Line 1\nLine 2\nLine 3\nLine 4\nLine 5");
 
       await cleanupTestDb(store);
@@ -2002,7 +2224,9 @@ describe("Document Retrieval", () => {
       expect(docs).toHaveLength(1);
       expect(docs[0]!.skipped).toBe(true);
       if (docs[0]!.skipped) {
-        expect((docs[0] as { skipped: true; skipReason: string }).skipReason).toContain("too large");
+        expect(
+          (docs[0] as { skipped: true; skipReason: string }).skipReason,
+        ).toContain("too large");
       }
 
       await cleanupTestDb(store);
@@ -2022,7 +2246,9 @@ describe("Document Retrieval", () => {
       const { docs } = store.findDocuments("doc1.md", { includeBody: true });
       expect(docs[0]!.skipped).toBe(false);
       if (!docs[0]!.skipped) {
-        expect((docs[0] as { doc: { body: string }; skipped: false }).doc.body).toBe("The content");
+        expect(
+          (docs[0] as { doc: { body: string }; skipped: false }).doc.body,
+        ).toBe("The content");
       }
 
       await cleanupTestDb(store);
@@ -2070,14 +2296,15 @@ describe("Document Retrieval", () => {
         displayPath: "changelog.md",
       });
 
-      const { docs, errors } = store.findDocuments(`${collectionName}/{readme,changelog}.md`);
+      const { docs, errors } = store.findDocuments(
+        `${collectionName}/{readme,changelog}.md`,
+      );
       expect(errors).toHaveLength(0);
       expect(docs).toHaveLength(2);
 
       await cleanupTestDb(store);
     });
   });
-
 });
 
 // =============================================================================
@@ -2086,7 +2313,8 @@ describe("Document Retrieval", () => {
 
 describe("Snippet Extraction", () => {
   test("extractSnippet finds query terms", () => {
-    const body = "First line.\nSecond line with keyword.\nThird line.\nFourth line.";
+    const body =
+      "First line.\nSecond line with keyword.\nThird line.\nFourth line.";
     const { line, snippet } = extractSnippet(body, "keyword", 500);
 
     expect(line).toBe(2); // Line 2 contains "keyword"
@@ -2112,7 +2340,10 @@ describe("Snippet Extraction", () => {
   });
 
   test("extractSnippet uses chunkPos hint", () => {
-    const body = "First section...\n".repeat(50) + "Target keyword here\n" + "More content...".repeat(50);
+    const body =
+      "First section...\n".repeat(50) +
+      "Target keyword here\n" +
+      "More content...".repeat(50);
     const chunkPos = body.indexOf("Target keyword");
 
     const { snippet } = extractSnippet(body, "Target", 200, chunkPos);
@@ -2129,18 +2360,26 @@ describe("Snippet Extraction", () => {
 
   test("extractSnippet includes diff-style header", () => {
     const body = "Line 1\nLine 2\nLine 3 has keyword\nLine 4\nLine 5";
-    const { snippet, linesBefore, linesAfter, snippetLines } = extractSnippet(body, "keyword", 500);
+    const { snippet, linesBefore, linesAfter, snippetLines } = extractSnippet(
+      body,
+      "keyword",
+      500,
+    );
 
     // Header should show line position and context info
     expect(snippet).toMatch(/^@@ -\d+,\d+ @@ \(\d+ before, \d+ after\)/);
     expect(linesBefore).toBe(1); // Line 1 comes before
-    expect(linesAfter).toBe(0);  // Snippet includes to end (lines 2-5)
+    expect(linesAfter).toBe(0); // Snippet includes to end (lines 2-5)
     expect(snippetLines).toBe(4); // Lines 2, 3, 4, 5
   });
 
   test("extractSnippet calculates linesBefore and linesAfter correctly", () => {
     const body = "L1\nL2\nL3\nL4 match\nL5\nL6\nL7\nL8\nL9\nL10";
-    const { linesBefore, linesAfter, snippetLines, line } = extractSnippet(body, "match", 500);
+    const { linesBefore, linesAfter, snippetLines, line } = extractSnippet(
+      body,
+      "match",
+      500,
+    );
 
     expect(line).toBe(4); // "L4 match" is line 4
     expect(linesBefore).toBe(2); // L1, L2 before snippet (snippet starts at L3)
@@ -2153,24 +2392,30 @@ describe("Snippet Extraction", () => {
     const { snippet } = extractSnippet(body, "keyword", 500);
 
     // Should start with @@ -line,count @@ (N before, M after)
-    const headerMatch = snippet.match(/^@@ -(\d+),(\d+) @@ \((\d+) before, (\d+) after\)/);
+    const headerMatch = snippet.match(
+      /^@@ -(\d+),(\d+) @@ \((\d+) before, (\d+) after\)/,
+    );
     expect(headerMatch).not.toBeNull();
 
     const [, startLine, count, before, after] = headerMatch!;
     expect(parseInt(startLine!)).toBe(2); // Snippet starts at line 2 (B)
-    expect(parseInt(count!)).toBe(4);     // 4 lines: B, C keyword, D, E
-    expect(parseInt(before!)).toBe(1);    // A is before
-    expect(parseInt(after!)).toBe(3);     // F, G, H are after
+    expect(parseInt(count!)).toBe(4); // 4 lines: B, C keyword, D, E
+    expect(parseInt(before!)).toBe(1); // A is before
+    expect(parseInt(after!)).toBe(3); // F, G, H are after
   });
 
   test("extractSnippet at document start shows 0 before", () => {
     const body = "First line keyword\nSecond\nThird\nFourth\nFifth";
-    const { linesBefore, linesAfter, snippetLines, line } = extractSnippet(body, "keyword", 500);
+    const { linesBefore, linesAfter, snippetLines, line } = extractSnippet(
+      body,
+      "keyword",
+      500,
+    );
 
-    expect(line).toBe(1);         // Keyword on first line
-    expect(linesBefore).toBe(0);  // Nothing before
+    expect(line).toBe(1); // Keyword on first line
+    expect(linesBefore).toBe(0); // Nothing before
     expect(snippetLines).toBe(3); // First, Second, Third (bestLine-1 to bestLine+3, clamped)
-    expect(linesAfter).toBe(2);   // Fourth, Fifth
+    expect(linesAfter).toBe(2); // Fourth, Fifth
   });
 
   test("extractSnippet with leading blank/frontmatter lines reports 1 before, not 0", () => {
@@ -2180,32 +2425,43 @@ describe("Snippet Extraction", () => {
     // line, not from the visible portion of the snippet — so when the
     // snippet starts at line 2, "1 before" is the correct count. Lock that
     // in with a 77-line document whose match sits on line 3.
-    const otherLines = Array.from({ length: 72 }, (_, i) => `body line ${i + 6}`).join("\n");
+    const otherLines = Array.from(
+      { length: 72 },
+      (_, i) => `body line ${i + 6}`,
+    ).join("\n");
     const body = `---\ntitle: Notes\n# Heading with keyword\nIntro paragraph.\nMore intro lines.\n${otherLines}`;
 
     const { line, linesBefore, snippetLines, linesAfter, snippet } =
       extractSnippet(body, "keyword", 500);
 
-    expect(line).toBe(3);             // match is on line 3
-    expect(linesBefore).toBe(1);      // exactly one line above the 4-line snippet window
-    expect(snippetLines).toBe(4);     // lines 2..5 form the snippet
-    expect(linesAfter).toBe(72);      // remaining body
+    expect(line).toBe(3); // match is on line 3
+    expect(linesBefore).toBe(1); // exactly one line above the 4-line snippet window
+    expect(snippetLines).toBe(4); // lines 2..5 form the snippet
+    expect(linesAfter).toBe(72); // remaining body
     expect(snippet).toContain("@@ -2,4 @@ (1 before, 72 after)");
   });
 
   test("extractSnippet at document end shows 0 after", () => {
     const body = "First\nSecond\nThird\nFourth\nFifth keyword";
-    const { linesBefore, linesAfter, snippetLines, line } = extractSnippet(body, "keyword", 500);
+    const { linesBefore, linesAfter, snippetLines, line } = extractSnippet(
+      body,
+      "keyword",
+      500,
+    );
 
-    expect(line).toBe(5);         // Keyword on last line
-    expect(linesBefore).toBe(3);  // First, Second, Third before snippet
+    expect(line).toBe(5); // Keyword on last line
+    expect(linesBefore).toBe(3); // First, Second, Third before snippet
     expect(snippetLines).toBe(2); // Fourth, Fifth keyword (bestLine-1 to bestLine+3, clamped)
-    expect(linesAfter).toBe(0);   // Nothing after
+    expect(linesAfter).toBe(0); // Nothing after
   });
 
   test("extractSnippet with single line document", () => {
     const body = "Single line with keyword";
-    const { linesBefore, linesAfter, snippetLines, snippet } = extractSnippet(body, "keyword", 500);
+    const { linesBefore, linesAfter, snippetLines, snippet } = extractSnippet(
+      body,
+      "keyword",
+      500,
+    );
 
     expect(linesBefore).toBe(0);
     expect(linesAfter).toBe(0);
@@ -2220,7 +2476,12 @@ describe("Snippet Extraction", () => {
     const body = padding + "Target keyword here\nMore content\nEven more";
     const chunkPos = padding.length; // Position of "Target keyword"
 
-    const { line, linesBefore, linesAfter } = extractSnippet(body, "keyword", 200, chunkPos);
+    const { line, linesBefore, linesAfter } = extractSnippet(
+      body,
+      "keyword",
+      200,
+      chunkPos,
+    );
 
     expect(line).toBe(51); // "Target keyword" is line 51
     expect(linesBefore).toBeGreaterThan(40); // Many lines before
@@ -2236,7 +2497,12 @@ describe("Snippet Extraction", () => {
     const body = padding + "chunk content here\nmore chunk content\n" + padding;
     const chunkPos = padding.length;
 
-    const { line } = extractSnippet(body, '"unrelated quoted phrase"', 200, chunkPos);
+    const { line } = extractSnippet(
+      body,
+      '"unrelated quoted phrase"',
+      200,
+      chunkPos,
+    );
 
     expect(line).toBeGreaterThan(50);
     expect(line).toBeLessThan(110);
@@ -2289,9 +2555,9 @@ describe("Reciprocal Rank Fusion", () => {
     const fused = reciprocalRankFusion([list1, list2]);
 
     // doc2 appears in both lists, should have higher combined score
-    expect(fused.find(r => r.file === "doc2")).toBeDefined();
-    expect(fused.find(r => r.file === "doc1")).toBeDefined();
-    expect(fused.find(r => r.file === "doc3")).toBeDefined();
+    expect(fused.find((r) => r.file === "doc2")).toBeDefined();
+    expect(fused.find((r) => r.file === "doc1")).toBeDefined();
+    expect(fused.find((r) => r.file === "doc3")).toBeDefined();
   });
 
   test("RRF respects weights", () => {
@@ -2312,29 +2578,31 @@ describe("Reciprocal Rank Fusion", () => {
 
     // Mirrors hybridQuery's common list order when a lex expansion exists:
     // original FTS, lex expansion FTS, original vector.
-    const rankedLists = [
-      [originalFtsOnly],
-      [expansionOnly],
-      [originalVector],
-    ];
+    const rankedLists = [[originalFtsOnly], [expansionOnly], [originalVector]];
     const rankedListMeta: RankedListMeta[] = [
       { source: "fts", queryType: "original", query: "user query" },
       { source: "fts", queryType: "lex", query: "lex expansion" },
       { source: "vec", queryType: "original", query: "user query" },
     ];
 
-    const positionBasedWeights = rankedLists.map((_, i) => i < 2 ? 2.0 : 1.0);
+    const positionBasedWeights = rankedLists.map((_, i) => (i < 2 ? 2.0 : 1.0));
     const buggyOrder = reciprocalRankFusion(rankedLists, positionBasedWeights);
 
-    expect(buggyOrder.findIndex(r => r.file === "lex-expansion-only.md"))
-      .toBeLessThan(buggyOrder.findIndex(r => r.file === "original-vector.md"));
+    expect(
+      buggyOrder.findIndex((r) => r.file === "lex-expansion-only.md"),
+    ).toBeLessThan(
+      buggyOrder.findIndex((r) => r.file === "original-vector.md"),
+    );
 
     const semanticWeights = getHybridRrfWeights(rankedListMeta);
     const fixedOrder = reciprocalRankFusion(rankedLists, semanticWeights);
 
     expect(semanticWeights).toEqual([2.0, 1.0, 2.0]);
-    expect(fixedOrder.findIndex(r => r.file === "original-vector.md"))
-      .toBeLessThan(fixedOrder.findIndex(r => r.file === "lex-expansion-only.md"));
+    expect(
+      fixedOrder.findIndex((r) => r.file === "original-vector.md"),
+    ).toBeLessThan(
+      fixedOrder.findIndex((r) => r.file === "lex-expansion-only.md"),
+    );
   });
 
   test("RRF adds top-rank bonus", () => {
@@ -2346,8 +2614,8 @@ describe("Reciprocal Rank Fusion", () => {
 
     // doc1 should get +0.05 bonus for being #1
     // doc2 should get +0.02 bonus for being #2-3
-    const doc1 = fused.find(r => r.file === "doc1");
-    const doc2 = fused.find(r => r.file === "doc2");
+    const doc1 = fused.find((r) => r.file === "doc1");
+    const doc2 = fused.find((r) => r.file === "doc2");
 
     expect(doc1!.score).toBeGreaterThan(doc2!.score);
   });
@@ -2377,51 +2645,95 @@ describe("Reindex Collection", () => {
   test("preserves document id and embeddings when file path changes only by case", async () => {
     const store = await createTestStore();
     const collectionName = "docs";
-    const collectionPath = join(testDir, `case-rename-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    const collectionPath = join(
+      testDir,
+      `case-rename-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+    );
     await mkdir(collectionPath, { recursive: true });
 
     const originalPath = join(collectionPath, "README.md");
     const renamedPath = join(collectionPath, "readme.md");
-    const body = "# Case Rename\n\nContent that should keep the same embedding.";
+    const body =
+      "# Case Rename\n\nContent that should keep the same embedding.";
     await writeFile(originalPath, body);
 
-    const firstResult = await reindexCollection(store, collectionPath, "**/*.md", collectionName);
+    const firstResult = await reindexCollection(
+      store,
+      collectionPath,
+      "**/*.md",
+      collectionName,
+    );
     expect(firstResult.indexed).toBe(1);
 
-    const before = store.db.prepare(`
+    const before = store.db
+      .prepare(
+        `
       SELECT id, path, hash FROM documents
       WHERE collection = ? AND active = 1
-    `).get(collectionName) as { id: number; path: string; hash: string };
+    `,
+      )
+      .get(collectionName) as { id: number; path: string; hash: string };
     expect(before.path).toBe("README.md");
 
-    store.db.prepare(`
+    store.db
+      .prepare(
+        `
       INSERT INTO content_vectors (hash, seq, pos, model, embedded_at)
       VALUES (?, 0, 0, 'test-model', ?)
-    `).run(before.hash, new Date().toISOString());
+    `,
+      )
+      .run(before.hash, new Date().toISOString());
 
     await rename(originalPath, renamedPath);
 
-    const secondResult = await reindexCollection(store, collectionPath, "**/*.md", collectionName);
+    const secondResult = await reindexCollection(
+      store,
+      collectionPath,
+      "**/*.md",
+      collectionName,
+    );
     expect(secondResult.indexed).toBe(0);
     expect(secondResult.unchanged).toBe(1);
     expect(secondResult.removed).toBe(0);
 
-    const afterRows = store.db.prepare(`
+    const afterRows = store.db
+      .prepare(
+        `
       SELECT id, path, hash, active FROM documents
       WHERE collection = ?
       ORDER BY id
-    `).all(collectionName) as { id: number; path: string; hash: string; active: number }[];
+    `,
+      )
+      .all(collectionName) as {
+      id: number;
+      path: string;
+      hash: string;
+      active: number;
+    }[];
     expect(afterRows).toHaveLength(1);
-    expect(afterRows[0]).toMatchObject({ id: before.id, path: "readme.md", hash: before.hash, active: 1 });
+    expect(afterRows[0]).toMatchObject({
+      id: before.id,
+      path: "readme.md",
+      hash: before.hash,
+      active: 1,
+    });
 
-    const vectorCount = store.db.prepare(`
+    const vectorCount = store.db
+      .prepare(
+        `
       SELECT COUNT(*) AS count FROM content_vectors WHERE hash = ?
-    `).get(before.hash) as { count: number };
+    `,
+      )
+      .get(before.hash) as { count: number };
     expect(vectorCount.count).toBe(1);
 
-    const ftsRows = store.db.prepare(`
+    const ftsRows = store.db
+      .prepare(
+        `
       SELECT rowid, filepath FROM documents_fts WHERE rowid = ?
-    `).all(before.id) as { rowid: number; filepath: string }[];
+    `,
+      )
+      .all(before.id) as { rowid: number; filepath: string }[];
     expect(ftsRows).toEqual([{ rowid: before.id, filepath: "docs/readme.md" }]);
 
     await cleanupTestDb(store);
@@ -2449,9 +2761,18 @@ describe("Index Status", () => {
     const store = await createTestStore();
     const collectionName = await createTestCollection();
 
-    await insertTestDocument(store.db, collectionName, { name: "doc1", active: 1 });
-    await insertTestDocument(store.db, collectionName, { name: "doc2", active: 1 });
-    await insertTestDocument(store.db, collectionName, { name: "doc3", active: 0 }); // inactive
+    await insertTestDocument(store.db, collectionName, {
+      name: "doc1",
+      active: 1,
+    });
+    await insertTestDocument(store.db, collectionName, {
+      name: "doc2",
+      active: 1,
+    });
+    await insertTestDocument(store.db, collectionName, {
+      name: "doc3",
+      active: 0,
+    }); // inactive
 
     const status = store.getStatus();
     expect(status.totalDocuments).toBe(2); // Only active docs
@@ -2461,12 +2782,15 @@ describe("Index Status", () => {
 
   test("getStatus reports collection info", async () => {
     const store = await createTestStore();
-    const collectionName = await createTestCollection({ pwd: "/test/path", glob: "**/*.md" });
+    const collectionName = await createTestCollection({
+      pwd: "/test/path",
+      glob: "**/*.md",
+    });
     await insertTestDocument(store.db, collectionName, { name: "doc1" });
 
     const status = store.getStatus();
     expect(status.collections.length).toBeGreaterThanOrEqual(1);
-    const col = status.collections.find(c => c.name === collectionName);
+    const col = status.collections.find((c) => c.name === collectionName);
     expect(col).toBeDefined();
     expect(col?.path).toBe("/test/path");
     expect(col?.pattern).toBe("**/*.md");
@@ -2480,9 +2804,18 @@ describe("Index Status", () => {
     const collectionName = await createTestCollection();
 
     // Add documents with different hashes
-    await insertTestDocument(store.db, collectionName, { name: "doc1", hash: "hash1" });
-    await insertTestDocument(store.db, collectionName, { name: "doc2", hash: "hash2" });
-    await insertTestDocument(store.db, collectionName, { name: "doc3", hash: "hash1" }); // same hash as doc1
+    await insertTestDocument(store.db, collectionName, {
+      name: "doc1",
+      hash: "hash1",
+    });
+    await insertTestDocument(store.db, collectionName, {
+      name: "doc2",
+      hash: "hash2",
+    });
+    await insertTestDocument(store.db, collectionName, {
+      name: "doc3",
+      hash: "hash1",
+    }); // same hash as doc1
 
     const needsEmbedding = store.getHashesNeedingEmbedding();
     expect(needsEmbedding).toBe(2); // hash1 and hash2
@@ -2499,8 +2832,19 @@ describe("Index Status", () => {
 
     store.llm = { embedModelName: activeModel } as any;
     store.ensureVecTable(3);
-    await insertTestDocument(store.db, collectionName, { name: "doc1", hash: "hash1" });
-    store.insertEmbedding("hash1", 0, 0, new Float32Array([1, 2, 3]), staleModel, now, 1);
+    await insertTestDocument(store.db, collectionName, {
+      name: "doc1",
+      hash: "hash1",
+    });
+    store.insertEmbedding(
+      "hash1",
+      0,
+      0,
+      new Float32Array([1, 2, 3]),
+      staleModel,
+      now,
+      1,
+    );
 
     expect(store.getHashesNeedingEmbedding()).toBe(1);
     expect(store.getStatus().needsEmbedding).toBe(1);
@@ -2518,8 +2862,20 @@ describe("Index Status", () => {
 
     store.llm = { embedModelName: model } as any;
     store.ensureVecTable(3);
-    await insertTestDocument(store.db, collectionName, { name: "doc1", hash: "hash1" });
-    store.insertEmbedding("hash1", 0, 0, new Float32Array([1, 2, 3]), model, now, 1, "stale1");
+    await insertTestDocument(store.db, collectionName, {
+      name: "doc1",
+      hash: "hash1",
+    });
+    store.insertEmbedding(
+      "hash1",
+      0,
+      0,
+      new Float32Array([1, 2, 3]),
+      model,
+      now,
+      1,
+      "stale1",
+    );
 
     expect(getEmbeddingFingerprint(model)).toMatch(/^[a-f0-9]{6}$/);
     expect(store.getHashesNeedingEmbedding()).toBe(1);
@@ -2605,7 +2961,9 @@ describe("Fuzzy Matching", () => {
 
     const matches = store.matchFilesByGlob("journals/*.md");
     expect(matches).toHaveLength(2);
-    expect(matches.every(m => m.displayPath.startsWith("journals/"))).toBe(true);
+    expect(matches.every((m) => m.displayPath.startsWith("journals/"))).toBe(
+      true,
+    );
 
     await cleanupTestDb(store);
   });
@@ -2646,7 +3004,9 @@ describe("Fuzzy Matching", () => {
       displayPath: "license.md",
     });
 
-    const matches = store.matchFilesByGlob(`${collectionName}/{readme,changelog}.md`);
+    const matches = store.matchFilesByGlob(
+      `${collectionName}/{readme,changelog}.md`,
+    );
     expect(matches).toHaveLength(2);
 
     await cleanupTestDb(store);
@@ -2662,17 +3022,25 @@ describe("Vector Table", () => {
     const store = await createTestStore();
 
     // Initially no vector table
-    let exists = store.db.prepare(`
+    let exists = store.db
+      .prepare(
+        `
       SELECT name FROM sqlite_master WHERE type='table' AND name='vectors_vec'
-    `).get();
+    `,
+      )
+      .get();
     expect(exists).toBeFalsy(); // null or undefined
 
     // Create vector table
     store.ensureVecTable(768);
 
-    exists = store.db.prepare(`
+    exists = store.db
+      .prepare(
+        `
       SELECT name FROM sqlite_master WHERE type='table' AND name='vectors_vec'
-    `).get();
+    `,
+      )
+      .get();
     expect(exists).toBeTruthy();
 
     await cleanupTestDb(store);
@@ -2685,18 +3053,26 @@ describe("Vector Table", () => {
     store.ensureVecTable(768);
 
     // Check dimensions
-    const tableInfo = store.db.prepare(`
+    const tableInfo = store.db
+      .prepare(
+        `
       SELECT sql FROM sqlite_master WHERE type='table' AND name='vectors_vec'
-    `).get() as { sql: string };
+    `,
+      )
+      .get() as { sql: string };
     expect(tableInfo.sql).toContain("float[768]");
 
     // Attempting to use a different dimension should throw (not silently drop data)
     expect(() => store.ensureVecTable(1024)).toThrow(/dimension mismatch/i);
 
     // Original table should still exist untouched
-    const tableInfoAfter = store.db.prepare(`
+    const tableInfoAfter = store.db
+      .prepare(
+        `
       SELECT sql FROM sqlite_master WHERE type='table' AND name='vectors_vec'
-    `).get() as { sql: string };
+    `,
+      )
+      .get() as { sql: string };
     expect(tableInfoAfter.sql).toContain("float[768]");
 
     await cleanupTestDb(store);
@@ -2711,18 +3087,32 @@ describe("Vector Table", () => {
     const second = new Float32Array([0.3, 0.4]);
     const now = new Date().toISOString();
 
-    store.db.prepare(`INSERT INTO vectors_vec (hash_seq, embedding) VALUES (?, ?)`).run(`${hash}_0`, first);
+    store.db
+      .prepare(`INSERT INTO vectors_vec (hash_seq, embedding) VALUES (?, ?)`)
+      .run(`${hash}_0`, first);
 
     // Reproduces sqlite-vec's broken conflict handling: vec0 does not honor OR REPLACE.
     expect(() => {
-      store.db.prepare(`INSERT OR REPLACE INTO vectors_vec (hash_seq, embedding) VALUES (?, ?)`).run(`${hash}_0`, second);
+      store.db
+        .prepare(
+          `INSERT OR REPLACE INTO vectors_vec (hash_seq, embedding) VALUES (?, ?)`,
+        )
+        .run(`${hash}_0`, second);
     }).toThrow(/UNIQUE constraint failed/i);
 
     // QMD must therefore use DELETE + INSERT when upserting the vector row.
-    expect(() => store.insertEmbedding(hash, 0, 0, second, "test-model", now)).not.toThrow();
+    expect(() =>
+      store.insertEmbedding(hash, 0, 0, second, "test-model", now),
+    ).not.toThrow();
 
-    const vectorCount = store.db.prepare(`SELECT COUNT(*) AS count FROM vectors_vec WHERE hash_seq = ?`).get(`${hash}_0`) as { count: number };
-    const metadataCount = store.db.prepare(`SELECT COUNT(*) AS count FROM content_vectors WHERE hash = ? AND seq = 0`).get(hash) as { count: number };
+    const vectorCount = store.db
+      .prepare(`SELECT COUNT(*) AS count FROM vectors_vec WHERE hash_seq = ?`)
+      .get(`${hash}_0`) as { count: number };
+    const metadataCount = store.db
+      .prepare(
+        `SELECT COUNT(*) AS count FROM content_vectors WHERE hash = ? AND seq = 0`,
+      )
+      .get(hash) as { count: number };
     expect(vectorCount.count).toBe(1);
     expect(metadataCount.count).toBe(1);
 
@@ -2742,12 +3132,24 @@ describe("Integration", () => {
 
     try {
       for (let i = 1; i <= 5; i++) {
-        await writeFile(join(collectionDir, `doc-${i}.md`), `# Doc ${i}\n\nUnique body ${i}`);
+        await writeFile(
+          join(collectionDir, `doc-${i}.md`),
+          `# Doc ${i}\n\nUnique body ${i}`,
+        );
       }
 
-      await createTestCollection({ pwd: collectionDir, glob: "**/*.md", name: collectionName });
+      await createTestCollection({
+        pwd: collectionDir,
+        glob: "**/*.md",
+        name: collectionName,
+      });
 
-      const initial = await reindexCollection(store, collectionDir, "**/*.md", collectionName);
+      const initial = await reindexCollection(
+        store,
+        collectionDir,
+        "**/*.md",
+        collectionName,
+      );
       expect(initial.indexed).toBe(5);
       expect(initial.removed).toBe(0);
 
@@ -2755,18 +3157,33 @@ describe("Integration", () => {
       await rm(join(collectionDir, "doc-4.md"));
       await rm(join(collectionDir, "doc-5.md"));
 
-      const afterDelete = await reindexCollection(store, collectionDir, "**/*.md", collectionName);
+      const afterDelete = await reindexCollection(
+        store,
+        collectionDir,
+        "**/*.md",
+        collectionName,
+      );
       expect(afterDelete.removed).toBe(3);
 
-      const counts = store.db.prepare(`
+      const counts = store.db
+        .prepare(
+          `
         SELECT
           SUM(CASE WHEN active = 1 THEN 1 ELSE 0 END) AS active,
           SUM(CASE WHEN active = 0 THEN 1 ELSE 0 END) AS inactive,
           COUNT(*) AS total
         FROM documents
         WHERE collection = ?
-      `).get(collectionName) as { active: number; inactive: number; total: number };
-      const contentCount = store.db.prepare(`SELECT COUNT(*) AS count FROM content`).get() as { count: number };
+      `,
+        )
+        .get(collectionName) as {
+        active: number;
+        inactive: number;
+        total: number;
+      };
+      const contentCount = store.db
+        .prepare(`SELECT COUNT(*) AS count FROM content`)
+        .get() as { count: number };
 
       expect(counts).toEqual({ active: 2, inactive: 3, total: 5 });
       expect(contentCount.count).toBe(5);
@@ -2778,7 +3195,10 @@ describe("Integration", () => {
 
   test("full document lifecycle: create, search, retrieve", async () => {
     const store = await createTestStore();
-    const collectionName = await createTestCollection({ pwd: "/test/notes", glob: "**/*.md" });
+    const collectionName = await createTestCollection({
+      pwd: "/test/notes",
+      glob: "**/*.md",
+    });
 
     // Add context - use "/" for collection root
     await addPathContext(collectionName, "/", "Personal notes");
@@ -2819,7 +3239,9 @@ describe("Integration", () => {
     }
 
     // Multi-get
-    const { docs, errors } = store.findDocuments("notes/*.md", { includeBody: true });
+    const { docs, errors } = store.findDocuments("notes/*.md", {
+      includeBody: true,
+    });
     expect(errors).toHaveLength(0);
     expect(docs).toHaveLength(2);
 
@@ -2830,8 +3252,16 @@ describe("Integration", () => {
     const store1 = await createTestStore();
     const store2 = await createTestStore();
 
-    const col1 = await createTestCollection({ pwd: "/store1", glob: "**/*.md", name: "store1" });
-    const col2 = await createTestCollection({ pwd: "/store2", glob: "**/*.md", name: "store2" });
+    const col1 = await createTestCollection({
+      pwd: "/store1",
+      glob: "**/*.md",
+      name: "store1",
+    });
+    const col2 = await createTestCollection({
+      pwd: "/store2",
+      glob: "**/*.md",
+      name: "store2",
+    });
 
     await insertTestDocument(store1.db, col1, {
       name: "doc1",
@@ -2904,9 +3334,17 @@ describe.skipIf(!!process.env.CI)("LlamaCpp Integration", () => {
 
     // Create vector table and insert a vector
     store.ensureVecTable(768);
-    const embedding = Array(768).fill(0).map(() => Math.random());
-    store.db.prepare(`INSERT INTO content_vectors (hash, seq, pos, model, embedded_at) VALUES (?, 0, 0, 'test', ?)`).run(hash, new Date().toISOString());
-    store.db.prepare(`INSERT INTO vectors_vec (hash_seq, embedding) VALUES (?, ?)`).run(`${hash}_0`, new Float32Array(embedding));
+    const embedding = Array(768)
+      .fill(0)
+      .map(() => Math.random());
+    store.db
+      .prepare(
+        `INSERT INTO content_vectors (hash, seq, pos, model, embedded_at) VALUES (?, 0, 0, 'test', ?)`,
+      )
+      .run(hash, new Date().toISOString());
+    store.db
+      .prepare(`INSERT INTO vectors_vec (hash_seq, embedding) VALUES (?, ?)`)
+      .run(`${hash}_0`, new Float32Array(embedding));
 
     const results = await store.searchVec("test query", "embeddinggemma", 10);
     expect(results).toHaveLength(1);
@@ -2919,8 +3357,14 @@ describe.skipIf(!!process.env.CI)("LlamaCpp Integration", () => {
 
   test("searchVec filters by collection name", async () => {
     const store = await createTestStore();
-    const collection1 = await createTestCollection({ name: "coll1", pwd: "/test/coll1" });
-    const collection2 = await createTestCollection({ name: "coll2", pwd: "/test/coll2" });
+    const collection1 = await createTestCollection({
+      name: "coll1",
+      pwd: "/test/coll1",
+    });
+    const collection2 = await createTestCollection({
+      name: "coll2",
+      pwd: "/test/coll2",
+    });
 
     const hash1 = "hash1abc";
     const hash2 = "hash2xyz";
@@ -2939,19 +3383,40 @@ describe.skipIf(!!process.env.CI)("LlamaCpp Integration", () => {
 
     // Create vectors_vec table with correct dimensions (768 for embeddinggemma)
     store.ensureVecTable(768);
-    const embedding1 = Array(768).fill(0).map(() => Math.random());
-    const embedding2 = Array(768).fill(0).map(() => Math.random());
-    store.db.prepare(`INSERT INTO content_vectors (hash, seq, pos, model, embedded_at) VALUES (?, 0, 0, 'test', ?)`).run(hash1, new Date().toISOString());
-    store.db.prepare(`INSERT INTO content_vectors (hash, seq, pos, model, embedded_at) VALUES (?, 0, 0, 'test', ?)`).run(hash2, new Date().toISOString());
-    store.db.prepare(`INSERT INTO vectors_vec (hash_seq, embedding) VALUES (?, ?)`).run(`${hash1}_0`, new Float32Array(embedding1));
-    store.db.prepare(`INSERT INTO vectors_vec (hash_seq, embedding) VALUES (?, ?)`).run(`${hash2}_0`, new Float32Array(embedding2));
+    const embedding1 = Array(768)
+      .fill(0)
+      .map(() => Math.random());
+    const embedding2 = Array(768)
+      .fill(0)
+      .map(() => Math.random());
+    store.db
+      .prepare(
+        `INSERT INTO content_vectors (hash, seq, pos, model, embedded_at) VALUES (?, 0, 0, 'test', ?)`,
+      )
+      .run(hash1, new Date().toISOString());
+    store.db
+      .prepare(
+        `INSERT INTO content_vectors (hash, seq, pos, model, embedded_at) VALUES (?, 0, 0, 'test', ?)`,
+      )
+      .run(hash2, new Date().toISOString());
+    store.db
+      .prepare(`INSERT INTO vectors_vec (hash_seq, embedding) VALUES (?, ?)`)
+      .run(`${hash1}_0`, new Float32Array(embedding1));
+    store.db
+      .prepare(`INSERT INTO vectors_vec (hash_seq, embedding) VALUES (?, ?)`)
+      .run(`${hash2}_0`, new Float32Array(embedding2));
 
     // Search without filter - should return both
     const allResults = await store.searchVec("content", "embeddinggemma", 10);
     expect(allResults).toHaveLength(2);
 
     // Search with collection filter - should return only from collection1
-    const filtered = await store.searchVec("content", "embeddinggemma", 10, collection1);
+    const filtered = await store.searchVec(
+      "content",
+      "embeddinggemma",
+      10,
+      collection1,
+    );
     expect(filtered).toHaveLength(1);
     expect(filtered[0]!.collectionName).toBe(collection1);
 
@@ -2976,9 +3441,17 @@ describe.skipIf(!!process.env.CI)("LlamaCpp Integration", () => {
 
     // Create vector table and insert a test vector
     store.ensureVecTable(768);
-    const embedding = Array(768).fill(0).map(() => Math.random());
-    store.db.prepare(`INSERT INTO content_vectors (hash, seq, pos, model, embedded_at) VALUES (?, 0, 0, 'test', ?)`).run(hash, new Date().toISOString());
-    store.db.prepare(`INSERT INTO vectors_vec (hash_seq, embedding) VALUES (?, ?)`).run(`${hash}_0`, new Float32Array(embedding));
+    const embedding = Array(768)
+      .fill(0)
+      .map(() => Math.random());
+    store.db
+      .prepare(
+        `INSERT INTO content_vectors (hash, seq, pos, model, embedded_at) VALUES (?, 0, 0, 'test', ?)`,
+      )
+      .run(hash, new Date().toISOString());
+    store.db
+      .prepare(`INSERT INTO vectors_vec (hash_seq, embedding) VALUES (?, ?)`)
+      .run(`${hash}_0`, new Float32Array(embedding));
 
     // This should complete quickly (not hang) due to the two-step fix
     // The old code with JOINs in the sqlite-vec query would hang indefinitely
@@ -3001,7 +3474,7 @@ describe.skipIf(!!process.env.CI)("LlamaCpp Integration", () => {
     // Returns ExpandedQuery[] — typed results from LLM, excluding original
     expect(expanded.length).toBeGreaterThanOrEqual(1);
     for (const q of expanded) {
-      expect(['lex', 'vec', 'hyde']).toContain(q.type);
+      expect(["lex", "vec", "hyde"]).toContain(q.type);
       expect(q.query.length).toBeGreaterThan(0);
       expect(q.query).not.toBe("test query"); // original excluded
     }
@@ -3057,14 +3530,16 @@ describe.skipIf(!!process.env.CI)("LlamaCpp Integration", () => {
 
   test("rerank deduplicates identical chunks across files", async () => {
     const store = await createTestStore();
-    const rerankSpy = vi.fn(async (_query: string, docs: { file: string; text: string }[]) => ({
-      results: docs.map((doc, index) => ({
-        file: doc.file,
-        score: 1 - index * 0.1,
-        index,
-      })),
-      model: "mock-reranker",
-    }));
+    const rerankSpy = vi.fn(
+      async (_query: string, docs: { file: string; text: string }[]) => ({
+        results: docs.map((doc, index) => ({
+          file: doc.file,
+          score: 1 - index * 0.1,
+          index,
+        })),
+        model: "mock-reranker",
+      }),
+    );
 
     const llmSpy = vi.spyOn(llmModule, "getDefaultLlamaCpp").mockReturnValue({
       rerank: rerankSpy,
@@ -3082,7 +3557,9 @@ describe.skipIf(!!process.env.CI)("LlamaCpp Integration", () => {
       expect(first).toHaveLength(2);
       expect(second).toHaveLength(2);
       expect(rerankSpy).toHaveBeenCalledTimes(1);
-      expect(rerankSpy.mock.calls[0]?.[1]).toEqual([{ file: "doc2.md", text: "Shared chunk text" }]);
+      expect(rerankSpy.mock.calls[0]?.[1]).toEqual([
+        { file: "doc2.md", text: "Shared chunk text" },
+      ]);
     } finally {
       llmSpy.mockRestore();
       await cleanupTestDb(store);
@@ -3182,7 +3659,7 @@ describe("Edge Cases", () => {
         name: `concurrent${i}`,
         body: `Content ${i} searchterm`,
         displayPath: `concurrent${i}.md`,
-      })
+      }),
     );
 
     await Promise.all(inserts);
@@ -3236,9 +3713,18 @@ describe("Embedding batching", () => {
     store.llm = fakeLlm as any;
 
     try {
-      await insertTestDocument(db, "docs", { name: "one", body: "# One\n\nAlpha" });
-      await insertTestDocument(db, "docs", { name: "two", body: "# Two\n\nBeta" });
-      await insertTestDocument(db, "docs", { name: "three", body: "# Three\n\nGamma" });
+      await insertTestDocument(db, "docs", {
+        name: "one",
+        body: "# One\n\nAlpha",
+      });
+      await insertTestDocument(db, "docs", {
+        name: "two",
+        body: "# Two\n\nBeta",
+      });
+      await insertTestDocument(db, "docs", {
+        name: "three",
+        body: "# Three\n\nGamma",
+      });
 
       const result = await generateEmbeddings(store, {
         maxDocsPerBatch: 1,
@@ -3246,10 +3732,14 @@ describe("Embedding batching", () => {
       });
 
       expect(fakeLlm.embedBatchCalls).toHaveLength(3);
-      expect(fakeLlm.embedBatchCalls.map(call => call.length)).toEqual([1, 1, 1]);
+      expect(fakeLlm.embedBatchCalls.map((call) => call.length)).toEqual([
+        1, 1, 1,
+      ]);
       expect(result.docsProcessed).toBe(3);
       expect(result.chunksEmbedded).toBe(3);
-      expect(db.prepare(`SELECT COUNT(*) as count FROM content_vectors`).get()).toEqual({ count: 3 });
+      expect(
+        db.prepare(`SELECT COUNT(*) as count FROM content_vectors`).get(),
+      ).toEqual({ count: 3 });
     } finally {
       setDefaultLlamaCpp(null);
       await cleanupTestDb(store);
@@ -3262,11 +3752,16 @@ describe("Embedding batching", () => {
     // A slow embedder so the short session cap trips between document batches.
     const embedBatchCalls: string[][] = [];
     const slowLlm = {
-      async embed() { return { embedding: [0.1, 0.2, 0.3], model: "fake-embed" }; },
+      async embed() {
+        return { embedding: [0.1, 0.2, 0.3], model: "fake-embed" };
+      },
       async embedBatch(texts: string[]) {
         embedBatchCalls.push([...texts]);
         await new Promise((resolve) => setTimeout(resolve, 80));
-        return texts.map((_text, index) => ({ embedding: [index + 1, index + 2, index + 3], model: "fake-embed" }));
+        return texts.map((_text, index) => ({
+          embedding: [index + 1, index + 2, index + 3],
+          model: "fake-embed",
+        }));
       },
     };
 
@@ -3274,14 +3769,23 @@ describe("Embedding batching", () => {
     store.llm = slowLlm as any;
 
     try {
-      await insertTestDocument(db, "docs", { name: "one", body: "# One\n\nAlpha" });
-      await insertTestDocument(db, "docs", { name: "two", body: "# Two\n\nBeta" });
-      await insertTestDocument(db, "docs", { name: "three", body: "# Three\n\nGamma" });
+      await insertTestDocument(db, "docs", {
+        name: "one",
+        body: "# One\n\nAlpha",
+      });
+      await insertTestDocument(db, "docs", {
+        name: "two",
+        body: "# Two\n\nBeta",
+      });
+      await insertTestDocument(db, "docs", {
+        name: "three",
+        body: "# Three\n\nGamma",
+      });
 
       const result = await generateEmbeddings(store, {
-        maxDocsPerBatch: 1,           // one doc per batch, so the cap can stop between docs
+        maxDocsPerBatch: 1, // one doc per batch, so the cap can stop between docs
         maxBatchBytes: 1024 * 1024,
-        maxDurationMs: 10,            // trips ~10ms in, well before the 80ms batches finish
+        maxDurationMs: 10, // trips ~10ms in, well before the 80ms batches finish
       });
 
       // The first batch runs, then the session expires and the rest are skipped.
@@ -3305,9 +3809,10 @@ describe("Embedding batching", () => {
     const docOne = "# One\n\n" + "A".repeat(36);
     const docTwo = "# Two\n\n" + "B".repeat(36);
     const docThree = "# Three\n\n" + "C".repeat(36);
-    const batchLimit = new TextEncoder().encode(docOne).length
-      + new TextEncoder().encode(docTwo).length
-      + 1;
+    const batchLimit =
+      new TextEncoder().encode(docOne).length +
+      new TextEncoder().encode(docTwo).length +
+      1;
 
     try {
       await insertTestDocument(db, "docs", { name: "a-one", body: docOne });
@@ -3320,7 +3825,9 @@ describe("Embedding batching", () => {
       });
 
       expect(fakeLlm.embedBatchCalls).toHaveLength(2);
-      expect(fakeLlm.embedBatchCalls.map(call => call.length)).toEqual([2, 1]);
+      expect(fakeLlm.embedBatchCalls.map((call) => call.length)).toEqual([
+        2, 1,
+      ]);
       expect(result.docsProcessed).toBe(3);
       expect(result.chunksEmbedded).toBe(3);
     } finally {
@@ -3333,20 +3840,26 @@ describe("Embedding batching", () => {
     const store = await createTestStore();
     const db = store.db;
     const fakeLlm = createFakeEmbedLlm();
-    const model = "hf:Qwen/Qwen3-Embedding-0.6B-GGUF/Qwen3-Embedding-0.6B-Q8_0.gguf";
+    const model =
+      "hf:Qwen/Qwen3-Embedding-0.6B-GGUF/Qwen3-Embedding-0.6B-Q8_0.gguf";
 
     setDefaultLlamaCpp(createFakeTokenizer() as any);
     store.llm = fakeLlm as any;
 
     try {
-      await insertTestDocument(db, "docs", { name: "one", body: "# One\n\nAlpha" });
+      await insertTestDocument(db, "docs", {
+        name: "one",
+        body: "# One\n\nAlpha",
+      });
 
       const result = await generateEmbeddings(store, { model });
 
       expect(result.chunksEmbedded).toBe(1);
       expect(fakeLlm.embedCalls[0]?.options?.model).toBe(model);
       expect(fakeLlm.embedBatchModelCalls).toEqual([{ model }]);
-      expect(db.prepare(`SELECT DISTINCT model FROM content_vectors`).all()).toEqual([{ model }]);
+      expect(
+        db.prepare(`SELECT DISTINCT model FROM content_vectors`).all(),
+      ).toEqual([{ model }]);
     } finally {
       setDefaultLlamaCpp(null);
       await cleanupTestDb(store);
@@ -3363,14 +3876,19 @@ describe("Embedding batching", () => {
     store.llm = { ...fakeLlm, embedModelName: model } as any;
 
     try {
-      await insertTestDocument(db, "docs", { name: "one", body: "# One\n\nAlpha" });
+      await insertTestDocument(db, "docs", {
+        name: "one",
+        body: "# One\n\nAlpha",
+      });
 
       const result = await generateEmbeddings(store);
 
       expect(result.chunksEmbedded).toBe(1);
       expect(fakeLlm.embedCalls[0]?.options?.model).toBe(model);
       expect(fakeLlm.embedBatchModelCalls).toEqual([{ model }]);
-      expect(db.prepare(`SELECT DISTINCT model FROM content_vectors`).all()).toEqual([{ model }]);
+      expect(
+        db.prepare(`SELECT DISTINCT model FROM content_vectors`).all(),
+      ).toEqual([{ model }]);
     } finally {
       setDefaultLlamaCpp(null);
       await cleanupTestDb(store);
@@ -3389,9 +3907,8 @@ describe("Embedding batching", () => {
           : null;
       },
       async embedBatch(texts: string[], _options?: { model?: string }) {
-        return texts.map((_text, index) => index === 0
-          ? { embedding: [1, 2, 3], model: "fake-embed" }
-          : null
+        return texts.map((_text, index) =>
+          index === 0 ? { embedding: [1, 2, 3], model: "fake-embed" } : null,
         );
       },
     };
@@ -3409,10 +3926,65 @@ describe("Embedding batching", () => {
 
       expect(result.errors).toBeGreaterThan(0);
       expect(result.failures?.[0]?.attempts).toBe(3);
-      expect(db.prepare(`SELECT COUNT(*) as count FROM content_vectors`).get()).toEqual({ count: 0 });
-      expect(db.prepare(`SELECT COUNT(*) as count FROM vectors_vec`).get()).toEqual({ count: 0 });
+      expect(
+        db.prepare(`SELECT COUNT(*) as count FROM content_vectors`).get(),
+      ).toEqual({ count: 0 });
+      expect(
+        db.prepare(`SELECT COUNT(*) as count FROM vectors_vec`).get(),
+      ).toEqual({ count: 0 });
       expect(store.getHashesNeedingEmbedding()).toBe(1);
       expect(store.getStatus().needsEmbedding).toBe(1);
+    } finally {
+      setDefaultLlamaCpp(null);
+      await cleanupTestDb(store);
+    }
+  });
+
+  test("generateEmbeddings reports aborted when the error rate trips the abort", async () => {
+    const store = await createTestStore();
+    const db = store.db;
+    // The first embed() call is the dimension probe that initializes the
+    // vector table; it must succeed or the pass throws before reaching the
+    // batch loop. Every later embed() is the per-chunk retry fallback, which
+    // must fail so the error rate actually climbs.
+    let embedCalls = 0;
+    const fakeLlm = {
+      async embed(_text: string, _options?: { model?: string }) {
+        embedCalls++;
+        return embedCalls === 1
+          ? { embedding: [0.1, 0.2, 0.3], model: "fake-embed" }
+          : null;
+      },
+      async embedBatch(_texts: string[], _options?: { model?: string }) {
+        throw new Error("embedding backend down");
+      },
+    };
+
+    setDefaultLlamaCpp(createFakeTokenizer() as any);
+    store.llm = fakeLlm as any;
+
+    try {
+      // The fake tokenizer counts 1 token per 16 chars and chunks target ~900
+      // tokens, so ~14400 chars per chunk. Well over 33 chunks is needed for
+      // the abort check (processed >= BATCH_SIZE of 32) to fire mid-document.
+      await insertTestDocument(db, "docs", {
+        name: "abort-doc",
+        body: "# Abort doc\n\n" + "error rate abort regression ".repeat(30000),
+      });
+
+      const result = await generateEmbeddings(store);
+
+      expect(result.aborted).toBe(true);
+      expect(result.errors).toBeGreaterThan(0);
+      // The abort reason is recorded on the written-off chunks, but the final
+      // forced retryFailedChunks() pass re-attempts them and recordFailure()
+      // overwrites the reason with the retry's own. So the abort reason does
+      // not survive into the result; `aborted` is the durable signal, which is
+      // why the CLI keys its exit code off that flag rather than the reasons.
+      expect(result.failures ?? []).not.toHaveLength(0);
+      expect(
+        db.prepare(`SELECT COUNT(*) as count FROM content_vectors`).get(),
+      ).toEqual({ count: 0 });
     } finally {
       setDefaultLlamaCpp(null);
       await cleanupTestDb(store);
@@ -3427,9 +3999,8 @@ describe("Embedding batching", () => {
         return { embedding: [0.1, 0.2, 0.3], model: "fake-embed" };
       },
       async embedBatch(texts: string[], _options?: { model?: string }) {
-        return texts.map((_text, index) => index === 0
-          ? { embedding: [1, 2, 3], model: "fake-embed" }
-          : null
+        return texts.map((_text, index) =>
+          index === 0 ? { embedding: [1, 2, 3], model: "fake-embed" } : null,
         );
       },
     };
@@ -3447,7 +4018,9 @@ describe("Embedding batching", () => {
 
       expect(result.errors).toBe(0);
       expect(result.failures).toEqual([]);
-      expect(db.prepare(`SELECT COUNT(*) as count FROM content_vectors`).get()).toEqual({ count: result.chunksEmbedded });
+      expect(
+        db.prepare(`SELECT COUNT(*) as count FROM content_vectors`).get(),
+      ).toEqual({ count: result.chunksEmbedded });
       expect(store.getHashesNeedingEmbedding()).toBe(0);
     } finally {
       setDefaultLlamaCpp(null);
@@ -3464,14 +4037,20 @@ describe("Embedding batching", () => {
     store.llm = fakeLlm as any;
 
     try {
-      await insertTestDocument(store.db, "docs", { name: "one", body: "# One\n\nAlpha" });
+      await insertTestDocument(store.db, "docs", {
+        name: "one",
+        body: "# One\n\nAlpha",
+      });
 
       await generateEmbeddings(store);
 
       expect(sessionSpy).toHaveBeenCalledWith(
         fakeLlm,
         expect.any(Function),
-        expect.objectContaining({ maxDuration: 30 * 60 * 1000, name: "generateEmbeddings" }),
+        expect.objectContaining({
+          maxDuration: 30 * 60 * 1000,
+          name: "generateEmbeddings",
+        }),
       );
     } finally {
       sessionSpy.mockRestore();
@@ -3482,10 +4061,13 @@ describe("Embedding batching", () => {
 
   test("vectorSearchQuery uses the active llm embed model for vector lookups", async () => {
     const store = await createTestStore();
-    const model = "hf:Qwen/Qwen3-Embedding-0.6B-GGUF/Qwen3-Embedding-0.6B-Q8_0.gguf";
+    const model =
+      "hf:Qwen/Qwen3-Embedding-0.6B-GGUF/Qwen3-Embedding-0.6B-Q8_0.gguf";
     const searchVecSpy = vi.fn(async () => [] as SearchResult[]) as any;
 
-    store.db.exec(`CREATE TABLE vectors_vec (hash_seq TEXT PRIMARY KEY, embedding BLOB)`);
+    store.db.exec(
+      `CREATE TABLE vectors_vec (hash_seq TEXT PRIMARY KEY, embedding BLOB)`,
+    );
     store.llm = { embedModelName: model } as any;
     store.searchVec = searchVecSpy as any;
     store.expandQuery = vi.fn(async () => []) as any;
@@ -3504,14 +4086,19 @@ describe("Embedding batching", () => {
 
   test("hybridQuery uses the active llm embed model for precomputed vector lookups", async () => {
     const store = await createTestStore();
-    const model = "hf:Qwen/Qwen3-Embedding-0.6B-GGUF/Qwen3-Embedding-0.6B-Q8_0.gguf";
-    const embedBatchSpy = vi.fn(async (texts: string[]) => texts.map(() => ({
-      embedding: [1, 2, 3],
-      model,
-    })));
+    const model =
+      "hf:Qwen/Qwen3-Embedding-0.6B-GGUF/Qwen3-Embedding-0.6B-Q8_0.gguf";
+    const embedBatchSpy = vi.fn(async (texts: string[]) =>
+      texts.map(() => ({
+        embedding: [1, 2, 3],
+        model,
+      })),
+    );
     const searchVecSpy = vi.fn(async () => [] as SearchResult[]) as any;
 
-    store.db.exec(`CREATE TABLE vectors_vec (hash_seq TEXT PRIMARY KEY, embedding BLOB)`);
+    store.db.exec(
+      `CREATE TABLE vectors_vec (hash_seq TEXT PRIMARY KEY, embedding BLOB)`,
+    );
     store.llm = {
       embedModelName: model,
       embedBatch: embedBatchSpy,
@@ -3521,7 +4108,11 @@ describe("Embedding batching", () => {
     store.expandQuery = vi.fn(async () => []) as any;
 
     try {
-      await hybridQuery(store, "hybrid query", { limit: 5, minScore: 0, skipRerank: true });
+      await hybridQuery(store, "hybrid query", {
+        limit: 5,
+        minScore: 0,
+        skipRerank: true,
+      });
 
       expect(embedBatchSpy).toHaveBeenCalledTimes(1);
       expect(searchVecSpy).toHaveBeenCalledTimes(1);
@@ -3535,14 +4126,19 @@ describe("Embedding batching", () => {
 
   test("structuredSearch uses the active llm embed model for precomputed vector lookups", async () => {
     const store = await createTestStore();
-    const model = "hf:Qwen/Qwen3-Embedding-0.6B-GGUF/Qwen3-Embedding-0.6B-Q8_0.gguf";
-    const embedBatchSpy = vi.fn(async (texts: string[]) => texts.map(() => ({
-      embedding: [1, 2, 3],
-      model,
-    })));
+    const model =
+      "hf:Qwen/Qwen3-Embedding-0.6B-GGUF/Qwen3-Embedding-0.6B-Q8_0.gguf";
+    const embedBatchSpy = vi.fn(async (texts: string[]) =>
+      texts.map(() => ({
+        embedding: [1, 2, 3],
+        model,
+      })),
+    );
     const searchVecSpy = vi.fn(async () => [] as SearchResult[]) as any;
 
-    store.db.exec(`CREATE TABLE vectors_vec (hash_seq TEXT PRIMARY KEY, embedding BLOB)`);
+    store.db.exec(
+      `CREATE TABLE vectors_vec (hash_seq TEXT PRIMARY KEY, embedding BLOB)`,
+    );
     store.llm = {
       embedModelName: model,
       embedBatch: embedBatchSpy,
@@ -3550,11 +4146,15 @@ describe("Embedding batching", () => {
     store.searchVec = searchVecSpy as any;
 
     try {
-      await structuredSearch(store, [{ type: "vec", query: "structured query" }], {
-        limit: 5,
-        minScore: 0,
-        skipRerank: true,
-      });
+      await structuredSearch(
+        store,
+        [{ type: "vec", query: "structured query" }],
+        {
+          limit: 5,
+          minScore: 0,
+          skipRerank: true,
+        },
+      );
 
       expect(embedBatchSpy).toHaveBeenCalledTimes(1);
       expect(searchVecSpy).toHaveBeenCalledTimes(1);
@@ -3570,12 +4170,12 @@ describe("Embedding batching", () => {
     const store = await createTestStore();
 
     try {
-      await expect(generateEmbeddings(store, { maxDocsPerBatch: 0 })).rejects.toThrow(
-        "maxDocsPerBatch"
-      );
-      await expect(generateEmbeddings(store, { maxBatchBytes: 0 })).rejects.toThrow(
-        "maxBatchBytes"
-      );
+      await expect(
+        generateEmbeddings(store, { maxDocsPerBatch: 0 }),
+      ).rejects.toThrow("maxDocsPerBatch");
+      await expect(
+        generateEmbeddings(store, { maxBatchBytes: 0 }),
+      ).rejects.toThrow("maxBatchBytes");
     } finally {
       setDefaultLlamaCpp(null);
       await cleanupTestDb(store);
@@ -3617,8 +4217,14 @@ describe("Content-Addressable Storage", () => {
     const store = await createTestStore();
 
     // Create two collections
-    const collection1 = await createTestCollection({ pwd: "/path/collection1", name: "collection1" });
-    const collection2 = await createTestCollection({ pwd: "/path/collection2", name: "collection2" });
+    const collection1 = await createTestCollection({
+      pwd: "/path/collection1",
+      name: "collection1",
+    });
+    const collection2 = await createTestCollection({
+      pwd: "/path/collection2",
+      name: "collection2",
+    });
 
     // Add same content to both collections
     const content = "# Same Content\n\nThis is the same content in two places.";
@@ -3637,14 +4243,20 @@ describe("Content-Addressable Storage", () => {
     });
 
     // Both should have the same hash
-    const hash1Db = store.db.prepare(`SELECT hash FROM documents WHERE id = ?`).get(doc1) as { hash: string };
-    const hash2Db = store.db.prepare(`SELECT hash FROM documents WHERE id = ?`).get(doc2) as { hash: string };
+    const hash1Db = store.db
+      .prepare(`SELECT hash FROM documents WHERE id = ?`)
+      .get(doc1) as { hash: string };
+    const hash2Db = store.db
+      .prepare(`SELECT hash FROM documents WHERE id = ?`)
+      .get(doc2) as { hash: string };
 
     expect(hash1Db.hash).toBe(hash2Db.hash);
     expect(hash1Db.hash).toBe(hash1);
 
     // There should only be one entry in the content table
-    const contentCount = store.db.prepare(`SELECT COUNT(*) as count FROM content WHERE hash = ?`).get(hash1) as { count: number };
+    const contentCount = store.db
+      .prepare(`SELECT COUNT(*) as count FROM content WHERE hash = ?`)
+      .get(hash1) as { count: number };
     expect(contentCount.count).toBe(1);
 
     await cleanupTestDb(store);
@@ -3654,8 +4266,14 @@ describe("Content-Addressable Storage", () => {
     const store = await createTestStore();
 
     // Create two collections
-    const collection1 = await createTestCollection({ pwd: "/path/collection1", name: "collection1" });
-    const collection2 = await createTestCollection({ pwd: "/path/collection2", name: "collection2" });
+    const collection1 = await createTestCollection({
+      pwd: "/path/collection1",
+      name: "collection1",
+    });
+    const collection2 = await createTestCollection({
+      pwd: "/path/collection2",
+      name: "collection2",
+    });
 
     // Add same content to both collections
     const sharedContent = "# Shared Content\n\nThis is shared.";
@@ -3684,26 +4302,40 @@ describe("Content-Addressable Storage", () => {
     });
 
     // Verify both hashes exist in content table
-    const sharedExists1 = store.db.prepare(`SELECT hash FROM content WHERE hash = ?`).get(sharedHash);
-    const uniqueExists1 = store.db.prepare(`SELECT hash FROM content WHERE hash = ?`).get(uniqueHash);
+    const sharedExists1 = store.db
+      .prepare(`SELECT hash FROM content WHERE hash = ?`)
+      .get(sharedHash);
+    const uniqueExists1 = store.db
+      .prepare(`SELECT hash FROM content WHERE hash = ?`)
+      .get(uniqueHash);
     expect(sharedExists1).toBeTruthy();
     expect(uniqueExists1).toBeTruthy();
 
     // Remove collection1 documents (collections are in YAML now)
-    store.db.prepare(`DELETE FROM documents WHERE collection = ?`).run(collection1);
+    store.db
+      .prepare(`DELETE FROM documents WHERE collection = ?`)
+      .run(collection1);
 
     // Clean up orphaned content (mimics what the CLI does)
-    store.db.prepare(`
+    store.db
+      .prepare(
+        `
       DELETE FROM content
       WHERE hash NOT IN (SELECT DISTINCT hash FROM documents WHERE active = 1)
-    `).run();
+    `,
+      )
+      .run();
 
     // Shared content should still exist (used by collection2)
-    const sharedExists2 = store.db.prepare(`SELECT hash FROM content WHERE hash = ?`).get(sharedHash);
+    const sharedExists2 = store.db
+      .prepare(`SELECT hash FROM content WHERE hash = ?`)
+      .get(sharedHash);
     expect(sharedExists2).toBeTruthy();
 
     // Unique content should be removed (only used by collection1)
-    const uniqueExists2 = store.db.prepare(`SELECT hash FROM content WHERE hash = ?`).get(uniqueHash);
+    const uniqueExists2 = store.db
+      .prepare(`SELECT hash FROM content WHERE hash = ?`)
+      .get(uniqueHash);
     expect(uniqueExists2).toBeFalsy();
 
     await cleanupTestDb(store);
@@ -3718,7 +4350,10 @@ describe("Content-Addressable Storage", () => {
     // Create 5 collections with the same content
     const collectionNames = [];
     for (let i = 0; i < 5; i++) {
-      const collName = await createTestCollection({ pwd: `/path/collection${i}`, name: `collection${i}` });
+      const collName = await createTestCollection({
+        pwd: `/path/collection${i}`,
+        name: `collection${i}`,
+      });
       collectionNames.push(collName);
 
       await insertTestDocument(store.db, collName, {
@@ -3729,15 +4364,21 @@ describe("Content-Addressable Storage", () => {
     }
 
     // Should have 5 documents
-    const docCount = store.db.prepare(`SELECT COUNT(*) as count FROM documents WHERE active = 1`).get() as { count: number };
+    const docCount = store.db
+      .prepare(`SELECT COUNT(*) as count FROM documents WHERE active = 1`)
+      .get() as { count: number };
     expect(docCount.count).toBe(5);
 
     // But only 1 content entry
-    const contentCount = store.db.prepare(`SELECT COUNT(*) as count FROM content WHERE hash = ?`).get(sharedHash) as { count: number };
+    const contentCount = store.db
+      .prepare(`SELECT COUNT(*) as count FROM content WHERE hash = ?`)
+      .get(sharedHash) as { count: number };
     expect(contentCount.count).toBe(1);
 
     // All documents should point to the same hash
-    const hashes = store.db.prepare(`SELECT DISTINCT hash FROM documents WHERE active = 1`).all() as { hash: string }[];
+    const hashes = store.db
+      .prepare(`SELECT DISTINCT hash FROM documents WHERE active = 1`)
+      .all() as { hash: string }[];
     expect(hashes).toHaveLength(1);
     expect(hashes[0]!.hash).toBe(sharedHash);
 
@@ -3769,15 +4410,21 @@ describe("Content-Addressable Storage", () => {
     });
 
     // Both hashes should exist in content table
-    const hash1Db = store.db.prepare(`SELECT hash FROM documents WHERE id = ?`).get(doc1) as { hash: string };
-    const hash2Db = store.db.prepare(`SELECT hash FROM documents WHERE id = ?`).get(doc2) as { hash: string };
+    const hash1Db = store.db
+      .prepare(`SELECT hash FROM documents WHERE id = ?`)
+      .get(doc1) as { hash: string };
+    const hash2Db = store.db
+      .prepare(`SELECT hash FROM documents WHERE id = ?`)
+      .get(doc2) as { hash: string };
 
     expect(hash1Db.hash).toBe(hash1);
     expect(hash2Db.hash).toBe(hash2);
     expect(hash1Db.hash).not.toBe(hash2Db.hash);
 
     // Should have 2 entries in content table
-    const contentCount = store.db.prepare(`SELECT COUNT(*) as count FROM content`).get() as { count: number };
+    const contentCount = store.db
+      .prepare(`SELECT COUNT(*) as count FROM content`)
+      .get() as { count: number };
     expect(contentCount.count).toBe(2);
 
     await cleanupTestDb(store);
@@ -3791,7 +4438,14 @@ describe("Content-Addressable Storage", () => {
     const oldContent = "# First Version";
     const oldHash = await hashContent(oldContent);
     store.insertContent(oldHash, oldContent, now);
-    store.insertDocument(collectionName, "docs/foo.md", "foo", oldHash, now, now);
+    store.insertDocument(
+      collectionName,
+      "docs/foo.md",
+      "foo",
+      oldHash,
+      now,
+      now,
+    );
 
     // Simulate file removal during update pass.
     store.deactivateDocument(collectionName, "docs/foo.md");
@@ -3803,13 +4457,28 @@ describe("Content-Addressable Storage", () => {
     store.insertContent(newHash, newContent, now);
 
     expect(() => {
-      store.insertDocument(collectionName, "docs/foo.md", "foo", newHash, now, now);
+      store.insertDocument(
+        collectionName,
+        "docs/foo.md",
+        "foo",
+        newHash,
+        now,
+        now,
+      );
     }).not.toThrow();
 
-    const rows = store.db.prepare(`
+    const rows = store.db
+      .prepare(
+        `
       SELECT id, hash, active FROM documents
       WHERE collection = ? AND path = ?
-    `).all(collectionName, "docs/foo.md") as { id: number; hash: string; active: number }[];
+    `,
+      )
+      .all(collectionName, "docs/foo.md") as {
+      id: number;
+      hash: string;
+      active: number;
+    }[];
 
     expect(rows).toHaveLength(1);
     expect(rows[0]!.active).toBe(1);
@@ -3827,24 +4496,39 @@ describe("Content-Addressable Storage", () => {
     const hash = await hashContent(content);
     store.insertContent(hash, content, now);
     // Simulate legacy index: path stored as lowercase
-    store.insertDocument(collectionName, "skills/skill.md", "My Skill", hash, now, now);
+    store.insertDocument(
+      collectionName,
+      "skills/skill.md",
+      "My Skill",
+      hash,
+      now,
+      now,
+    );
 
     // Migration: look up case-preserved path, expect rename
-    const result = store.findOrMigrateLegacyDocument(collectionName, "skills/SKILL.md");
+    const result = store.findOrMigrateLegacyDocument(
+      collectionName,
+      "skills/SKILL.md",
+    );
     expect(result).not.toBeNull();
     expect(result!.hash).toBe(hash);
 
     // Old lowercase path should no longer be findable
-    expect(store.findActiveDocument(collectionName, "skills/skill.md")).toBeNull();
+    expect(
+      store.findActiveDocument(collectionName, "skills/skill.md"),
+    ).toBeNull();
     // New case-preserved path should be active
-    const migrated = store.findActiveDocument(collectionName, "skills/SKILL.md");
+    const migrated = store.findActiveDocument(
+      collectionName,
+      "skills/SKILL.md",
+    );
     expect(migrated).not.toBeNull();
     expect(migrated!.hash).toBe(hash);
 
     // FTS should reflect the new path (documents_au trigger)
-    const ftsRow = store.db.prepare(
-      `SELECT filepath FROM documents_fts WHERE rowid = ?`
-    ).get(result!.id) as { filepath: string } | undefined;
+    const ftsRow = store.db
+      .prepare(`SELECT filepath FROM documents_fts WHERE rowid = ?`)
+      .get(result!.id) as { filepath: string } | undefined;
     expect(ftsRow).toBeDefined();
     expect(ftsRow!.filepath).toContain("SKILL.md");
 
@@ -3856,7 +4540,10 @@ describe("Content-Addressable Storage", () => {
     const collectionName = await createTestCollection();
 
     // No document exists at all
-    const result = store.findOrMigrateLegacyDocument(collectionName, "readme.md");
+    const result = store.findOrMigrateLegacyDocument(
+      collectionName,
+      "readme.md",
+    );
     expect(result).toBeNull();
 
     await cleanupTestDb(store);
@@ -3876,13 +4563,20 @@ describe("Content-Addressable Storage", () => {
 
     // Should return the canonical-path document directly (fast path)
     // The legacy "readme.md" row is untouched — no rename attempted.
-    const result = store.findOrMigrateLegacyDocument(collectionName, "README.md");
+    const result = store.findOrMigrateLegacyDocument(
+      collectionName,
+      "README.md",
+    );
     expect(result).not.toBeNull();
     expect(result!.hash).toBe(hash);
 
     // Both rows still exist (legacy row not migrated, not deactivated here)
-    expect(store.findActiveDocument(collectionName, "readme.md")).not.toBeNull();
-    expect(store.findActiveDocument(collectionName, "README.md")).not.toBeNull();
+    expect(
+      store.findActiveDocument(collectionName, "readme.md"),
+    ).not.toBeNull();
+    expect(
+      store.findActiveDocument(collectionName, "README.md"),
+    ).not.toBeNull();
 
     await cleanupTestDb(store);
   });
@@ -3894,19 +4588,33 @@ describe("Content-Addressable Storage", () => {
 
 describe("normalizeVirtualPath", () => {
   test("already normalized qmd:// path passes through", () => {
-    expect(normalizeVirtualPath("qmd://collection/path.md")).toBe("qmd://collection/path.md");
-    expect(normalizeVirtualPath("qmd://journals/2025-01-01.md")).toBe("qmd://journals/2025-01-01.md");
+    expect(normalizeVirtualPath("qmd://collection/path.md")).toBe(
+      "qmd://collection/path.md",
+    );
+    expect(normalizeVirtualPath("qmd://journals/2025-01-01.md")).toBe(
+      "qmd://journals/2025-01-01.md",
+    );
   });
 
   test("handles //collection/path format (missing qmd: prefix)", () => {
-    expect(normalizeVirtualPath("//collection/path.md")).toBe("qmd://collection/path.md");
-    expect(normalizeVirtualPath("//journals/2025-01-01.md")).toBe("qmd://journals/2025-01-01.md");
+    expect(normalizeVirtualPath("//collection/path.md")).toBe(
+      "qmd://collection/path.md",
+    );
+    expect(normalizeVirtualPath("//journals/2025-01-01.md")).toBe(
+      "qmd://journals/2025-01-01.md",
+    );
   });
 
   test("handles qmd:// with extra slashes", () => {
-    expect(normalizeVirtualPath("qmd:////collection/path.md")).toBe("qmd://collection/path.md");
-    expect(normalizeVirtualPath("qmd:///journals/2025-01-01.md")).toBe("qmd://journals/2025-01-01.md");
-    expect(normalizeVirtualPath("qmd:///////archive/file.md")).toBe("qmd://archive/file.md");
+    expect(normalizeVirtualPath("qmd:////collection/path.md")).toBe(
+      "qmd://collection/path.md",
+    );
+    expect(normalizeVirtualPath("qmd:///journals/2025-01-01.md")).toBe(
+      "qmd://journals/2025-01-01.md",
+    );
+    expect(normalizeVirtualPath("qmd:///////archive/file.md")).toBe(
+      "qmd://archive/file.md",
+    );
   });
 
   test("handles collection root paths", () => {
@@ -3918,17 +4626,27 @@ describe("normalizeVirtualPath", () => {
   test("preserves bare collection/path format (not auto-converted)", () => {
     // Bare paths without qmd:// or // prefix are NOT converted
     // (could be relative filesystem paths)
-    expect(normalizeVirtualPath("collection/path.md")).toBe("collection/path.md");
-    expect(normalizeVirtualPath("journals/2025-01-01.md")).toBe("journals/2025-01-01.md");
+    expect(normalizeVirtualPath("collection/path.md")).toBe(
+      "collection/path.md",
+    );
+    expect(normalizeVirtualPath("journals/2025-01-01.md")).toBe(
+      "journals/2025-01-01.md",
+    );
   });
 
   test("preserves absolute filesystem paths", () => {
-    expect(normalizeVirtualPath("/Users/test/file.md")).toBe("/Users/test/file.md");
-    expect(normalizeVirtualPath("/absolute/path/file.md")).toBe("/absolute/path/file.md");
+    expect(normalizeVirtualPath("/Users/test/file.md")).toBe(
+      "/Users/test/file.md",
+    );
+    expect(normalizeVirtualPath("/absolute/path/file.md")).toBe(
+      "/absolute/path/file.md",
+    );
   });
 
   test("preserves home-relative paths", () => {
-    expect(normalizeVirtualPath("~/Documents/file.md")).toBe("~/Documents/file.md");
+    expect(normalizeVirtualPath("~/Documents/file.md")).toBe(
+      "~/Documents/file.md",
+    );
   });
 
   test("preserves docid format", () => {
@@ -3937,8 +4655,12 @@ describe("normalizeVirtualPath", () => {
   });
 
   test("handles whitespace trimming", () => {
-    expect(normalizeVirtualPath("  qmd://collection/path.md  ")).toBe("qmd://collection/path.md");
-    expect(normalizeVirtualPath("  //collection/path.md  ")).toBe("qmd://collection/path.md");
+    expect(normalizeVirtualPath("  qmd://collection/path.md  ")).toBe(
+      "qmd://collection/path.md",
+    );
+    expect(normalizeVirtualPath("  //collection/path.md  ")).toBe(
+      "qmd://collection/path.md",
+    );
   });
 });
 
@@ -4085,7 +4807,7 @@ describe("normalizeDocid", () => {
   });
 
   test("does not strip mismatched quotes", () => {
-    expect(normalizeDocid('"abc123\'')).toBe('"abc123\'');
+    expect(normalizeDocid("\"abc123'")).toBe("\"abc123'");
     expect(normalizeDocid("'abc123\"")).toBe("'abc123\"");
   });
 });

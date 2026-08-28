@@ -2181,6 +2181,11 @@ export type EmbedResult = {
   /** Active failed chunks that did not recover after retries. */
   errors: number;
   failures?: EmbedFailure[];
+  /**
+   * true when the error-rate abort stopped the pass early; the remaining
+   * chunks were written off, not attempted.
+   */
+  aborted: boolean;
   durationMs: number;
 };
 
@@ -2433,7 +2438,13 @@ export async function generateEmbeddings(
   const docsToEmbed = getPendingEmbeddingDocs(db, options?.collection, model);
 
   if (docsToEmbed.length === 0) {
-    return { docsProcessed: 0, chunksEmbedded: 0, errors: 0, durationMs: 0 };
+    return {
+      docsProcessed: 0,
+      chunksEmbedded: 0,
+      errors: 0,
+      aborted: false,
+      durationMs: 0,
+    };
   }
   const totalBytes = docsToEmbed.reduce(
     (sum, doc) => sum + Math.max(0, doc.bytes),
@@ -2453,6 +2464,7 @@ export async function generateEmbeddings(
       let bytesProcessed = 0;
       let totalChunks = 0;
       let vectorTableInitialized = false;
+      let abortedForErrorRate = false;
       const BATCH_SIZE = 32;
       const RETRY_AFTER_SUCCESSFUL_CHUNKS = 64;
       const MAX_RETRY_ATTEMPTS = 3;
@@ -2662,6 +2674,7 @@ export async function generateEmbeddings(
                 chunk,
                 "embedding aborted because error rate was too high",
               );
+            abortedForErrorRate = true;
             console.warn(
               `⚠ Error rate too high (${activeErrorCount()}/${processed}) — aborting embedding`,
             );
@@ -2822,6 +2835,7 @@ export async function generateEmbeddings(
         chunksEmbedded,
         errors: activeErrorCount(),
         failures: failureList(),
+        aborted: abortedForErrorRate,
       };
     },
     {
@@ -2835,6 +2849,7 @@ export async function generateEmbeddings(
     chunksEmbedded: result.chunksEmbedded,
     errors: result.errors,
     failures: result.failures,
+    aborted: result.aborted,
     durationMs: Date.now() - startTime,
   };
 }

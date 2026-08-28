@@ -2563,6 +2563,13 @@ async function vectorIndex(
   }
 
   closeDb();
+
+  // The error-rate abort wrote off the remaining chunks instead of embedding
+  // them, so the index is incomplete. Signal failure without process.exit() —
+  // see the exit discipline note on finishSuccessfulCliCommand above.
+  if (result.aborted) {
+    process.exitCode = 1;
+  }
 }
 
 // Sanitize a term for FTS5: remove punctuation except apostrophes
