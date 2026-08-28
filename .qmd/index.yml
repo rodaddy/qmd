@@ -3,20 +3,19 @@ collections:
     path: /Volumes/ThunderBolt/Development/qmd
     pattern:
       - "*.{ts,tsx,js,jsx,py,md,yaml,yml,json,toml,sh,zsh}"
-      - .claude-plugin/*.{ts,tsx,js,jsx,py,md,yaml,yml,json,toml,sh,zsh}
-      - .github/workflows/*.{ts,tsx,js,jsx,py,md,yaml,yml,json,toml,sh,zsh}
-      - .pi/*.{ts,tsx,js,jsx,py,md,yaml,yml,json,toml,sh,zsh}
+      - _DOCS/*.{ts,tsx,js,jsx,py,md,yaml,yml,json,toml,sh,zsh}
+      - _DOCS/_handover/*.{ts,tsx,js,jsx,py,md,yaml,yml,json,toml,sh,zsh}
       - docs/*.{ts,tsx,js,jsx,py,md,yaml,yml,json,toml,sh,zsh}
       - finetune/*.{ts,tsx,js,jsx,py,md,yaml,yml,json,toml,sh,zsh}
       - finetune/configs/*.{ts,tsx,js,jsx,py,md,yaml,yml,json,toml,sh,zsh}
       - finetune/data/*.{ts,tsx,js,jsx,py,md,yaml,yml,json,toml,sh,zsh}
-      - finetune/data/train/*.{ts,tsx,js,jsx,py,md,yaml,yml,json,toml,sh,zsh}
       - finetune/dataset/*.{ts,tsx,js,jsx,py,md,yaml,yml,json,toml,sh,zsh}
       - finetune/experiments/gepa/*.{ts,tsx,js,jsx,py,md,yaml,yml,json,toml,sh,zsh}
       - finetune/experiments/grpo/*.{ts,tsx,js,jsx,py,md,yaml,yml,json,toml,sh,zsh}
       - finetune/experiments/lfm2/*.{ts,tsx,js,jsx,py,md,yaml,yml,json,toml,sh,zsh}
       - finetune/jobs/*.{ts,tsx,js,jsx,py,md,yaml,yml,json,toml,sh,zsh}
       - scripts/*.{ts,tsx,js,jsx,py,md,yaml,yml,json,toml,sh,zsh}
+      - scripts/done-means/*.{ts,tsx,js,jsx,py,md,yaml,yml,json,toml,sh,zsh}
       - skills/qmd/*.{ts,tsx,js,jsx,py,md,yaml,yml,json,toml,sh,zsh}
       - skills/qmd/references/*.{ts,tsx,js,jsx,py,md,yaml,yml,json,toml,sh,zsh}
       - skills/release/*.{ts,tsx,js,jsx,py,md,yaml,yml,json,toml,sh,zsh}
@@ -29,7 +28,8 @@ collections:
       - src/types/*.{ts,tsx,js,jsx,py,md,yaml,yml,json,toml,sh,zsh}
       - test/*.{ts,tsx,js,jsx,py,md,yaml,yml,json,toml,sh,zsh}
       - test/_helpers/*.{ts,tsx,js,jsx,py,md,yaml,yml,json,toml,sh,zsh}
-      - test/eval-docs/*.{ts,tsx,js,jsx,py,md,yaml,yml,json,toml,sh,zsh}
+      - _reports/*.{ts,tsx,js,jsx,py,md,yaml,yml,json,toml,sh,zsh}
+      - _reports/2026-08/*.{ts,tsx,js,jsx,py,md,yaml,yml,json,toml,sh,zsh}
     ignore:
       - "**/node_modules/**"
       - "**/.venv/**"
@@ -58,6 +58,16 @@ collections:
       - "**/*.db"
       - "**/*.db-shm"
       - "**/*.db-wal"
+      - "**/secrets.y*ml"
+      - "**/secrets/**"
+      - "**/*credential*"
+      - "**/*.pem"
+      - "**/*.key"
+      - "**/.env"
+      - "**/.env.local"
+      - "**/.env.production"
+      - "**/.env.development"
+      - "**/_remove/**"
 models:
   embed: https://llama-swap.rodaddy.live/v1#embed-gemma
   generate: https://llama-swap.rodaddy.live/v1#qmd-query-expansion
