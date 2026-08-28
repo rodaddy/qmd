@@ -1,5 +1,10 @@
 # Handover — qmd Bun leg, abort-retry pass, index allowlist (2026-08-28)
 
+STATUS: SUPERSEDED 2026-08-28 (Rico: close, do not make more work). Every
+lane below landed on PR rodaddy/qmd#9 in the same session: qmd#8 at 6ec9f4c,
+qmd#6 at a7067f0, qmd#7 closed by ruling. Nothing here is left to execute;
+the file stays as the record.
+
 ## State 0 — BASE
 Read /Volumes/ThunderBolt/Development/_DOCS/HANDOVER-BASE.md in full
 (183 lines). It is the standing contract for this session.
