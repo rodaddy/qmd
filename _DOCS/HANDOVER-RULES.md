@@ -80,3 +80,14 @@ only when a session actually needed it.
     reason (rule 8). Exit-code lanes prove the code with a subprocess run of
     the CLI, not a unit assertion on the returned object:
     `finishSuccessfulCliCommand` sat between the two and reset it (561abaa).
+
+13. ONE STORE since 2026-08-28 (Rico ruling). Every folder under Development
+    is a collection in `Development/.qmd/index.yml` on the Postgres backend;
+    the per-repo `.qmd/` directories and every `index.sqlite` are retired and
+    `_ob/bin/qmd` refuses `qmd init` under a catalogued folder (exit 4). Run
+    `qmd`/`aqmd` from `/Volumes/ThunderBolt/Development` and scope with
+    `-c qmd`; from inside this repo `aqmd` resolves the same scope from the
+    catalogue. Rules 4, 5 and 7 describe the retired per-repo layout and are
+    kept as history. The rerank server on ai-01 runs ubatch 4096 and the
+    wrapper pins `QMD_REMOTE_RERANK_BATCH_TOKENS=3072`; change the two
+    together (rtech-infra#1277, dev#359).
