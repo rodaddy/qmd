@@ -26,6 +26,14 @@
 
 ### Fixed
 
+- `qmd update` on a collection whose `pattern` is an allowlist array walked
+  the tree through fast-glob with every pattern at once, and fast-glob's cost
+  grows superlinearly with the pattern count: the Development allowlist
+  (~4,100 per-directory patterns over ~200k directories) ran past a 30-minute
+  timeout. The collection is now walked ONCE with a single recursive glob and
+  each file is admitted by a per-directory picomatch bucket. Same files, same
+  exclude-dir, hidden-path, and `ignore` semantics; measured 1.5s walk plus
+  0.65s match on that tree.
 - Remote backend: a lone UTF-16 surrogate in a chunk (an astral character cut
   in half at a chunk boundary) was serialized as `\udf4c`, which llama-server
   rejects with a 500 and so failed every text in that batch. Request strings are

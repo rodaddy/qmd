@@ -1945,6 +1945,97 @@ async function reindexDocument(
   return "indexed";
 }
 
+/** Directories no collection indexes, whatever its pattern says. */
+const REINDEX_EXCLUDE_DIRS = [
+  "node_modules",
+  ".git",
+  ".cache",
+  "vendor",
+  "dist",
+  "build",
+];
+
+/** A path with a dotted segment anywhere is hidden and never indexed. */
+function isVisiblePath(relativeFile: string): boolean {
+  return !relativeFile.split("/").some((part) => part.startsWith("."));
+}
+
+/**
+ * Walk a collection once and return the relative paths its pattern admits.
+ *
+ * A string pattern goes to fast-glob as-is. An ARRAY (the allowlist shape,
+ * see Collection.pattern) does not: fast-glob's cost grows superlinearly
+ * with the pattern count, and the Development allowlist is ~4,100
+ * per-directory patterns over a ~200k-directory tree. Measured 2026-09-16:
+ * the array handed straight to fast-glob ran past the librarian's 30-minute
+ * job timeout, while ONE recursive walk of the same tree took 1.5s. So an
+ * array walks once with `**\/*` and picomatch decides per file, which is
+ * linear in files and patterns instead of their product.
+ */
+export async function listCollectionFiles(
+  collectionPath: string,
+  globPattern: string | string[],
+  ignorePatterns: string[] = [],
+): Promise<string[]> {
+  const isAllowlist = Array.isArray(globPattern);
+  const found: string[] = await fastGlob(isAllowlist ? "**/*" : globPattern, {
+    cwd: collectionPath,
+    onlyFiles: true,
+    followSymbolicLinks: false,
+    dot: false,
+    ignore: [
+      ...REINDEX_EXCLUDE_DIRS.map((d) => `**/${d}/**`),
+      ...ignorePatterns,
+    ],
+  });
+  const admits = isAllowlist ? allowlistMatcher(globPattern) : () => true;
+  return found.filter((file) => admits(file) && isVisiblePath(file));
+}
+
+/** The directory part of a relative path; "" for a top-level file. */
+function dirnameOf(relativeFile: string): string {
+  const cut = relativeFile.lastIndexOf("/");
+  return cut < 0 ? "" : relativeFile.slice(0, cut);
+}
+
+/**
+ * Build one predicate for an allowlist without testing every pattern
+ * against every file. Nearly every allowlist entry is `dir/*.{ext}`: a
+ * literal directory plus a glob over its own files. Those are bucketed by
+ * directory, so a file is tested only against its own directory's patterns.
+ * Anything else (a glob segment that spans directories, e.g. `docs/**\/*.md`)
+ * stays in a general list every file is tested against.
+ *
+ * Measured 2026-09-16 on the Development allowlist (4,090 patterns, 129k
+ * walked files): flat picomatch 29.1s, bucketed 0.65s, identical results.
+ */
+function allowlistMatcher(patterns: string[]): (file: string) => boolean {
+  const byDir = new Map<string, string[]>();
+  const general: string[] = [];
+  for (const pattern of patterns) {
+    const { base, glob, isGlob } = picomatch.scan(pattern);
+    // A literal file pattern has no glob part; it belongs to its parent dir.
+    const dir = isGlob ? base : dirnameOf(base);
+    const target = glob.includes("/") ? general : bucketFor(byDir, dir);
+    target.push(pattern);
+  }
+  const perDir = new Map(
+    [...byDir].map(([dir, list]) => [dir, picomatch(list)] as const),
+  );
+  const matchesGeneral = general.length ? picomatch(general) : () => false;
+  // picomatch's matcher takes a second argument; call it with one so an
+  // Array.filter index can never land in that slot.
+  return (file) =>
+    (perDir.get(dirnameOf(file))?.(file) ?? false) || matchesGeneral(file);
+}
+
+function bucketFor(byDir: Map<string, string[]>, base: string): string[] {
+  const key = base.replace(/\/$/, "");
+  const list = byDir.get(key) ?? [];
+  byDir.set(key, list);
+  return list;
+}
+
 /**
  * Re-index a single collection by scanning the filesystem and updating the database.
  * Pure function — no console output, no db lifecycle management.
@@ -1952,7 +2043,7 @@ async function reindexDocument(
 export async function reindexCollection(
   store: Store,
   collectionPath: string,
-  // Array = allowlist. fast-glob accepts either; see Collection.pattern.
+  // Array = allowlist; see listCollectionFiles for why it is not globbed as one.
   globPattern: string | string[],
   collectionName: string,
   options?: {
@@ -1962,31 +2053,11 @@ export async function reindexCollection(
 ): Promise<ReindexResult> {
   const db = store.db;
   const now = new Date().toISOString();
-  const excludeDirs = [
-    "node_modules",
-    ".git",
-    ".cache",
-    "vendor",
-    "dist",
-    "build",
-  ];
-
-  const allIgnore = [
-    ...excludeDirs.map((d) => `**/${d}/**`),
-    ...(options?.ignorePatterns || []),
-  ];
-  const allFiles: string[] = await fastGlob(globPattern, {
-    cwd: collectionPath,
-    onlyFiles: true,
-    followSymbolicLinks: false,
-    dot: false,
-    ignore: allIgnore,
-  });
-  // Filter hidden files/folders
-  const files = allFiles.filter((file) => {
-    const parts = file.split("/");
-    return !parts.some((part) => part.startsWith("."));
-  });
+  const files = await listCollectionFiles(
+    collectionPath,
+    globPattern,
+    options?.ignorePatterns,
+  );
 
   const total = files.length;
   let indexed = 0,
