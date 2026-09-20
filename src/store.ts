@@ -5386,6 +5386,64 @@ export function searchFTS(
 // Vector Search
 // =============================================================================
 
+/** One chunk row from either Postgres vector-search statement. */
+type PgVecRow = {
+  hash_seq: string;
+  hash: string;
+  pos: number;
+  filepath: string;
+  display_path: string;
+  title: string;
+  body: string;
+  distance: number;
+};
+
+/**
+ * Collapse chunk rows to one result per document, keeping each document's
+ * closest chunk, and cut the page to `limit`.
+ *
+ * Shared by both Postgres arms of searchVec so the approximate (HNSW) and the
+ * exact (filtered) statement cannot drift apart in how they rank or score --
+ * they differ only in which candidate rows they hand over.
+ */
+function dedupePgVecRows(
+  db: Database,
+  rows: PgVecRow[],
+  limit: number,
+): SearchResult[] {
+  const seen = new Map<string, { row: PgVecRow; bestDist: number }>();
+  for (const row of rows) {
+    const distance = Number(row.distance);
+    const existing = seen.get(row.filepath);
+    if (!existing || distance < existing.bestDist) {
+      seen.set(row.filepath, { row, bestDist: distance });
+    }
+  }
+
+  return Array.from(seen.values())
+    .sort((a, b) => a.bestDist - b.bestDist)
+    .slice(0, limit)
+    .map(({ row, bestDist }) => {
+      const rowCollectionName =
+        row.filepath.split("//")[1]?.split("/")[0] || "";
+      return {
+        filepath: row.filepath,
+        displayPath: row.display_path,
+        title: row.title,
+        hash: row.hash,
+        docid: getDocid(row.hash),
+        collectionName: rowCollectionName,
+        modifiedAt: "",
+        bodyLength: row.body.length,
+        body: row.body,
+        context: getContextForFile(db, row.filepath),
+        score: 1 - bestDist,
+        source: "vec" as const,
+        chunkPos: row.pos,
+      };
+    });
+}
+
 export async function searchVec(
   db: Database,
   query: string,
@@ -5414,6 +5472,104 @@ export async function searchVec(
   }
 
   if (isPostgresDb(db)) {
+    const pgPathFilter = buildPathFilterClause("d.path", pathPrefixes);
+    const narrowed = Boolean(collectionName) || Boolean(pgPathFilter);
+
+    // THE UNFILTERED PATH TAKES ITS NEIGHBOURS FROM THE HNSW INDEX FIRST.
+    //
+    // With nothing narrowing the scan there is no cheap way in: the old
+    // single-statement shape below had to compute a distance for every one of
+    // the ~143k vectors and sort them (measured 2026-09-19 against the live
+    // index: 755k buffers, 524 ms, Parallel Hash Join -> Sort -> Gather Merge,
+    // and `idx_vectors_embedding_hnsw` never touched). The reason it could not
+    // be touched is structural: `JOIN vectors v ON TRUE` with a join predicate
+    // on the COMPUTED key `cv.hash || '_' || cv.seq` gives the planner no
+    // `ORDER BY <distance> LIMIT k` over a bare `vectors` scan to match the
+    // index against.
+    //
+    // So hand it exactly that shape, in a subquery over `vectors` alone, and
+    // join out to the rest afterwards. Two details make it actually land:
+    //
+    //   1. `hash_seq` is SPLIT back into (hash, seq) inside the subquery, so
+    //      the join to `content_vectors` uses `content_vectors_pkey` directly.
+    //      Joining on the concatenated key instead still works, but the
+    //      expression is unindexed, so the planner falls back to a Merge Join
+    //      that materialises all 230k content_vectors rows -- 163 ms and 86k
+    //      buffers, most of the win thrown away.
+    //   2. `hnsw.ef_search` CAPS how many rows the index scan can return, and
+    //      the default 40 is below the over-fetch: `LIMIT 300` measured 42 rows
+    //      back, so the page would silently under-fill. It is raised for the
+    //      duration of this statement only.
+    //
+    // Measured on the same index, same probe vector, k=300 / ef_search=400:
+    // Index Scan using idx_vectors_embedding_hnsw -> three Nested Loops,
+    // 7,076 buffers, 9.6 ms execution. 524 ms -> 9.6 ms, plan confirmed by
+    // EXPLAIN (ANALYZE, BUFFERS).
+    //
+    // WHY ONLY WHEN NOTHING IS FILTERED. An HNSW scan filters AFTER it runs, so
+    // a filtered variant of this shape can under-fill or come back empty, and
+    // the filtered statement is already both fast and EXACT (~22 ms over
+    // `idx_documents_path`). Approximating something that is already exact and
+    // quick would be a straight downgrade, so the filtered arm is left byte for
+    // byte as it was.
+    if (!narrowed) {
+      // The over-fetch feeds two separate reductions: chunks collapse to
+      // documents, and inactive documents drop out. `limit * 3` is the existing
+      // budget for the first; measured on the live index a k of 300 returned
+      // 386 chunk rows over 220 distinct documents, so a 100-row page has ample
+      // headroom. The floor keeps a small `limit` from asking the index for a
+      // handful of neighbours and losing the page to de-duplication.
+      const k = Math.max(limit * 3, 100);
+      // ef_search must be at least k or the scan truncates to it, and pgvector
+      // rejects anything above 1000. Some headroom over k, then clamped.
+      const efSearch = Math.min(1000, Math.max(40, k * 2));
+
+      const knnSql = `
+        WITH knn AS (
+          SELECT
+            v.hash_seq,
+            substring(v.hash_seq from 1 for position('_' in v.hash_seq) - 1) AS hash,
+            (substring(v.hash_seq from position('_' in v.hash_seq) + 1))::int AS seq,
+            (v.embedding <=> ?::halfvec) AS distance
+          FROM vectors v
+          ORDER BY v.embedding <=> ?::halfvec
+          LIMIT ?
+        )
+        SELECT
+          knn.hash_seq,
+          cv.hash,
+          cv.pos,
+          'qmd://' || d.collection || '/' || d.path as filepath,
+          d.collection || '/' || d.path as display_path,
+          d.title,
+          content.doc as body,
+          knn.distance
+        FROM knn
+        JOIN content_vectors cv ON cv.hash = knn.hash AND cv.seq = knn.seq
+        JOIN documents d ON d.hash = cv.hash AND d.active = 1
+        JOIN content ON content.hash = d.hash
+        ORDER BY knn.distance ASC
+      `;
+
+      // SET LOCAL, INSIDE A TRANSACTION, BECAUSE THE CONNECTION IS SHARED.
+      // The Postgres bridge runs one connection with `max: 1` (src/pg-worker.ts,
+      // `postgres(pgUrl, { max: 1, ... })`) held for the life of the process, so
+      // a bare `SET` would pin ef_search on it for every later query in the run.
+      // `db.transaction()` wraps the body in BEGIN/COMMIT on that same
+      // connection (src/pg.ts), which is what makes SET LOCAL scoped -- verified
+      // against the live database: `SHOW hnsw.ef_search` after the transaction
+      // reports the unchanged session default.
+      const embeddingParam = new Float32Array(embedding);
+      const rows = db.transaction(() => {
+        db.prepare(`SET LOCAL hnsw.ef_search = ${efSearch}`).run();
+        return db
+          .prepare(knnSql)
+          .all(embeddingParam, embeddingParam, k) as PgVecRow[];
+      })() as unknown as PgVecRow[];
+
+      return dedupePgVecRows(db, rows, limit);
+    }
+
     let sql = `
       WITH query_vec AS (SELECT ?::halfvec AS embedding)
       SELECT
@@ -5475,51 +5631,9 @@ export async function searchVec(
     sql += ` ORDER BY distance ASC LIMIT ?`;
     params.push(limit * 3);
 
-    const docRows = db.prepare(sql).all(...params) as {
-      hash_seq: string;
-      hash: string;
-      pos: number;
-      filepath: string;
-      display_path: string;
-      title: string;
-      body: string;
-      distance: number;
-    }[];
+    const docRows = db.prepare(sql).all(...params) as PgVecRow[];
 
-    const seen = new Map<
-      string,
-      { row: (typeof docRows)[number]; bestDist: number }
-    >();
-    for (const row of docRows) {
-      const distance = Number(row.distance);
-      const existing = seen.get(row.filepath);
-      if (!existing || distance < existing.bestDist) {
-        seen.set(row.filepath, { row, bestDist: distance });
-      }
-    }
-
-    return Array.from(seen.values())
-      .sort((a, b) => a.bestDist - b.bestDist)
-      .slice(0, limit)
-      .map(({ row, bestDist }) => {
-        const rowCollectionName =
-          row.filepath.split("//")[1]?.split("/")[0] || "";
-        return {
-          filepath: row.filepath,
-          displayPath: row.display_path,
-          title: row.title,
-          hash: row.hash,
-          docid: getDocid(row.hash),
-          collectionName: rowCollectionName,
-          modifiedAt: "",
-          bodyLength: row.body.length,
-          body: row.body,
-          context: getContextForFile(db, row.filepath),
-          score: 1 - bestDist,
-          source: "vec" as const,
-          chunkPos: row.pos,
-        };
-      });
+    return dedupePgVecRows(db, docRows, limit);
   }
 
   // IMPORTANT: We use a two-step query approach here because sqlite-vec virtual tables
@@ -7475,6 +7589,8 @@ export interface VectorSearchOptions {
   limit?: number; // default 10
   minScore?: number; // default 0.3
   intent?: string; // domain intent hint for disambiguation
+  /** false = search the original query only: no expansion LLM call, one embedding. Default true. */
+  expand?: boolean;
   hooks?: Pick<SearchHooks, "onExpand">;
 }
 
@@ -7513,7 +7629,10 @@ export async function vectorSearchQuery(
 
   // Expand query — filter to vec/hyde only (lex queries target FTS, not vector)
   const expandStart = Date.now();
-  const allExpanded = await store.expandQuery(query, undefined, intent);
+  const allExpanded =
+    options?.expand === false
+      ? []
+      : await store.expandQuery(query, undefined, intent);
   const vecExpanded = allExpanded.filter((q) => q.type !== "lex");
   options?.hooks?.onExpand?.(query, vecExpanded, Date.now() - expandStart);
 

@@ -2633,6 +2633,7 @@ type OutputOptions = {
   candidateLimit?: number; // Max candidates to rerank (default: 40)
   intent?: string; // Domain intent for disambiguation
   skipRerank?: boolean; // Skip LLM reranking, use RRF scores only
+  noExpand?: boolean; // vsearch: search the original query only
   chunkStrategy?: ChunkStrategy; // "auto" (default) or "regex"
   fullPath?: boolean; // Show realpath instead of qmd:// URI (relative to $PWD when subpath)
 };
@@ -3295,6 +3296,7 @@ async function vectorSearch(
         limit: opts.all ? 500 : opts.limit || 10,
         minScore: opts.minScore || 0.3,
         intent: opts.intent,
+        expand: !opts.noExpand,
         hooks: {
           onExpand: (original, expanded) => {
             logExpansionTree(original, expanded);
@@ -3585,6 +3587,7 @@ function parseCLI() {
       // Query options
       "candidate-limit": { type: "string", short: "C" },
       "no-rerank": { type: "boolean", default: false },
+      "no-expand": { type: "boolean", default: false },
       "no-gpu": { type: "boolean", default: false },
       intent: { type: "string" },
       // Chunking options
@@ -3673,6 +3676,7 @@ function parseCLI() {
       ? parseInt(String(values["candidate-limit"]), 10)
       : undefined,
     skipRerank: !!values["no-rerank"],
+    noExpand: !!values["no-expand"],
     explain: !!values.explain,
     intent: values.intent as string | undefined,
     chunkStrategy: parseChunkStrategy(values["chunk-strategy"]),
@@ -4323,6 +4327,7 @@ function showHelp(): void {
   );
   console.log(
     "  --no-rerank                - Skip LLM reranking (use RRF scores only, much faster on CPU)",
+    "  --no-expand                - vsearch: search the original query only (no expansion call, one embedding)",
   );
   console.log(
     "  --no-gpu                   - Force CPU mode for llama.cpp operations (same as QMD_FORCE_CPU=1)",
