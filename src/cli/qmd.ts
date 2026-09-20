@@ -2626,6 +2626,7 @@ type OutputOptions = {
   minScore: number;
   all?: boolean;
   collection?: string | string[]; // Filter by collection name(s)
+  pathPrefixes?: string[]; // Filter by path prefix(es), OR-matched
   lineNumbers?: boolean; // Add line numbers to output
   explain?: boolean; // Include retrieval score traces (query only)
   context?: string; // Optional context for query expansion
@@ -3228,7 +3229,7 @@ function search(query: string, opts: OutputOptions): void {
   // Use large limit for --all, otherwise fetch more than needed and let outputResults filter
   const fetchLimit = opts.all ? 100000 : Math.max(50, opts.limit * 2);
   const results = filterByCollections(
-    searchFTS(db, query, fetchLimit, singleCollection),
+    searchFTS(db, query, fetchLimit, singleCollection, opts.pathPrefixes),
     collectionNames,
   );
 
@@ -3290,6 +3291,7 @@ async function vectorSearch(
     async () => {
       let results = await vectorSearchQuery(store, query, {
         collection: singleCollection,
+        pathPrefixes: opts.pathPrefixes,
         limit: opts.all ? 500 : opts.limit || 10,
         minScore: opts.minScore || 0.3,
         intent: opts.intent,
@@ -3382,6 +3384,7 @@ async function querySearch(
 
         results = await structuredSearch(store, structuredQueries, {
           collections: singleCollection ? [singleCollection] : undefined,
+          pathPrefixes: opts.pathPrefixes,
           limit: opts.all ? 500 : opts.limit || 10,
           minScore: opts.minScore || 0,
           candidateLimit: opts.candidateLimit,
@@ -3414,6 +3417,7 @@ async function querySearch(
         // Standard hybrid query with automatic expansion
         results = await hybridQuery(store, query, {
           collection: singleCollection,
+          pathPrefixes: opts.pathPrefixes,
           limit: opts.all ? 500 : opts.limit || 10,
           minScore: opts.minScore || 0,
           candidateLimit: opts.candidateLimit,
@@ -3503,6 +3507,30 @@ async function querySearch(
   );
 }
 
+/**
+ * Normalise `--path` values into prefixes that can match `documents.path`.
+ *
+ * Stored paths are collection-relative with no leading slash
+ * (`open-seo/docs/x.md`), so a caller who types `--path /open-seo` or
+ * `--path ./open-seo` means the same folder and would otherwise match nothing.
+ * Blank values are dropped; the trailing slash is left exactly as typed,
+ * because `--path docs` (prefix, matches `docs-old/` too) and `--path docs/`
+ * (that directory only) are different requests.
+ *
+ * Returns undefined when no usable prefix remains, which is what every call
+ * site treats as "no filter".
+ */
+export function normalizePathPrefixes(
+  raw: string[] | undefined,
+): string[] | undefined {
+  if (!raw) return undefined;
+  const cleaned = raw
+    .map((p) => p.trim())
+    .map((p) => p.replace(/^\.\//, "").replace(/^\/+/, ""))
+    .filter((p) => p.length > 0);
+  return cleaned.length > 0 ? cleaned : undefined;
+}
+
 // Parse CLI arguments using util.parseArgs
 function parseCLI() {
   const { values, positionals } = parseArgs({
@@ -3535,6 +3563,7 @@ function parseCLI() {
       json: { type: "boolean" },
       explain: { type: "boolean" },
       collection: { type: "string", short: "c", multiple: true }, // Filter by collection(s)
+      path: { type: "string", multiple: true }, // Filter by path prefix(es), OR-matched
       // Collection options
       name: { type: "string" }, // collection name
       mask: { type: "string" }, // glob pattern
@@ -3638,6 +3667,7 @@ function parseCLI() {
       : 0,
     all: isAll,
     collection: values.collection as string[] | undefined,
+    pathPrefixes: normalizePathPrefixes(values.path as string[] | undefined),
     lineNumbers: !!values["line-numbers"],
     candidateLimit: values["candidate-limit"]
       ? parseInt(String(values["candidate-limit"]), 10)
@@ -4317,6 +4347,12 @@ function showHelp(): void {
   );
   console.log(
     "  -c, --collection <name>    - Filter by one or more collections",
+  );
+  console.log(
+    "  --path <prefix>            - Restrict to paths starting with <prefix>; repeatable (OR)",
+  );
+  console.log(
+    "                                'open-seo/' scopes to a folder, a full path to one file",
   );
   console.log("");
   console.log("Embed/query options:");

@@ -1758,6 +1758,7 @@ export type Store = {
     query: string,
     limit?: number,
     collectionName?: string,
+    pathPrefixes?: string[],
   ) => SearchResult[];
   searchVec: (
     query: string,
@@ -1766,6 +1767,7 @@ export type Store = {
     collectionName?: string,
     session?: ILLMSession,
     precomputedEmbedding?: number[],
+    pathPrefixes?: string[],
   ) => Promise<SearchResult[]>;
 
   // Query expansion & reranking
@@ -3004,8 +3006,12 @@ export function createStore(dbPath?: string): Store {
     toVirtualPath: (absolutePath: string) => toVirtualPath(db, absolutePath),
 
     // Search
-    searchFTS: (query: string, limit?: number, collectionName?: string) =>
-      searchFTS(db, query, limit, collectionName),
+    searchFTS: (
+      query: string,
+      limit?: number,
+      collectionName?: string,
+      pathPrefixes?: string[],
+    ) => searchFTS(db, query, limit, collectionName, pathPrefixes),
     searchVec: (
       query: string,
       model: string,
@@ -3013,6 +3019,7 @@ export function createStore(dbPath?: string): Store {
       collectionName?: string,
       session?: ILLMSession,
       precomputedEmbedding?: number[],
+      pathPrefixes?: string[],
     ) =>
       searchVec(
         db,
@@ -3022,6 +3029,7 @@ export function createStore(dbPath?: string): Store {
         collectionName,
         session,
         precomputedEmbedding,
+        pathPrefixes,
       ),
 
     // Query expansion & reranking
@@ -5179,11 +5187,48 @@ export function buildPgTsQuery(query: string): string {
     .join(" | ");
 }
 
+/**
+ * Escape a path prefix for use as a LIKE pattern.
+ *
+ * `%` and `_` are LIKE wildcards and a literal path may contain either
+ * (`docs/100%_done/`), so a raw prefix would silently widen the filter.
+ * Escaped with a backslash, which both backends accept: SQLite via an explicit
+ * `ESCAPE '\'` clause, Postgres because `standard_conforming_strings` makes
+ * backslash the default LIKE escape. The `ESCAPE '\'` clause is written on
+ * both arms anyway so the SQL says what it means.
+ */
+export function escapeLikePattern(value: string): string {
+  return value.replace(/[\\%_]/g, (ch) => `\\${ch}`);
+}
+
+/**
+ * Build the SQL fragment and parameters for a `--path` filter.
+ *
+ * Several prefixes are OR-ed, each as `path LIKE 'prefix%'`. One rule covers
+ * both shapes a caller wants: `open-seo/` restricts to a directory, and a full
+ * file path restricts to that file (a path is its own prefix). Returns null
+ * when there is nothing to filter.
+ *
+ * `column` is the qualified column name (`d.path`), interpolated rather than
+ * bound because it is caller-supplied SQL, never user input.
+ */
+export function buildPathFilterClause(
+  column: string,
+  pathPrefixes?: string[],
+): { sql: string; params: string[] } | null {
+  const prefixes = (pathPrefixes ?? []).filter((p) => p.length > 0);
+  if (prefixes.length === 0) return null;
+  const parts = prefixes.map(() => `${column} LIKE ? ESCAPE '\\'`);
+  const params = prefixes.map((p) => `${escapeLikePattern(p)}%`);
+  return { sql: `(${parts.join(" OR ")})`, params };
+}
+
 export function searchFTS(
   db: Database,
   query: string,
   limit: number = 20,
   collectionName?: string,
+  pathPrefixes?: string[],
 ): SearchResult[] {
   if (isPostgresDb(db)) {
     const tsQuery = buildPgTsQuery(query);
@@ -5210,6 +5255,12 @@ export function searchFTS(
     if (collectionName) {
       sql += ` AND d.collection = ?`;
       params.push(String(collectionName));
+    }
+
+    const pathFilter = buildPathFilterClause("d.path", pathPrefixes);
+    if (pathFilter) {
+      sql += ` AND ${pathFilter.sql}`;
+      params.push(...pathFilter.params);
     }
 
     sql += ` ORDER BY bm25_score DESC LIMIT ?`;
@@ -5258,10 +5309,11 @@ export function searchFTS(
   // query into a 17-second query on large collections.
   const params: (string | number)[] = [ftsQuery];
 
-  // When filtering by collection, fetch extra candidates from the FTS index
-  // since some will be filtered out. Without a collection filter we can
+  // When filtering by collection or path, fetch extra candidates from the FTS
+  // index since some will be filtered out. Without either filter we can
   // fetch exactly the requested limit.
-  const ftsLimit = collectionName ? limit * 10 : limit;
+  const sqlitePathFilter = buildPathFilterClause("d.path", pathPrefixes);
+  const ftsLimit = collectionName || sqlitePathFilter ? limit * 10 : limit;
 
   let sql = `
     WITH fts_matches AS (
@@ -5287,6 +5339,11 @@ export function searchFTS(
   if (collectionName) {
     sql += ` AND d.collection = ?`;
     params.push(String(collectionName));
+  }
+
+  if (sqlitePathFilter) {
+    sql += ` AND ${sqlitePathFilter.sql}`;
+    params.push(...sqlitePathFilter.params);
   }
 
   // bm25 lower is better; sort ascending.
@@ -5337,6 +5394,7 @@ export async function searchVec(
   collectionName?: string,
   session?: ILLMSession,
   precomputedEmbedding?: number[],
+  pathPrefixes?: string[],
 ): Promise<SearchResult[]> {
   if (!hasVectorIndex(db)) return [];
 
@@ -5377,11 +5435,43 @@ export async function searchVec(
       new Float32Array(embedding),
     ];
 
+    // Both filters are optional, so the WHERE keyword is emitted by whichever
+    // conjunct comes first rather than being hard-wired to the collection one.
+    const conjuncts: string[] = [];
     if (collectionName) {
-      sql += ` WHERE d.collection = ?`;
+      conjuncts.push(`d.collection = ?`);
       params.push(collectionName);
     }
+    const pathFilter = buildPathFilterClause("d.path", pathPrefixes);
+    if (pathFilter) {
+      conjuncts.push(pathFilter.sql);
+      params.push(...pathFilter.params);
+    }
+    if (conjuncts.length > 0) {
+      sql += ` WHERE ${conjuncts.join(" AND ")}`;
+    }
 
+    // NOTE ON pgvector's HNSW POST-FILTER TRAP, AND WHY IT DOES NOT BITE HERE.
+    // An HNSW index filters AFTER its approximate scan, so a narrow filter over
+    // an index scan normally under-fills (fewer rows than asked, or none) and
+    // needs `hnsw.iterative_scan` or an exact scan to compensate.
+    //
+    // This query never reaches the HNSW index at all -- measured against the
+    // live 47,593-doc / 142,348-vector index on 2026-09-19 with
+    // EXPLAIN (ANALYZE): `JOIN vectors v ON TRUE` plus a join predicate on the
+    // computed key `cv.hash || '_' || cv.seq` is not an ORDER BY-over-distance
+    // shape the planner can answer from `idx_vectors_embedding_hnsw`. Unfiltered
+    // it computes every distance (734k buffers, ~575ms); WITH a path prefix it
+    // range-scans `idx_documents_path`, joins out to only that repo's vectors
+    // and computes exact distances (~22ms, 6k buffers).
+    //
+    // So the filter makes this path both FASTER and EXACT, and the recall
+    // compensations are measurably inert: baseline / iterative_scan=relaxed_order
+    // / enable_indexscan=off all produced the same plan, the same full 120 rows,
+    // and 22.8 / 20.9 / 22.4 ms. Setting either would be cost with no effect,
+    // and a GUC set on this `max: 1` pooled connection leaks into every later
+    // query on it. Revisit if the vector join is ever rewritten into a shape the
+    // HNSW index can serve.
     sql += ` ORDER BY distance ASC LIMIT ?`;
     params.push(limit * 3);
 
@@ -5438,6 +5528,17 @@ export async function searchVec(
   // See: https://github.com/tobi/qmd/pull/23
 
   // Step 1: Get vector matches from sqlite-vec (no JOINs allowed)
+  //
+  // The filter cannot ride along: this is the documented no-JOIN step, so any
+  // filtering happens in step 2 and every candidate it removes is one this
+  // search will not return. A path prefix is typically far narrower than a
+  // collection, so widen the candidate pool the same way the FTS arm does
+  // (limit * 10) when one is present. It cannot guarantee a full page -- a
+  // prefix matching nothing in the top k still yields nothing -- but that is
+  // the pre-existing behaviour of the collection filter on this backend, not
+  // something the path filter introduces.
+  const sqlitePathFilter = buildPathFilterClause("d.path", pathPrefixes);
+  const vecCandidates = sqlitePathFilter ? limit * 10 : limit * 3;
   const vecResults = db
     .prepare(
       `
@@ -5446,7 +5547,7 @@ export async function searchVec(
     WHERE embedding MATCH ? AND k = ?
   `,
     )
-    .all(new Float32Array(embedding), limit * 3) as {
+    .all(new Float32Array(embedding), vecCandidates) as {
     hash_seq: string;
     distance: number;
   }[];
@@ -5478,6 +5579,11 @@ export async function searchVec(
   if (collectionName) {
     docSql += ` AND d.collection = ?`;
     params.push(collectionName);
+  }
+
+  if (sqlitePathFilter) {
+    docSql += ` AND ${sqlitePathFilter.sql}`;
+    params.push(...sqlitePathFilter.params);
   }
 
   const docRows = withLazyContentVectorMigration(
@@ -6924,6 +7030,8 @@ export interface SearchHooks {
 
 export interface HybridQueryOptions {
   collection?: string;
+  /** Restrict to documents whose path starts with any of these prefixes (OR). */
+  pathPrefixes?: string[];
   limit?: number; // default 10
   minScore?: number; // default 0
   candidateLimit?: number; // default RERANK_CANDIDATE_LIMIT
@@ -6994,6 +7102,7 @@ export async function hybridQuery(
   const minScore = options?.minScore ?? 0;
   const candidateLimit = options?.candidateLimit ?? RERANK_CANDIDATE_LIMIT;
   const collection = options?.collection;
+  const pathPrefixes = options?.pathPrefixes;
   const explain = options?.explain ?? false;
   const intent = options?.intent;
   const skipRerank = options?.skipRerank ?? false;
@@ -7009,7 +7118,7 @@ export async function hybridQuery(
   // match may not be what the caller wants (e.g. "performance" with intent
   // "web page load times" should NOT shortcut to a sports-performance doc).
   // Pass collection directly into FTS query (filter at SQL level, not post-hoc)
-  const initialFts = store.searchFTS(query, 20, collection);
+  const initialFts = store.searchFTS(query, 20, collection, pathPrefixes);
   const topScore = initialFts[0]?.score ?? 0;
   const secondScore = initialFts[1]?.score ?? 0;
   const hasStrongSignal =
@@ -7053,7 +7162,7 @@ export async function hybridQuery(
   // 3a: Run FTS for all lex expansions right away (no LLM needed)
   for (const q of expanded) {
     if (q.type === "lex") {
-      const ftsResults = store.searchFTS(q.query, 20, collection);
+      const ftsResults = store.searchFTS(q.query, 20, collection, pathPrefixes);
       if (ftsResults.length > 0) {
         for (const r of ftsResults) docidMap.set(r.filepath, r.docid);
         rankedLists.push(
@@ -7123,6 +7232,7 @@ export async function hybridQuery(
         collection,
         undefined,
         embedding,
+        pathPrefixes,
       );
       if (vecResults.length > 0) {
         for (const r of vecResults) docidMap.set(r.filepath, r.docid);
@@ -7360,6 +7470,8 @@ export async function hybridQuery(
 
 export interface VectorSearchOptions {
   collection?: string;
+  /** Restrict to documents whose path starts with any of these prefixes (OR). */
+  pathPrefixes?: string[];
   limit?: number; // default 10
   minScore?: number; // default 0.3
   intent?: string; // domain intent hint for disambiguation
@@ -7393,6 +7505,7 @@ export async function vectorSearchQuery(
   const limit = options?.limit ?? 10;
   const minScore = options?.minScore ?? 0.3;
   const collection = options?.collection;
+  const pathPrefixes = options?.pathPrefixes;
   const intent = options?.intent;
 
   const hasVectors = hasVectorIndex(store.db);
@@ -7409,7 +7522,15 @@ export async function vectorSearchQuery(
   const queryTexts = [query, ...vecExpanded.map((q) => q.query)];
   const allResults = new Map<string, VectorSearchResult>();
   for (const q of queryTexts) {
-    const vecResults = await store.searchVec(q, embedModel, limit, collection);
+    const vecResults = await store.searchVec(
+      q,
+      embedModel,
+      limit,
+      collection,
+      undefined,
+      undefined,
+      pathPrefixes,
+    );
     for (const r of vecResults) {
       const existing = allResults.get(r.filepath);
       if (!existing || r.score > existing.score) {
@@ -7442,6 +7563,8 @@ export async function vectorSearchQuery(
  */
 export interface StructuredSearchOptions {
   collections?: string[]; // Filter to specific collections (OR match)
+  /** Restrict to documents whose path starts with any of these prefixes (OR). */
+  pathPrefixes?: string[];
   limit?: number; // default 10
   minScore?: number; // default 0
   candidateLimit?: number; // default RERANK_CANDIDATE_LIMIT
@@ -7486,6 +7609,7 @@ export async function structuredSearch(
   const hooks = options?.hooks;
 
   const collections = options?.collections;
+  const pathPrefixes = options?.pathPrefixes;
 
   if (searches.length === 0) return [];
 
@@ -7522,7 +7646,12 @@ export async function structuredSearch(
   for (const search of searches) {
     if (search.type === "lex") {
       for (const coll of collectionList) {
-        const ftsResults = store.searchFTS(search.query, 20, coll);
+        const ftsResults = store.searchFTS(
+          search.query,
+          20,
+          coll,
+          pathPrefixes,
+        );
         if (ftsResults.length > 0) {
           for (const r of ftsResults) docidMap.set(r.filepath, r.docid);
           rankedLists.push(
@@ -7586,6 +7715,7 @@ export async function structuredSearch(
             coll,
             undefined,
             embedding,
+            pathPrefixes,
           );
           if (vecResults.length > 0) {
             for (const r of vecResults) docidMap.set(r.filepath, r.docid);

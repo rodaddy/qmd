@@ -778,6 +778,8 @@ and `deep-search` (→ `query`).
 # Search options
 -n <num>           # Number of results (default: 5, or 20 for --files/--json)
 -c, --collection   # Restrict search to a specific collection
+--path <prefix>    # Restrict to paths starting with <prefix>; repeatable (OR)
+                   # "open-seo/" scopes to a folder, a full path to one file
 --all              # Return all matches (use with --min-score to filter)
 --min-score <num>  # Minimum score threshold (default: 0)
 --full             # Show full document content
@@ -822,6 +824,30 @@ explicitly with `-c`.
 > **Note:** With multiple `-c` flags, results come from a global top-K pool and are
 > then filtered. If one collection dominates the rankings, matches from smaller
 > collections may not appear at the default limit — raise `-n` or use `--all`.
+
+### Path Filtering
+
+`--path <prefix>` restricts results to documents whose path starts with the
+prefix. It is repeatable and the prefixes are OR-ed:
+
+```sh
+qmd vsearch "auth" --path open-seo/                      # one folder
+qmd vsearch "auth" --path open-seo/ --path rtech-infra/  # either folder
+qmd vsearch "auth" --path open-seo/docs/README.md        # one file
+qmd search  "auth" -c Development --path open-seo/       # with -c
+```
+
+Paths are collection-relative, exactly as they appear in results (`qmd://<collection>/<path>`);
+a leading `/` or `./` is accepted and ignored. `%` and `_` are matched literally,
+not as SQL wildcards.
+
+Unlike `-c`, this filter is applied **in SQL before ranking**, so the top `-n`
+hits really are the best ones inside the prefix rather than whatever survived a
+global top-K. That also makes it the fast way to search one repository: measured
+against a 47,593-document index, `vsearch --all --min-score 0.2` took 24–33s to
+return 500 rows for a caller that then filtered in code, while the same query
+with `-n 40 --path <repo>/` took 2.0–3.1s and returned the identical rows in the
+identical order.
 
 ### Output Format
 

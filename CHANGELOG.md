@@ -4,6 +4,21 @@
 
 ### Added
 
+- `--path <prefix>` on `search`, `vsearch` and `query` restricts results to
+  documents whose path starts with the prefix. The flag is repeatable and the
+  prefixes are OR-ed; a trailing slash scopes to a directory, a full path to a
+  single file. `%` and `_` are escaped so they match literally. Available on the
+  SDK (`pathPrefixes` on `search`/`searchLex`/`searchVector`) and on both MCP
+  surfaces, so every route that accepts `collections` now also accepts
+  `pathPrefixes`.
+
+  The filter is applied in SQL on both backends before ranking, not post-hoc, so
+  the top `-n` hits are the best ones *inside* the prefix. It replaces the
+  widen-then-filter-in-code workaround it was written for: on a 47,593-document
+  PostgreSQL index, `vsearch --all --min-score 0.2` needed 24–33s to return 500
+  rows, and `vsearch -n 40 --path <repo>/` returns the same rows in the same
+  order in 2.0–3.1s. An unfiltered search is byte-identical to before.
+
 - `qmd update <path> [<path> ...]` re-indexes exactly the named files instead of
   walking whole collections. Each path (relative or absolute) is resolved to its
   owning collection by root match; a path under no root is a hard error naming

@@ -389,6 +389,12 @@ Intent-aware lex (C++ performance, not sports):
           .array(z.string())
           .optional()
           .describe("Filter to collections (OR match)"),
+        pathPrefixes: z
+          .array(z.string())
+          .optional()
+          .describe(
+            "Restrict to paths starting with any of these prefixes (OR match). A trailing slash scopes to a directory ('open-seo/'); a full path scopes to one file.",
+          ),
         intent: z
           .string()
           .optional()
@@ -411,6 +417,7 @@ Intent-aware lex (C++ performance, not sports):
       minScore,
       candidateLimit,
       collections,
+      pathPrefixes,
       intent,
       rerank,
     }) => {
@@ -456,6 +463,8 @@ Intent-aware lex (C++ performance, not sports):
         ...searchOptions,
         collections:
           effectiveCollections.length > 0 ? effectiveCollections : undefined,
+        pathPrefixes:
+          pathPrefixes && pathPrefixes.length > 0 ? pathPrefixes : undefined,
         limit,
         minScore,
         candidateLimit,
@@ -928,11 +937,19 @@ export async function startMcpHttpServer(
             ? params.collections.map(String)
             : defaultCollectionNames;
 
+          const restPathPrefixes = Array.isArray(params.pathPrefixes)
+            ? params.pathPrefixes.map(String).filter((p) => p.length > 0)
+            : undefined;
+
           const results = await store.search({
             queries,
             collections:
               effectiveCollections.length > 0
                 ? effectiveCollections
+                : undefined,
+            pathPrefixes:
+              restPathPrefixes && restPathPrefixes.length > 0
+                ? restPathPrefixes
                 : undefined,
             limit: typeof params.limit === "number" ? params.limit : 10,
             minScore: typeof params.minScore === "number" ? params.minScore : 0,
