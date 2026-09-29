@@ -1895,12 +1895,50 @@ export function getReindexReadCount(): number {
   return reindexReadCount;
 }
 
+/** Test seam: how many per-file document lookups reindexDocument has made. */
+let reindexLookupCount = 0;
+export function getReindexLookupCount(): number {
+  return reindexLookupCount;
+}
+
+type KnownDocument = {
+  id: number;
+  hash: string;
+  title: string;
+  modified_at: string;
+};
+
+/**
+ * Every active document of a collection, keyed by path, in ONE query.
+ *
+ * On Postgres each query is a synchronous round trip through the worker
+ * thread (pg.ts). Measured 2026-09-29 on the live Development collection
+ * (24,137 active rows): one lookup per file cost about 2.4 ms each, ~57 s of a
+ * 63.7 s no-change update, while this whole scan runs in 14 ms (dev#565).
+ */
+function loadActiveDocuments(
+  db: Database,
+  collectionName: string,
+): Map<string, KnownDocument> {
+  const rows = db
+    .prepare(
+      `SELECT id, path, hash, title, modified_at FROM documents
+       WHERE collection = ? AND active = 1`,
+    )
+    .all(collectionName) as (KnownDocument & { path: string })[];
+  return new Map(rows.map(({ path, ...doc }) => [path, doc]));
+}
+
 async function reindexDocument(
   db: Database,
   collectionPath: string,
   relativeFile: string,
   collectionName: string,
   now: string,
+  // The collection's active rows, preloaded by a whole-collection walk. A path
+  // it lacks still goes through the per-file lookup, which also migrates a
+  // legacy-cased or handelized row.
+  known?: Map<string, KnownDocument>,
 ): Promise<ReindexDocumentOutcome> {
   const filepath = getRealPath(resolve(collectionPath, relativeFile));
   const path = normalizePathSeparators(relativeFile);
@@ -1915,7 +1953,8 @@ async function reindexDocument(
 
   // An indexed file whose mtime still matches is unchanged: skip the read and
   // hash. A touched file (new mtime) still falls through to the hash compare.
-  const existing = findOrMigrateLegacyDocument(db, collectionName, path);
+  const existing =
+    known?.get(path) ?? lookUpDocument(db, collectionName, path, known);
   if (existing && existing.modified_at === mtime) return "unchanged";
 
   let content: string;
@@ -1960,6 +1999,27 @@ async function reindexDocument(
     mtime,
   );
   return "indexed";
+}
+
+/**
+ * The per-file lookup, for a path the preload does not hold. A legacy row it
+ * migrates to `path` is dropped from `known` under its old path, so a later
+ * file at that old path is not matched to a row that has moved.
+ */
+function lookUpDocument(
+  db: Database,
+  collectionName: string,
+  path: string,
+  known?: Map<string, KnownDocument>,
+): KnownDocument | null {
+  reindexLookupCount++;
+  const found = findOrMigrateLegacyDocument(db, collectionName, path);
+  if (found && known) {
+    for (const [oldPath, doc] of known) {
+      if (doc.id === found.id) known.delete(oldPath);
+    }
+  }
+  return found;
 }
 
 /** Directories no collection indexes, whatever its pattern says. */
@@ -2082,6 +2142,7 @@ export async function reindexCollection(
     unchanged = 0,
     processed = 0;
   const seenPaths = new Set<string>();
+  const known = loadActiveDocuments(db, collectionName);
 
   for (const relativeFile of files) {
     // Store the literal relative path so the filesystem path can always be
@@ -2095,6 +2156,7 @@ export async function reindexCollection(
       relativeFile,
       collectionName,
       now,
+      known,
     );
     if (outcome === "indexed") indexed++;
     else if (outcome === "updated") updated++;

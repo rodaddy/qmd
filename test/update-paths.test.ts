@@ -26,6 +26,7 @@ import {
   getHashesNeedingEmbedding,
   getEmbeddingFingerprint,
   getReindexReadCount,
+  getReindexLookupCount,
   type Store,
   type ReindexTarget,
 } from "../src/store.js";
@@ -257,6 +258,39 @@ describe("reindexPaths embedding staleness", () => {
     expect(getHashesNeedingEmbedding(store.db, COLLECTION, MODEL)).toBe(1);
     const added = activeDocs().find((d) => d.path === "b.md")!;
     expect(vectorRowsFor(added.hash)).toBe(0);
+  });
+});
+
+describe("reindexCollection per-file lookups (dev#565)", () => {
+  test("a no-change walk asks the database nothing per file", async () => {
+    await seedCollection({ "a.md": "# A\n\nalpha", "b.md": "# B\n\nbravo" });
+    const lookupsBefore = getReindexLookupCount();
+
+    const result = await reindexCollection(
+      store,
+      collectionDir,
+      "**/*.md",
+      COLLECTION,
+    );
+
+    expect(result.unchanged).toBe(2);
+    expect(getReindexLookupCount() - lookupsBefore).toBe(0);
+  });
+
+  test("only a file the index does not know is looked up", async () => {
+    await seedCollection({ "a.md": "# A\n\nalpha" });
+    await writeFile(join(collectionDir, "b.md"), "# B\n\nbravo");
+    const lookupsBefore = getReindexLookupCount();
+
+    const result = await reindexCollection(
+      store,
+      collectionDir,
+      "**/*.md",
+      COLLECTION,
+    );
+
+    expect([result.indexed, result.unchanged]).toEqual([1, 1]);
+    expect(getReindexLookupCount() - lookupsBefore).toBe(1);
   });
 });
 
