@@ -1824,11 +1824,11 @@ export type Store = {
   findActiveDocument: (
     collectionName: string,
     path: string,
-  ) => { id: number; hash: string; title: string } | null;
+  ) => { id: number; hash: string; title: string; modified_at: string } | null;
   findOrMigrateLegacyDocument: (
     collectionName: string,
     path: string,
-  ) => { id: number; hash: string; title: string } | null;
+  ) => { id: number; hash: string; title: string; modified_at: string } | null;
   updateDocumentTitle: (
     documentId: number,
     title: string,
@@ -1889,6 +1889,12 @@ type ReindexDocumentOutcome = "indexed" | "updated" | "unchanged" | "skipped";
  * `skipped` means the file was unreadable or blank — the caller decides whether
  * that is benign (collection walk) or worth reporting (targeted update).
  */
+/** Test seam: how many files reindexDocument has read from disk. */
+let reindexReadCount = 0;
+export function getReindexReadCount(): number {
+  return reindexReadCount;
+}
+
 async function reindexDocument(
   db: Database,
   collectionPath: string,
@@ -1899,9 +1905,23 @@ async function reindexDocument(
   const filepath = getRealPath(resolve(collectionPath, relativeFile));
   const path = normalizePathSeparators(relativeFile);
 
+  let stat: ReturnType<typeof statSync>;
+  try {
+    stat = statSync(filepath);
+  } catch {
+    return "skipped";
+  }
+  const mtime = new Date(stat.mtime).toISOString();
+
+  // An indexed file whose mtime still matches is unchanged: skip the read and
+  // hash. A touched file (new mtime) still falls through to the hash compare.
+  const existing = findOrMigrateLegacyDocument(db, collectionName, path);
+  if (existing && existing.modified_at === mtime) return "unchanged";
+
   let content: string;
   try {
     content = readFileSync(filepath, "utf-8");
+    reindexReadCount++;
   } catch {
     return "skipped";
   }
@@ -1910,8 +1930,6 @@ async function reindexDocument(
 
   const hash = await hashContent(content);
   const title = extractTitle(content, relativeFile);
-
-  const existing = findOrMigrateLegacyDocument(db, collectionName, path);
 
   if (existing) {
     if (existing.hash === hash) {
@@ -1922,27 +1940,19 @@ async function reindexDocument(
       return "unchanged";
     }
     insertContent(db, hash, content, now);
-    const stat = statSync(filepath);
-    updateDocument(
-      db,
-      existing.id,
-      title,
-      hash,
-      stat ? new Date(stat.mtime).toISOString() : now,
-    );
+    updateDocument(db, existing.id, title, hash, mtime);
     return "updated";
   }
 
   insertContent(db, hash, content, now);
-  const stat = statSync(filepath);
   insertDocument(
     db,
     collectionName,
     path,
     title,
     hash,
-    stat ? new Date(stat.birthtime).toISOString() : now,
-    stat ? new Date(stat.mtime).toISOString() : now,
+    new Date(stat.birthtime).toISOString(),
+    mtime,
   );
   return "indexed";
 }
@@ -3954,16 +3964,17 @@ export function findActiveDocument(
   db: Database,
   collectionName: string,
   path: string,
-): { id: number; hash: string; title: string } | null {
+): { id: number; hash: string; title: string; modified_at: string } | null {
   const row = db
     .prepare(
       `
-    SELECT id, hash, title FROM documents
+    SELECT id, hash, title, modified_at FROM documents
     WHERE collection = ? AND path = ? AND active = 1
   `,
     )
     .get(collectionName, path) as
-    { id: number; hash: string; title: string } | undefined;
+    | { id: number; hash: string; title: string; modified_at: string }
+    | undefined;
   return row ?? null;
 }
 
@@ -3980,7 +3991,7 @@ export function findOrMigrateLegacyDocument(
   db: Database,
   collectionName: string,
   path: string,
-): { id: number; hash: string; title: string } | null {
+): { id: number; hash: string; title: string; modified_at: string } | null {
   const existing = findActiveDocument(db, collectionName, path);
   if (existing) return existing;
 
@@ -3992,40 +4003,44 @@ export function findOrMigrateLegacyDocument(
     .prepare(
       isPostgresDb(db)
         ? `
-    SELECT id, hash, title FROM documents
+    SELECT id, hash, title, modified_at FROM documents
     WHERE collection = ? AND LOWER(path) = LOWER(?) AND active = 1
     ORDER BY id
     LIMIT 1
   `
         : `
-    SELECT id, hash, title FROM documents
+    SELECT id, hash, title, modified_at FROM documents
     WHERE collection = ? AND path COLLATE NOCASE = ? AND active = 1
     ORDER BY id
     LIMIT 1
   `,
     )
     .get(collectionName, path) as
-    { id: number; hash: string; title: string } | undefined;
+    | { id: number; hash: string; title: string; modified_at: string }
+    | undefined;
 
   // Handalized-path match: existing DBs indexed with handelize() stored slugged paths
   // like "Budget-Revenue-Q4-2024.md" for a raw path like "Budget & Revenue (Q4) [2024].md".
   // Try matching the handalized form of the incoming raw path against the DB so that
   // qmd update on an old index can rename the row to the literal path.
-  let legacyHandalized: { id: number; hash: string; title: string } | undefined;
+  let legacyHandalized:
+    | { id: number; hash: string; title: string; modified_at: string }
+    | undefined;
   try {
     const handleized = handelize(path);
     if (handleized !== path) {
       legacyHandalized = db
         .prepare(
           `
-        SELECT id, hash, title FROM documents
+        SELECT id, hash, title, modified_at FROM documents
         WHERE collection = ? AND path = ? AND active = 1
         ORDER BY id
         LIMIT 1
       `,
         )
         .get(collectionName, handleized) as
-        { id: number; hash: string; title: string } | undefined;
+        | { id: number; hash: string; title: string; modified_at: string }
+        | undefined;
     }
   } catch {
     // handelize throws on invalid paths; just skip
