@@ -1874,6 +1874,16 @@ export type ReindexResult = {
   unchanged: number;
   removed: number;
   orphanedCleaned: number;
+  /** Milliseconds per phase, so an update can say where its time went (dev#565). */
+  timings: ReindexTimings;
+};
+
+export type ReindexTimings = {
+  list: number;
+  preload: number;
+  walk: number;
+  deactivate: number;
+  orphans: number;
 };
 
 /** What re-indexing one file did to the index. */
@@ -2130,6 +2140,13 @@ export async function reindexCollection(
 ): Promise<ReindexResult> {
   const db = store.db;
   const now = new Date().toISOString();
+  let mark = performance.now();
+  const lap = (): number => {
+    const t = performance.now();
+    const ms = t - mark;
+    mark = t;
+    return ms;
+  };
   const files = await listCollectionFiles(
     collectionPath,
     globPattern,
@@ -2142,7 +2159,9 @@ export async function reindexCollection(
     unchanged = 0,
     processed = 0;
   const seenPaths = new Set<string>();
+  const list = lap();
   const known = loadActiveDocuments(db, collectionName);
+  const preload = lap();
 
   for (const relativeFile of files) {
     // Store the literal relative path so the filesystem path can always be
@@ -2166,6 +2185,8 @@ export async function reindexCollection(
     options?.onProgress?.({ file: relativeFile, current: processed, total });
   }
 
+  const walk = lap();
+
   // Deactivate documents that no longer exist
   const allActive = getActiveDocumentPaths(db, collectionName);
   let removed = 0;
@@ -2176,9 +2197,19 @@ export async function reindexCollection(
     }
   }
 
-  const orphanedCleaned = cleanupOrphanedContent(db);
+  const deactivate = lap();
 
-  return { indexed, updated, unchanged, removed, orphanedCleaned };
+  const orphanedCleaned = cleanupOrphanedContent(db);
+  const orphans = lap();
+
+  return {
+    indexed,
+    updated,
+    unchanged,
+    removed,
+    orphanedCleaned,
+    timings: { list, preload, walk, deactivate, orphans },
+  };
 }
 
 /** One file to re-index, already resolved to its owning collection. */

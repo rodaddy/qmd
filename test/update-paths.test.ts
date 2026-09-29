@@ -277,6 +277,27 @@ describe("reindexCollection per-file lookups (dev#565)", () => {
     expect(getReindexLookupCount() - lookupsBefore).toBe(0);
   });
 
+  test("a walk reports where its time went, phase by phase", async () => {
+    await seedCollection({ "a.md": "# A\n\nalpha" });
+
+    const { timings } = await reindexCollection(
+      store,
+      collectionDir,
+      "**/*.md",
+      COLLECTION,
+    );
+
+    expect(Object.keys(timings)).toEqual([
+      "list",
+      "preload",
+      "walk",
+      "deactivate",
+      "orphans",
+    ]);
+    for (const ms of Object.values(timings))
+      expect(ms).toBeGreaterThanOrEqual(0);
+  });
+
   test("only a file the index does not know is looked up", async () => {
     await seedCollection({ "a.md": "# A\n\nalpha" });
     await writeFile(join(collectionDir, "b.md"), "# B\n\nbravo");

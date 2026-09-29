@@ -102,6 +102,7 @@ import {
   maybeAdoptLegacyEmbeddingFingerprint,
   syncConfigToDb,
   type ReindexResult,
+  type ReindexTimings,
   type ChunkStrategy,
 } from "../store.js";
 import {
@@ -812,13 +813,27 @@ async function showStatus(): Promise<void> {
  * to one, which is sub-second. `embed` already accepted -c; this makes the two
  * halves of a refresh symmetrical.
  */
+/** Milliseconds as seconds with one decimal, for the update timing lines. */
+function seconds(ms: number): string {
+  return `${(ms / 1000).toFixed(1)}s`;
+}
+
+/** One line naming where a collection walk spent its time (dev#565). */
+function formatTimings(t: ReindexTimings): string {
+  return (Object.entries(t) as [string, number][])
+    .map(([phase, ms]) => `${phase} ${seconds(ms)}`)
+    .join(", ");
+}
+
 async function updateCollections(only: string[] = []): Promise<void> {
+  const updateStart = performance.now();
   const db = getDb();
   const storeInstance = getStore();
   // Collections are defined in YAML; no duplicate cleanup needed.
 
   // Clear Ollama cache on update
   clearCache(db);
+  const openMs = performance.now() - updateStart;
 
   let collections = listCollections(db);
 
@@ -958,12 +973,20 @@ async function updateCollections(only: string[] = []): Promise<void> {
         `Cleaned up ${result.orphanedCleaned} orphaned content hash(es)`,
       );
     }
+    console.log(`Timing: ${formatTimings(result.timings)}`);
     console.log("");
   }
 
   // Check if any documents need embedding (show once at end)
+  let mark = performance.now();
   const needsEmbedding = getHashesNeedingEmbedding(db);
+  const embedCountMs = performance.now() - mark;
+  mark = performance.now();
   closeDb();
+  const closeMs = performance.now() - mark;
+  console.log(
+    `Timing: open+clearCache ${seconds(openMs)}, embed-count ${seconds(embedCountMs)}, close ${seconds(closeMs)}, total ${seconds(performance.now() - updateStart)}`,
+  );
 
   console.log(`${c.green}✓ All collections updated.${c.reset}`);
   if (needsEmbedding > 0) {
