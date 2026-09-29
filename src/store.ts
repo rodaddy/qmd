@@ -5522,7 +5522,6 @@ type PgVecRow = {
   filepath: string;
   display_path: string;
   title: string;
-  body: string;
   distance: number;
 };
 
@@ -5549,10 +5548,27 @@ function dedupePgVecRows(
     }
   }
 
-  return Array.from(seen.values())
+  const kept = Array.from(seen.values())
     .sort((a, b) => a.bestDist - b.bestDist)
-    .slice(0, limit)
+    .slice(0, limit);
+
+  // BODIES FOR THE SURVIVORS ONLY (dev#565). Each chunk row used to carry
+  // content.doc, so one search shipped the same document once per matching
+  // chunk -- 300-400 rows of full bodies through the worker -- to keep 20.
+  const hashes = [...new Set(kept.map(({ row }) => row.hash))];
+  const bodies = new Map<string, string>();
+  if (hashes.length > 0) {
+    const placeholders = hashes.map(() => "?").join(", ");
+    const found = db
+      .prepare(`SELECT hash, doc FROM content WHERE hash IN (${placeholders})`)
+      .all(...hashes) as { hash: string; doc: string }[];
+    for (const { hash, doc } of found) bodies.set(hash, doc);
+  }
+
+  return kept
+    .filter(({ row }) => bodies.has(row.hash))
     .map(({ row, bestDist }) => {
+      const body = bodies.get(row.hash)!;
       const rowCollectionName =
         row.filepath.split("//")[1]?.split("/")[0] || "";
       return {
@@ -5563,8 +5579,8 @@ function dedupePgVecRows(
         docid: getDocid(row.hash),
         collectionName: rowCollectionName,
         modifiedAt: "",
-        bodyLength: row.body.length,
-        body: row.body,
+        bodyLength: body.length,
+        body,
         context: withContext ? getContextForFile(db, row.filepath) : null,
         score: 1 - bestDist,
         source: "vec" as const,
@@ -5672,12 +5688,10 @@ export async function searchVec(
           'qmd://' || d.collection || '/' || d.path as filepath,
           d.collection || '/' || d.path as display_path,
           d.title,
-          content.doc as body,
           knn.distance
         FROM knn
         JOIN content_vectors cv ON cv.hash = knn.hash AND cv.seq = knn.seq
         JOIN documents d ON d.hash = cv.hash AND d.active = 1
-        JOIN content ON content.hash = d.hash
         ORDER BY knn.distance ASC
       `;
 
@@ -5709,13 +5723,11 @@ export async function searchVec(
         'qmd://' || d.collection || '/' || d.path as filepath,
         d.collection || '/' || d.path as display_path,
         d.title,
-        content.doc as body,
         (v.embedding <=> query_vec.embedding) as distance
       FROM query_vec
       JOIN vectors v ON TRUE
       JOIN content_vectors cv ON cv.hash || '_' || cv.seq = v.hash_seq
       JOIN documents d ON d.hash = cv.hash AND d.active = 1
-      JOIN content ON content.hash = d.hash
     `;
     const params: (string | number | Float32Array)[] = [
       new Float32Array(embedding),
