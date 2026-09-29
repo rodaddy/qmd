@@ -4654,6 +4654,40 @@ export function getContextForPath(
  * Get context for a file path (virtual or filesystem).
  * Resolves the collection and relative path from the DB store_collections table.
  */
+/**
+ * The collection rows and global context getContextForFile reads, held briefly.
+ *
+ * Each call used to query store_collections twice, re-parse every collection's
+ * patterns (4,208 for Development), and read the global context -- per result
+ * row. Profiled live 2026-09-29 (dev#565): 1.0 s of a 1.55 s `qmd search`.
+ * Held per database handle for CONTEXT_LOOKUP_TTL_MS, so a burst of rows shares
+ * one read and a long-lived MCP server sees a context change within seconds.
+ */
+const CONTEXT_LOOKUP_TTL_MS = 2_000;
+const contextLookups = new WeakMap<
+  Database,
+  {
+    at: number;
+    collections: NamedCollection[];
+    globalContext: string | undefined;
+  }
+>();
+function contextLookup(db: Database): {
+  collections: NamedCollection[];
+  globalContext: string | undefined;
+} {
+  const now = Date.now();
+  const held = contextLookups.get(db);
+  if (held && now - held.at < CONTEXT_LOOKUP_TTL_MS) return held;
+  const fresh = {
+    at: now,
+    collections: getStoreCollections(db),
+    globalContext: getStoreGlobalContext(db),
+  };
+  contextLookups.set(db, fresh);
+  return fresh;
+}
+
 /** Test seam: how many times getContextForFile has run (dev#565). */
 let contextLookupCount = 0;
 export function getContextLookupCount(): number {
@@ -4669,7 +4703,7 @@ export function getContextForFile(
   if (!filepath) return null;
 
   // Get all collections from DB
-  const collections = getStoreCollections(db);
+  const { collections, globalContext } = contextLookup(db);
 
   // Parse virtual path format: qmd://collection/path
   let collectionName: string | null = null;
@@ -4701,7 +4735,7 @@ export function getContextForFile(
   }
 
   // Get the collection from DB
-  const coll = getStoreCollection(db, collectionName);
+  const coll = collections.find((c) => c.name === collectionName) ?? null;
   if (!coll) return null;
 
   // Verify this document exists in the database
@@ -4722,7 +4756,7 @@ export function getContextForFile(
   const contexts: string[] = [];
 
   // Add global context if present
-  const globalCtx = getStoreGlobalContext(db);
+  const globalCtx = globalContext;
   if (globalCtx) {
     contexts.push(globalCtx);
   }
