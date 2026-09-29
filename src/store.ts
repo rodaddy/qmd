@@ -5711,7 +5711,10 @@ export async function searchVec(
       // 386 chunk rows over 220 distinct documents, so a 100-row page has ample
       // headroom. The floor keeps a small `limit` from asking the index for a
       // handful of neighbours and losing the page to de-duplication.
-      const firstK = Math.max(limit * 3, 100);
+      // A collection post-filter discards the other collections' neighbours, so
+      // it starts wider: at k=100 the tail of a 10-row page kept 6 of the exact
+      // top 10 on one of three live probes (2026-09-29). ef_search follows k.
+      const firstK = Math.max(limit * 3, collectionName ? 300 : 100);
 
       const knnSql = `
         WITH knn AS (
