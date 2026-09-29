@@ -5692,17 +5692,26 @@ export async function searchVec(
     // `idx_documents_path`). Approximating something that is already exact and
     // quick would be a straight downgrade, so the filtered arm is left byte for
     // byte as it was.
-    if (!narrowed) {
+    // A COLLECTION-ONLY FILTER TAKES THE INDEX PATH TOO (dev#565).
+    //
+    // `qmd query` with no -c fills in the index's default collection, so every
+    // search of the development index arrived here "narrowed" by
+    // `d.collection = 'Development'` and took the exact arm below: a distance for
+    // every Development vector (123k of 202k), ~200 ms per call and four calls
+    // per query (profiled live 2026-09-29). The collection is now applied AFTER
+    // the HNSW scan, over-fetching and doubling k until the page fills; a small
+    // collection that cannot fill it from k=800 falls through to the exact arm,
+    // which is cheap for a small collection. A path prefix still goes exact:
+    // that arm is fast and exact over `idx_documents_path`.
+    const collectionOnly = Boolean(collectionName) && !pgPathFilter;
+    if (!narrowed || collectionOnly) {
       // The over-fetch feeds two separate reductions: chunks collapse to
       // documents, and inactive documents drop out. `limit * 3` is the existing
       // budget for the first; measured on the live index a k of 300 returned
       // 386 chunk rows over 220 distinct documents, so a 100-row page has ample
       // headroom. The floor keeps a small `limit` from asking the index for a
       // handful of neighbours and losing the page to de-duplication.
-      const k = Math.max(limit * 3, 100);
-      // ef_search must be at least k or the scan truncates to it, and pgvector
-      // rejects anything above 1000. Some headroom over k, then clamped.
-      const efSearch = Math.min(1000, Math.max(40, k * 2));
+      const firstK = Math.max(limit * 3, 100);
 
       const knnSql = `
         WITH knn AS (
@@ -5725,7 +5734,7 @@ export async function searchVec(
           knn.distance
         FROM knn
         JOIN content_vectors cv ON cv.hash = knn.hash AND cv.seq = knn.seq
-        JOIN documents d ON d.hash = cv.hash AND d.active = 1
+        JOIN documents d ON d.hash = cv.hash AND d.active = 1${collectionName ? " AND d.collection = ?" : ""}
         ORDER BY knn.distance ASC
       `;
 
@@ -5738,14 +5747,32 @@ export async function searchVec(
       // against the live database: `SHOW hnsw.ef_search` after the transaction
       // reports the unchanged session default.
       const embeddingParam = new Float32Array(embedding);
-      const rows = db.transaction(() => {
-        db.prepare(`SET LOCAL hnsw.ef_search = ${efSearch}`).run();
-        return db
-          .prepare(knnSql)
-          .all(embeddingParam, embeddingParam, k) as PgVecRow[];
-      })() as unknown as PgVecRow[];
+      const knnRows = (k: number): PgVecRow[] => {
+        // ef_search must be at least k or the scan truncates to it, and
+        // pgvector rejects anything above 1000. Some headroom over k, clamped.
+        const efSearch = Math.min(1000, Math.max(40, k * 2));
+        const params: (Float32Array | number | string)[] = [
+          embeddingParam,
+          embeddingParam,
+          k,
+        ];
+        if (collectionName) params.push(collectionName);
+        return db.transaction(() => {
+          db.prepare(`SET LOCAL hnsw.ef_search = ${efSearch}`).run();
+          return db.prepare(knnSql).all(...params) as PgVecRow[];
+        })() as unknown as PgVecRow[];
+      };
 
-      return dedupePgVecRows(db, rows, limit, withContext);
+      if (!collectionName) {
+        return dedupePgVecRows(db, knnRows(firstK), limit, withContext);
+      }
+      for (let k = firstK; k <= 800; k *= 2) {
+        const rows = knnRows(k);
+        if (new Set(rows.map((r) => r.filepath)).size >= limit) {
+          return dedupePgVecRows(db, rows, limit, withContext);
+        }
+      }
+      // A collection too small to fill the page from the index: exact arm below.
     }
 
     let sql = `
