@@ -1759,6 +1759,7 @@ export type Store = {
     limit?: number,
     collectionName?: string,
     pathPrefixes?: string[],
+    withContext?: boolean,
   ) => SearchResult[];
   searchVec: (
     query: string,
@@ -1768,6 +1769,7 @@ export type Store = {
     session?: ILLMSession,
     precomputedEmbedding?: number[],
     pathPrefixes?: string[],
+    withContext?: boolean,
   ) => Promise<SearchResult[]>;
 
   // Query expansion & reranking
@@ -3119,7 +3121,8 @@ export function createStore(dbPath?: string): Store {
       limit?: number,
       collectionName?: string,
       pathPrefixes?: string[],
-    ) => searchFTS(db, query, limit, collectionName, pathPrefixes),
+      withContext?: boolean,
+    ) => searchFTS(db, query, limit, collectionName, pathPrefixes, withContext),
     searchVec: (
       query: string,
       model: string,
@@ -3128,6 +3131,7 @@ export function createStore(dbPath?: string): Store {
       session?: ILLMSession,
       precomputedEmbedding?: number[],
       pathPrefixes?: string[],
+      withContext?: boolean,
     ) =>
       searchVec(
         db,
@@ -3138,6 +3142,7 @@ export function createStore(dbPath?: string): Store {
         session,
         precomputedEmbedding,
         pathPrefixes,
+        withContext,
       ),
 
     // Query expansion & reranking
@@ -4649,10 +4654,17 @@ export function getContextForPath(
  * Get context for a file path (virtual or filesystem).
  * Resolves the collection and relative path from the DB store_collections table.
  */
+/** Test seam: how many times getContextForFile has run (dev#565). */
+let contextLookupCount = 0;
+export function getContextLookupCount(): number {
+  return contextLookupCount;
+}
+
 export function getContextForFile(
   db: Database,
   filepath: string,
 ): string | null {
+  contextLookupCount++;
   // Handle undefined or null filepath
   if (!filepath) return null;
 
@@ -5342,6 +5354,9 @@ export function searchFTS(
   limit: number = 20,
   collectionName?: string,
   pathPrefixes?: string[],
+  // The pipelines recompute context for the rows they return, so they skip it
+  // here: several round trips per row on Postgres (dev#565).
+  withContext: boolean = true,
 ): SearchResult[] {
   if (isPostgresDb(db)) {
     const tsQuery = buildPgTsQuery(query);
@@ -5405,7 +5420,7 @@ export function searchFTS(
         modifiedAt: "",
         bodyLength: row.body.length,
         body: row.body,
-        context: getContextForFile(db, row.filepath),
+        context: withContext ? getContextForFile(db, row.filepath) : null,
         score,
         source: "fts" as const,
       };
@@ -5488,7 +5503,7 @@ export function searchFTS(
       modifiedAt: "", // Not available in FTS query
       bodyLength: row.body.length,
       body: row.body,
-      context: getContextForFile(db, row.filepath),
+      context: withContext ? getContextForFile(db, row.filepath) : null,
       score,
       source: "fts" as const,
     };
@@ -5523,6 +5538,7 @@ function dedupePgVecRows(
   db: Database,
   rows: PgVecRow[],
   limit: number,
+  withContext: boolean,
 ): SearchResult[] {
   const seen = new Map<string, { row: PgVecRow; bestDist: number }>();
   for (const row of rows) {
@@ -5549,7 +5565,7 @@ function dedupePgVecRows(
         modifiedAt: "",
         bodyLength: row.body.length,
         body: row.body,
-        context: getContextForFile(db, row.filepath),
+        context: withContext ? getContextForFile(db, row.filepath) : null,
         score: 1 - bestDist,
         source: "vec" as const,
         chunkPos: row.pos,
@@ -5566,6 +5582,7 @@ export async function searchVec(
   session?: ILLMSession,
   precomputedEmbedding?: number[],
   pathPrefixes?: string[],
+  withContext: boolean = true, // see searchFTS
 ): Promise<SearchResult[]> {
   if (!hasVectorIndex(db)) return [];
 
@@ -5680,7 +5697,7 @@ export async function searchVec(
           .all(embeddingParam, embeddingParam, k) as PgVecRow[];
       })() as unknown as PgVecRow[];
 
-      return dedupePgVecRows(db, rows, limit);
+      return dedupePgVecRows(db, rows, limit, withContext);
     }
 
     let sql = `
@@ -5746,7 +5763,7 @@ export async function searchVec(
 
     const docRows = db.prepare(sql).all(...params) as PgVecRow[];
 
-    return dedupePgVecRows(db, docRows, limit);
+    return dedupePgVecRows(db, docRows, limit, withContext);
   }
 
   // IMPORTANT: We use a two-step query approach here because sqlite-vec virtual tables
@@ -5855,7 +5872,7 @@ export async function searchVec(
         modifiedAt: "", // Not available in vec query
         bodyLength: row.body.length,
         body: row.body,
-        context: getContextForFile(db, row.filepath),
+        context: withContext ? getContextForFile(db, row.filepath) : null,
         score: 1 - bestDist, // Cosine similarity = 1 - cosine distance
         source: "vec" as const,
         chunkPos: row.pos,
@@ -7345,7 +7362,13 @@ export async function hybridQuery(
   // match may not be what the caller wants (e.g. "performance" with intent
   // "web page load times" should NOT shortcut to a sports-performance doc).
   // Pass collection directly into FTS query (filter at SQL level, not post-hoc)
-  const initialFts = store.searchFTS(query, 20, collection, pathPrefixes);
+  const initialFts = store.searchFTS(
+    query,
+    20,
+    collection,
+    pathPrefixes,
+    false,
+  );
   const topScore = initialFts[0]?.score ?? 0;
   const secondScore = initialFts[1]?.score ?? 0;
   const hasStrongSignal =
@@ -7389,7 +7412,13 @@ export async function hybridQuery(
   // 3a: Run FTS for all lex expansions right away (no LLM needed)
   for (const q of expanded) {
     if (q.type === "lex") {
-      const ftsResults = store.searchFTS(q.query, 20, collection, pathPrefixes);
+      const ftsResults = store.searchFTS(
+        q.query,
+        20,
+        collection,
+        pathPrefixes,
+        false,
+      );
       if (ftsResults.length > 0) {
         for (const r of ftsResults) docidMap.set(r.filepath, r.docid);
         rankedLists.push(
@@ -7460,6 +7489,7 @@ export async function hybridQuery(
         undefined,
         embedding,
         pathPrefixes,
+        false,
       );
       if (vecResults.length > 0) {
         for (const r of vecResults) docidMap.set(r.filepath, r.docid);
@@ -7762,6 +7792,7 @@ export async function vectorSearchQuery(
       undefined,
       undefined,
       pathPrefixes,
+      false,
     );
     for (const r of vecResults) {
       const existing = allResults.get(r.filepath);
@@ -7772,17 +7803,19 @@ export async function vectorSearchQuery(
           title: r.title,
           body: r.body || "",
           score: r.score,
-          context: store.getContextForFile(r.filepath),
+          context: null,
           docid: r.docid,
         });
       }
     }
   }
 
+  // Context only for the rows returned, not every candidate (dev#565).
   return Array.from(allResults.values())
     .sort((a, b) => b.score - a.score)
     .filter((r) => r.score >= minScore)
-    .slice(0, limit);
+    .slice(0, limit)
+    .map((r) => ({ ...r, context: store.getContextForFile(r.file) }));
 }
 
 // =============================================================================
@@ -7883,6 +7916,7 @@ export async function structuredSearch(
           20,
           coll,
           pathPrefixes,
+          false,
         );
         if (ftsResults.length > 0) {
           for (const r of ftsResults) docidMap.set(r.filepath, r.docid);
@@ -7948,6 +7982,7 @@ export async function structuredSearch(
             undefined,
             embedding,
             pathPrefixes,
+            false,
           );
           if (vecResults.length > 0) {
             for (const r of vecResults) docidMap.set(r.filepath, r.docid);
