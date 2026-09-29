@@ -1934,9 +1934,14 @@ async function reindexDocument(
   if (existing) {
     if (existing.hash === hash) {
       if (existing.title !== title) {
-        updateDocumentTitle(db, existing.id, title, now);
+        updateDocumentTitle(db, existing.id, title, mtime);
         return "updated";
       }
+      // Same content, new mtime: record it so the next run skips the read.
+      db.prepare(`UPDATE documents SET modified_at = ? WHERE id = ?`).run(
+        mtime,
+        existing.id,
+      );
       return "unchanged";
     }
     insertContent(db, hash, content, now);

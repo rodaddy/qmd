@@ -294,6 +294,24 @@ describe("reindexCollection mtime skip (dev#565)", () => {
     expect(getReindexReadCount() - readsBefore).toBe(1);
   });
 
+  test("a touched file is not re-read on the update after it", async () => {
+    await seedCollection({ "a.md": "# A\n\nalpha" });
+    const later = new Date(Date.now() + 60_000);
+    await utimes(join(collectionDir, "a.md"), later, later);
+    await reindexCollection(store, collectionDir, "**/*.md", COLLECTION);
+    const readsBefore = getReindexReadCount();
+
+    const result = await reindexCollection(
+      store,
+      collectionDir,
+      "**/*.md",
+      COLLECTION,
+    );
+
+    expect(result.unchanged).toBe(1);
+    expect(getReindexReadCount() - readsBefore).toBe(0);
+  });
+
   test("changed content with a new mtime ends updated", async () => {
     await seedCollection({ "a.md": "# A\n\nalpha" });
     const before = activeDocs()[0]!;
