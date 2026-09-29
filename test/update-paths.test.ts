@@ -16,7 +16,7 @@ import {
   afterAll,
   beforeEach,
 } from "vitest";
-import { mkdtemp, writeFile, mkdir, unlink } from "node:fs/promises";
+import { mkdtemp, writeFile, mkdir, unlink, utimes } from "node:fs/promises";
 import { join } from "node:path";
 import YAML from "yaml";
 import {
@@ -25,6 +25,7 @@ import {
   reindexPaths,
   getHashesNeedingEmbedding,
   getEmbeddingFingerprint,
+  getReindexReadCount,
   type Store,
   type ReindexTarget,
 } from "../src/store.js";
@@ -256,5 +257,76 @@ describe("reindexPaths embedding staleness", () => {
     expect(getHashesNeedingEmbedding(store.db, COLLECTION, MODEL)).toBe(1);
     const added = activeDocs().find((d) => d.path === "b.md")!;
     expect(vectorRowsFor(added.hash)).toBe(0);
+  });
+});
+
+describe("reindexCollection mtime skip (dev#565)", () => {
+  test("a file whose mtime matches the index is not read again", async () => {
+    await seedCollection({ "a.md": "# A\n\nalpha", "b.md": "# B\n\nbravo" });
+    const readsBefore = getReindexReadCount();
+
+    const result = await reindexCollection(
+      store,
+      collectionDir,
+      "**/*.md",
+      COLLECTION,
+    );
+
+    expect(result.unchanged).toBe(2);
+    expect(getReindexReadCount() - readsBefore).toBe(0);
+  });
+
+  test("a touched file (new mtime, same content) still ends unchanged", async () => {
+    await seedCollection({ "a.md": "# A\n\nalpha" });
+    const later = new Date(Date.now() + 60_000);
+    await utimes(join(collectionDir, "a.md"), later, later);
+    const readsBefore = getReindexReadCount();
+
+    const result = await reindexCollection(
+      store,
+      collectionDir,
+      "**/*.md",
+      COLLECTION,
+    );
+
+    expect(result.unchanged).toBe(1);
+    expect(result.updated).toBe(0);
+    expect(getReindexReadCount() - readsBefore).toBe(1);
+  });
+
+  test("a touched file is not re-read on the update after it", async () => {
+    await seedCollection({ "a.md": "# A\n\nalpha" });
+    const later = new Date(Date.now() + 60_000);
+    await utimes(join(collectionDir, "a.md"), later, later);
+    await reindexCollection(store, collectionDir, "**/*.md", COLLECTION);
+    const readsBefore = getReindexReadCount();
+
+    const result = await reindexCollection(
+      store,
+      collectionDir,
+      "**/*.md",
+      COLLECTION,
+    );
+
+    expect(result.unchanged).toBe(1);
+    expect(getReindexReadCount() - readsBefore).toBe(0);
+  });
+
+  test("changed content with a new mtime ends updated", async () => {
+    await seedCollection({ "a.md": "# A\n\nalpha" });
+    const before = activeDocs()[0]!;
+    await writeFile(join(collectionDir, "a.md"), "# A\n\nalpha rewritten");
+    const later = new Date(Date.now() + 60_000);
+    await utimes(join(collectionDir, "a.md"), later, later);
+
+    const result = await reindexCollection(
+      store,
+      collectionDir,
+      "**/*.md",
+      COLLECTION,
+    );
+
+    expect(result.updated).toBe(1);
+    expect(activeDocs()[0]!.hash).not.toBe(before.hash);
   });
 });
