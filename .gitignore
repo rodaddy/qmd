@@ -34,3 +34,4 @@ finetune/data/train/
 # qmd project-local search index: the database is rebuildable
 # and never committed; the allowlist config is tracked.
 .qmd/
+tests/coverage/
