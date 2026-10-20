@@ -234,8 +234,8 @@ function jsCode(lines: string[]): string[] {
 }
 
 /** One pass per file, however many of its lines are asked about. */
-function perFile(pass: (lines: string[]) => string[]): (lines: string[]) => string[] {
-  const cache = new WeakMap<string[], string[]>();
+function perFile<T>(pass: (lines: string[]) => T): (lines: string[]) => T {
+  const cache = new WeakMap<string[], T>();
   return (lines) => {
     let code = cache.get(lines);
     if (code === undefined) {
@@ -291,32 +291,50 @@ const pyCodeOf = perFile((lines) => {
  */
 export type LineOpener = { kind: "test" | "describe" | "title"; title: string | null; titleLine: number | null };
 
-/** The line closing a multi-line `test.each([...])(` or `` test.each`...`( `` table, up to its `(`. */
-const TABLE_CLOSE = /^\s*[)\]`][)\]\s]*\(/;
 /**
- * A `.each` or `.for` table opener: `test.each([`, `it.runIf(c).each<Row>([`, `it.each(`
- * or `test.each<` ending its line, `` describe.each` ``, `test.for([`.
+ * A `.each` or `.for` table opener: `test.each(`, `it.runIf(c).each<Row>([`,
+ * `test.each<` ending its line, `` describe.each` ``, `test.for(`. It opens a table
+ * when its argument does not close on its line.
  */
-const EACH_OPEN = /(?<![\w.$])(?:test|it|describe)(?:\.\w+(?:\([^()]*\))?)*\.(?:each|for)\s*(?:<.*>\s*)?(\(\s*(?:\[|$)|`|<\s*$)/g;
+const EACH_OPEN = /(?<![\w.$])(?:test|it|describe)(?:\.\w+(?:\([^()]*\))?)*\.(?:each|for)\s*(?:<.*>\s*)?(\(|`|<\s*$)/g;
 
-/** A code line opens an `.each` table that does not close on it. */
-function opensTable(code: string): boolean {
-  for (const m of code.matchAll(EACH_OPEN)) {
-    const at = (m.index ?? 0) + m[0].length - (m[1] as string).length;
-    if (code[at] === "<") return true;
-    if (code[at] === "`" ? code.indexOf("`", at + 1) === -1 : closeParen(code, at) === -1) return true;
-  }
-  return false;
-}
-
-/** Line `i` closes a table: the nearest table opener above it has no other table close between. */
-function closesTable(code: string[], i: number): boolean {
-  for (let j = i - 1; j >= 0; j--) {
-    if (TABLE_CLOSE.test(code[j] as string)) return false;
-    if (opensTable(code[j] as string)) return true;
-  }
-  return false;
-}
+/**
+ * The lines closing a multi-line `.each`/`.for` table, each mapped to the index
+ * just past the `(` its title call opens. A table's argument (`(` or `` ` ``,
+ * after a generic `<...>` spanning lines) is followed over the code lines by
+ * bracket depth to where it closes; that line closes the table only when a `(`
+ * follows the close (`])(`, `}))(`, `` `( ``). A curried `)(` elsewhere never does.
+ */
+const tableCloses = perFile((code) => {
+  const closes = new Map<number, number>();
+  code.forEach((line, j) => {
+    for (const m of line.matchAll(EACH_OPEN)) {
+      const start = (m.index ?? 0) + m[0].length - (m[1] as string).length;
+      let mode = line[start] === "<" ? "angle" : "seek";
+      let depth = 0;
+      scan: for (let i = j, c = start; i < code.length; i++, c = 0) {
+        const s = code[i] as string;
+        for (; c < s.length; c++) {
+          const ch = s[c] as string;
+          if (mode === "angle") {
+            if (ch === "<") depth++;
+            else if (ch === ">" && s[c - 1] !== "=" && --depth === 0) mode = "seek";
+          } else if (mode === "seek") {
+            if (ch === "(") [mode, depth] = ["paren", 1];
+            else if (ch === "`") mode = "tick";
+            else if (ch.trim() !== "") break scan;
+          } else if (mode === "paren" && "([{".includes(ch)) depth++;
+          else if (mode === "paren" ? ")]}".includes(ch) && --depth === 0 : ch === "`") {
+            const next = /^\s*\(/.exec(s.slice(c + 1));
+            if (i !== j && next !== null && !closes.has(i)) closes.set(i, c + 1 + next[0].length);
+            break scan;
+          }
+        }
+      }
+    }
+  });
+  return closes;
+});
 
 /**
  * The tests and describes line `i` of a file opens, openers before subtests. JS/TS: a title
@@ -339,9 +357,9 @@ export function lineOpeners(path: string, lines: string[], i: number): LineOpene
   }
   const code = codeOf(lines)[i] ?? "";
   const found: LineOpener[] = [];
-  const close = TABLE_CLOSE.exec(code);
-  if (close !== null && closesTable(codeOf(lines), i)) {
-    const { title, titleLine } = titleOf(lines, raw, code, i, close[0].length);
+  const tableAt = tableCloses(codeOf(lines)).get(i);
+  if (tableAt !== undefined) {
+    const { title, titleLine } = titleOf(lines, raw, code, i, tableAt);
     if (title !== null) found.push({ kind: "title", title, titleLine });
   }
   for (const m of code.matchAll(JS_OPENER)) {
@@ -524,8 +542,8 @@ function swiftOpeners(lines: string[]): LineOpener[][] {
   return found;
 }
 
-/** A raw string opener, `r"`, `r#"`, `br##"`: its `#`s are part of its close. */
-const RUST_RAW = /b?r(#*)"/y;
+/** A raw string opener, `r"`, `r#"`, `br##"`, `cr#"`: its `#`s are part of its close. */
+const RUST_RAW = /[bc]?r(#*)"/y;
 /** A char literal: `'x'` or one escape (`'\n'`, `'\''`, `'\x7f'`, `'\u{1F600}'`); any other `'` is a lifetime or label. */
 const RUST_CHAR = /'(?:[^'\\\n]|\\(?:x[0-9a-fA-F]{2}|u\{[0-9a-fA-F]{1,6}\}|.))'/uy;
 
