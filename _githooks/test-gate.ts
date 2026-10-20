@@ -109,8 +109,10 @@ function closeParen(code: string, open: number): number {
 /**
  * The index just past the call `(` of an opener whose name ends at `at`, or -1:
  * `test(`, a table `test.each(<balanced>)(` or `` test.each`..`( ``. A table
- * whose `(` does not close on the line is the call itself, as a multi-line
- * `test.each([` is.
+ * whose `(` or `` ` `` does not close on the line is the call itself, as a
+ * multi-line `test.each([` is; its title is on the line closing the table.
+ * An unclosed `` ` `` returns its own index, which `titleOf` reads no title
+ * from, so a first table row holding a string is never judged as one.
  */
 function callOpen(code: string, at: number): number {
   let k = at;
@@ -122,7 +124,7 @@ function callOpen(code: string, at: number): number {
   }
   if (code[k] === "`") {
     const close = code.indexOf("`", k + 1);
-    if (close === -1) return -1;
+    if (close === -1) return k;
     k = close + 1;
   }
   const next = /^\s*\(/.exec(code.slice(k));
@@ -231,16 +233,56 @@ function jsCode(lines: string[]): string[] {
   });
 }
 
-/** One `jsCode` pass per file, however many of its lines are asked about. */
-const codeCache = new WeakMap<string[], string[]>();
-export function codeOf(lines: string[]): string[] {
-  let code = codeCache.get(lines);
-  if (code === undefined) {
-    code = jsCode(lines);
-    codeCache.set(lines, code);
-  }
-  return code;
+/** One pass per file, however many of its lines are asked about. */
+function perFile(pass: (lines: string[]) => string[]): (lines: string[]) => string[] {
+  const cache = new WeakMap<string[], string[]>();
+  return (lines) => {
+    let code = cache.get(lines);
+    if (code === undefined) {
+      code = pass(lines);
+      cache.set(lines, code);
+    }
+    return code;
+  };
 }
+export const codeOf = perFile(jsCode);
+
+/**
+ * A Python file's lines as code, offsets kept: string content blanked
+ * (escapes respected) and a `#` comment dropped. An open triple-quoted string
+ * carries to the next line; an open one-line string only when a trailing `\`
+ * continues it, so a 3.12 f-string nesting quotes (`f"{ "it's" }"`) cannot
+ * leave a bogus string open past its line.
+ */
+const pyCodeOf = perFile((lines) => {
+  let carry = "";
+  return lines.map((line) => {
+    let out = "";
+    let quote = carry;
+    let continued = false;
+    for (let i = 0; i < line.length; i++) {
+      const c = line[i] as string;
+      if (quote !== "") {
+        if (c === "\\") {
+          continued = i + 1 === line.length;
+          out += continued ? " " : "  ";
+          i++;
+        } else if (line.startsWith(quote, i)) {
+          out += quote;
+          i += quote.length - 1;
+          quote = "";
+        } else out += " ";
+      } else if (c === "#") break;
+      else if (c === "'" || c === '"') {
+        quote = line.startsWith(c.repeat(3), i) ? c.repeat(3) : c;
+        out += quote;
+        i += quote.length - 1;
+      } else out += c;
+    }
+    carry = quote.length === 3 || continued ? quote : "";
+    return out;
+  });
+});
 
 /**
  * One test or describe a line opens, with its title and the 0-based line the
@@ -249,8 +291,32 @@ export function codeOf(lines: string[]): string[] {
  */
 export type LineOpener = { kind: "test" | "describe" | "title"; title: string | null; titleLine: number | null };
 
-/** The line closing a multi-line `test.each([...])(` table, up to its `(`. */
-const TABLE_CLOSE = /^\s*[)\]][)\]\s]*\(/;
+/** The line closing a multi-line `test.each([...])(` or `` test.each`...`( `` table, up to its `(`. */
+const TABLE_CLOSE = /^\s*[)\]`][)\]\s]*\(/;
+/**
+ * A `.each` or `.for` table opener: `test.each([`, `it.runIf(c).each<Row>([`, `it.each(`
+ * or `test.each<` ending its line, `` describe.each` ``, `test.for([`.
+ */
+const EACH_OPEN = /(?<![\w.$])(?:test|it|describe)(?:\.\w+(?:\([^()]*\))?)*\.(?:each|for)\s*(?:<.*>\s*)?(\(\s*(?:\[|$)|`|<\s*$)/g;
+
+/** A code line opens an `.each` table that does not close on it. */
+function opensTable(code: string): boolean {
+  for (const m of code.matchAll(EACH_OPEN)) {
+    const at = (m.index ?? 0) + m[0].length - (m[1] as string).length;
+    if (code[at] === "<") return true;
+    if (code[at] === "`" ? code.indexOf("`", at + 1) === -1 : closeParen(code, at) === -1) return true;
+  }
+  return false;
+}
+
+/** Line `i` closes a table: the nearest table opener above it has no other table close between. */
+function closesTable(code: string[], i: number): boolean {
+  for (let j = i - 1; j >= 0; j--) {
+    if (TABLE_CLOSE.test(code[j] as string)) return false;
+    if (opensTable(code[j] as string)) return true;
+  }
+  return false;
+}
 
 /**
  * The tests and describes line `i` of a file opens, openers before subtests. JS/TS: a title
@@ -267,15 +333,16 @@ export function lineOpeners(path: string, lines: string[], i: number): LineOpene
   if (path.endsWith(".rs")) return rustOpeners(lines, i);
   if (path.endsWith(".swift")) return swiftOpeners(lines)[i] ?? [];
   if (!JS_FILE.test(path)) {
-    const name = namedOpener(path)?.exec(raw)?.[1];
+    const line = path.endsWith(".py") ? (pyCodeOf(lines)[i] ?? "") : raw;
+    const name = namedOpener(path)?.exec(line)?.[1];
     return name === undefined ? [] : [{ kind: "test", title: name, titleLine: i }];
   }
   const code = codeOf(lines)[i] ?? "";
   const found: LineOpener[] = [];
   const close = TABLE_CLOSE.exec(code);
-  if (close !== null) {
-    const arg = STRING_ARG.exec(raw.slice(close[0].length));
-    if (arg !== null) found.push({ kind: "title", title: arg[2] as string, titleLine: i });
+  if (close !== null && closesTable(codeOf(lines), i)) {
+    const { title, titleLine } = titleOf(lines, raw, code, i, close[0].length);
+    if (title !== null) found.push({ kind: "title", title, titleLine });
   }
   for (const m of code.matchAll(JS_OPENER)) {
     const start = m.index ?? 0;
@@ -457,19 +524,77 @@ function swiftOpeners(lines: string[]): LineOpener[][] {
   return found;
 }
 
-/** A Rust line with its `/* */` spans and `//` tail removed. */
-const rustCode = (line: string): string => line.replace(/\/\*.*?\*\//g, " ").replace(/\/\/.*$/, "");
+/** A raw string opener, `r"`, `r#"`, `br##"`: its `#`s are part of its close. */
+const RUST_RAW = /b?r(#*)"/y;
+/** A char literal: `'x'` or one escape (`'\n'`, `'\''`, `'\x7f'`, `'\u{1F600}'`); any other `'` is a lifetime or label. */
+const RUST_CHAR = /'(?:[^'\\\n]|\\(?:x[0-9a-fA-F]{2}|u\{[0-9a-fA-F]{1,6}\}|.))'/uy;
+
+/**
+ * A Rust file's lines as code, offsets kept: `/* *\/` comments blanked
+ * (nesting, across lines), `//` tails removed, and the content of strings
+ * (`"..."` with escapes, raw `r#"..."#`, both across lines) and char literals blanked.
+ */
+const rustCodeOf = perFile((lines) => {
+  let depth = 0;
+  // The delimiter closing an open string, and whether `\` escapes inside it.
+  let close = "";
+  let escapes = false;
+  return lines.map((line) => {
+    let out = "";
+    for (let i = 0; i < line.length; ) {
+      if (close !== "") {
+        if (escapes && line[i] === "\\") {
+          out += i + 1 < line.length ? "  " : " ";
+          i += 2;
+        } else if (line.startsWith(close, i)) {
+          out += close;
+          i += close.length;
+          close = "";
+        } else {
+          out += " ";
+          i++;
+        }
+        continue;
+      }
+      if (depth === 0 && line.startsWith("//", i)) break;
+      if (line.startsWith("/*", i)) depth++;
+      else if (depth > 0 && line.startsWith("*/", i)) depth--;
+      else if (depth > 0) {
+        out += " ";
+        i++;
+        continue;
+      } else {
+        RUST_RAW.lastIndex = i;
+        RUST_CHAR.lastIndex = i;
+        const raw = /\w/.test(line[i - 1] ?? "") ? null : RUST_RAW.exec(line);
+        const char = raw === null ? RUST_CHAR.exec(line) : null;
+        if (raw !== null) [out, i, close, escapes] = [out + raw[0], i + raw[0].length, `"${raw[1]}`, false];
+        else if (char !== null) [out, i] = [`${out}'${" ".repeat(char[0].length - 2)}'`, i + char[0].length];
+        else {
+          if (line[i] === '"') [close, escapes] = ['"', true];
+          out += line[i];
+          i++;
+        }
+        continue;
+      }
+      out += "  ";
+      i += 2;
+    }
+    return out;
+  });
+});
 
 /** The test a Rust line's attribute opens, titled by its `fn` name. */
 function rustOpeners(lines: string[], i: number): LineOpener[] {
-  const code = rustCode(lines[i] ?? "");
+  const rustCode = rustCodeOf(lines);
+  const code = rustCode[i] ?? "";
   const attr = RUST_TEST.exec(code);
   if (attr === null) return [];
   let j = i;
   let rest = code.slice((attr.index ?? 0) + attr[0].length);
   while (rest.trim() === "" || rest.trim().startsWith("#[")) {
     if (++j >= lines.length) return [{ kind: "test", title: null, titleLine: null }];
-    rest = rustCode(lines[j] as string);
+    rest = rustCode[j] as string;
   }
   const name = RUST_FN.exec(rest)?.[1];
   return [{ kind: "test", title: name ?? null, titleLine: name === undefined ? null : j }];
