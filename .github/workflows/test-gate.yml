@@ -6,8 +6,6 @@
 name: test-gate
 on:
   pull_request:
-permissions:
-  contents: read
 jobs:
   test-gate:
     runs-on: forgejo-mvp
