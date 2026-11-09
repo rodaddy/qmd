@@ -3247,13 +3247,11 @@ function search(query: string, opts: OutputOptions): void {
   // Validate collection filter (supports multiple -c flags)
   // Use default collections if none specified
   const collectionNames = resolveCollectionFilter(opts.collection, true);
-  const singleCollection =
-    collectionNames.length === 1 ? collectionNames[0] : undefined;
 
   // Use large limit for --all, otherwise fetch more than needed and let outputResults filter
   const fetchLimit = opts.all ? 100000 : Math.max(50, opts.limit * 2);
   const results = filterByCollections(
-    searchFTS(db, query, fetchLimit, singleCollection, opts.pathPrefixes),
+    searchFTS(db, query, fetchLimit, collectionNames, opts.pathPrefixes),
     collectionNames,
   );
 
@@ -3306,15 +3304,13 @@ async function vectorSearch(
   // Validate collection filter (supports multiple -c flags)
   // Use default collections if none specified
   const collectionNames = resolveCollectionFilter(opts.collection, true);
-  const singleCollection =
-    collectionNames.length === 1 ? collectionNames[0] : undefined;
 
   checkIndexHealth(store.db);
 
   await withLLMSession(
     async () => {
       let results = await vectorSearchQuery(store, query, {
-        collection: singleCollection,
+        collection: collectionNames,
         pathPrefixes: opts.pathPrefixes,
         limit: opts.all ? 500 : opts.limit || 10,
         minScore: opts.minScore || 0.3,
@@ -3374,8 +3370,6 @@ async function querySearch(
   // Validate collection filter (supports multiple -c flags)
   // Use default collections if none specified
   const collectionNames = resolveCollectionFilter(opts.collection, true);
-  const singleCollection =
-    collectionNames.length === 1 ? collectionNames[0] : undefined;
 
   checkIndexHealth(store.db);
 
@@ -3408,7 +3402,7 @@ async function querySearch(
         process.stderr.write(`${c.dim}└─ Searching...${c.reset}\n`);
 
         results = await structuredSearch(store, structuredQueries, {
-          collections: singleCollection ? [singleCollection] : undefined,
+          collections: collectionNames.length > 0 ? collectionNames : undefined,
           pathPrefixes: opts.pathPrefixes,
           limit: opts.all ? 500 : opts.limit || 10,
           minScore: opts.minScore || 0,
@@ -3441,7 +3435,7 @@ async function querySearch(
       } else {
         // Standard hybrid query with automatic expansion
         results = await hybridQuery(store, query, {
-          collection: singleCollection,
+          collection: collectionNames,
           pathPrefixes: opts.pathPrefixes,
           limit: opts.all ? 500 : opts.limit || 10,
           minScore: opts.minScore || 0,

@@ -463,7 +463,7 @@ export async function createStore(options: StoreOptions): Promise<QMDStore> {
 
       // Simple query string — use hybridQuery (expand + search + rerank)
       return hybridQuery(internal, opts.query!, {
-        collection: collections[0],
+        collection: collections,
         pathPrefixes: opts.pathPrefixes,
         limit: opts.limit,
         minScore: opts.minScore,

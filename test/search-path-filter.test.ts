@@ -177,13 +177,9 @@ describe("searchFTS with a path filter", () => {
   const paths = (rows: { displayPath: string }[]): string[] =>
     rows.map((r) => r.displayPath.replace(/^Development\//, "")).sort();
 
-  test("no filter returns every match (unchanged behaviour)", () => {
-    const rows = store.searchFTS("provider key environment", 20);
-    expect(paths(rows)).toEqual(DOCS.map(([p]) => p).sort());
-  });
-
-  test("an undefined or empty prefix list is the same as no filter", () => {
+  test("no filter, or an undefined or empty prefix list, returns every match", () => {
     const none = paths(store.searchFTS("provider key environment", 20));
+    expect(none).toEqual(DOCS.map(([p]) => p).sort());
     expect(
       paths(store.searchFTS("provider key environment", 20, undefined, [])),
     ).toEqual(none);

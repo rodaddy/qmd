@@ -1757,7 +1757,7 @@ export type Store = {
   searchFTS: (
     query: string,
     limit?: number,
-    collectionName?: string,
+    collectionName?: string | string[],
     pathPrefixes?: string[],
     withContext?: boolean,
   ) => SearchResult[];
@@ -1765,7 +1765,7 @@ export type Store = {
     query: string,
     model: string,
     limit?: number,
-    collectionName?: string,
+    collectionName?: string | string[],
     session?: ILLMSession,
     precomputedEmbedding?: number[],
     pathPrefixes?: string[],
@@ -3119,7 +3119,7 @@ export function createStore(dbPath?: string): Store {
     searchFTS: (
       query: string,
       limit?: number,
-      collectionName?: string,
+      collectionName?: string | string[],
       pathPrefixes?: string[],
       withContext?: boolean,
     ) => searchFTS(db, query, limit, collectionName, pathPrefixes, withContext),
@@ -3127,7 +3127,7 @@ export function createStore(dbPath?: string): Store {
       query: string,
       model: string,
       limit?: number,
-      collectionName?: string,
+      collectionName?: string | string[],
       session?: ILLMSession,
       precomputedEmbedding?: number[],
       pathPrefixes?: string[],
@@ -5382,11 +5382,31 @@ export function buildPathFilterClause(
   return { sql: `(${parts.join(" OR ")})`, params };
 }
 
+/**
+ * One or several collections as a SQL filter. Several must filter here, in the
+ * query: filtering after the page limit lets other collections fill the page and
+ * leaves nothing (qmd#41).
+ */
+export function buildCollectionFilterClause(
+  column: string,
+  collections?: string | string[],
+): { sql: string; params: string[] } | null {
+  const names = (
+    Array.isArray(collections) ? collections : [collections]
+  ).filter((c): c is string => Boolean(c));
+  if (names.length === 0) return null;
+  if (names.length === 1) return { sql: `${column} = ?`, params: names };
+  return {
+    sql: `${column} IN (${names.map(() => "?").join(", ")})`,
+    params: names,
+  };
+}
+
 export function searchFTS(
   db: Database,
   query: string,
   limit: number = 20,
-  collectionName?: string,
+  collectionName?: string | string[],
   pathPrefixes?: string[],
   // The pipelines recompute context for the rows they return, so they skip it
   // here: several round trips per row on Postgres (dev#565).
@@ -5414,9 +5434,13 @@ export function searchFTS(
     `;
     const params: (string | number)[] = [tsQuery];
 
-    if (collectionName) {
-      sql += ` AND d.collection = ?`;
-      params.push(String(collectionName));
+    const collectionFilter = buildCollectionFilterClause(
+      "d.collection",
+      collectionName,
+    );
+    if (collectionFilter) {
+      sql += ` AND ${collectionFilter.sql}`;
+      params.push(...collectionFilter.params);
     }
 
     const pathFilter = buildPathFilterClause("d.path", pathPrefixes);
@@ -5475,7 +5499,11 @@ export function searchFTS(
   // index since some will be filtered out. Without either filter we can
   // fetch exactly the requested limit.
   const sqlitePathFilter = buildPathFilterClause("d.path", pathPrefixes);
-  const ftsLimit = collectionName || sqlitePathFilter ? limit * 10 : limit;
+  const collectionFilter = buildCollectionFilterClause(
+    "d.collection",
+    collectionName,
+  );
+  const ftsLimit = collectionFilter || sqlitePathFilter ? limit * 10 : limit;
 
   let sql = `
     WITH fts_matches AS (
@@ -5498,9 +5526,9 @@ export function searchFTS(
     WHERE d.active = 1
   `;
 
-  if (collectionName) {
-    sql += ` AND d.collection = ?`;
-    params.push(String(collectionName));
+  if (collectionFilter) {
+    sql += ` AND ${collectionFilter.sql}`;
+    params.push(...collectionFilter.params);
   }
 
   if (sqlitePathFilter) {
@@ -5628,13 +5656,17 @@ export async function searchVec(
   query: string,
   model: string,
   limit: number = 20,
-  collectionName?: string,
+  collectionName?: string | string[],
   session?: ILLMSession,
   precomputedEmbedding?: number[],
   pathPrefixes?: string[],
   withContext: boolean = true, // see searchFTS
 ): Promise<SearchResult[]> {
   if (!hasVectorIndex(db)) return [];
+  const collectionFilter = buildCollectionFilterClause(
+    "d.collection",
+    collectionName,
+  );
 
   const embedding =
     precomputedEmbedding ?? (await getEmbedding(query, model, true, session));
@@ -5653,7 +5685,7 @@ export async function searchVec(
 
   if (isPostgresDb(db)) {
     const pgPathFilter = buildPathFilterClause("d.path", pathPrefixes);
-    const narrowed = Boolean(collectionName) || Boolean(pgPathFilter);
+    const narrowed = Boolean(collectionFilter) || Boolean(pgPathFilter);
 
     // THE UNFILTERED PATH TAKES ITS NEIGHBOURS FROM THE HNSW INDEX FIRST.
     //
@@ -5703,7 +5735,7 @@ export async function searchVec(
     // collection that cannot fill it from k=800 falls through to the exact arm,
     // which is cheap for a small collection. A path prefix still goes exact:
     // that arm is fast and exact over `idx_documents_path`.
-    const collectionOnly = Boolean(collectionName) && !pgPathFilter;
+    const collectionOnly = Boolean(collectionFilter) && !pgPathFilter;
     if (!narrowed || collectionOnly) {
       // The over-fetch feeds two separate reductions: chunks collapse to
       // documents, and inactive documents drop out. `limit * 3` is the existing
@@ -5714,7 +5746,7 @@ export async function searchVec(
       // A collection post-filter discards the other collections' neighbours, so
       // it starts wider: at k=100 the tail of a 10-row page kept 6 of the exact
       // top 10 on one of three live probes (2026-09-29). ef_search follows k.
-      const firstK = Math.max(limit * 3, collectionName ? 300 : 100);
+      const firstK = Math.max(limit * 3, collectionFilter ? 300 : 100);
 
       const knnSql = `
         WITH knn AS (
@@ -5737,7 +5769,7 @@ export async function searchVec(
           knn.distance
         FROM knn
         JOIN content_vectors cv ON cv.hash = knn.hash AND cv.seq = knn.seq
-        JOIN documents d ON d.hash = cv.hash AND d.active = 1${collectionName ? " AND d.collection = ?" : ""}
+        JOIN documents d ON d.hash = cv.hash AND d.active = 1${collectionFilter ? ` AND ${collectionFilter.sql}` : ""}
         ORDER BY knn.distance ASC
       `;
 
@@ -5759,14 +5791,14 @@ export async function searchVec(
           embeddingParam,
           k,
         ];
-        if (collectionName) params.push(collectionName);
+        if (collectionFilter) params.push(...collectionFilter.params);
         return db.transaction(() => {
           db.prepare(`SET LOCAL hnsw.ef_search = ${efSearch}`).run();
           return db.prepare(knnSql).all(...params) as PgVecRow[];
         })() as unknown as PgVecRow[];
       };
 
-      if (!collectionName) {
+      if (!collectionFilter) {
         return dedupePgVecRows(db, knnRows(firstK), limit, withContext);
       }
       for (let k = firstK; k <= 800; k *= 2) {
@@ -5800,9 +5832,9 @@ export async function searchVec(
     // Both filters are optional, so the WHERE keyword is emitted by whichever
     // conjunct comes first rather than being hard-wired to the collection one.
     const conjuncts: string[] = [];
-    if (collectionName) {
-      conjuncts.push(`d.collection = ?`);
-      params.push(collectionName);
+    if (collectionFilter) {
+      conjuncts.push(collectionFilter.sql);
+      params.push(...collectionFilter.params);
     }
     const pathFilter = buildPathFilterClause("d.path", pathPrefixes);
     if (pathFilter) {
@@ -5896,9 +5928,9 @@ export async function searchVec(
   `;
   const params: string[] = [...hashSeqs];
 
-  if (collectionName) {
-    docSql += ` AND d.collection = ?`;
-    params.push(collectionName);
+  if (collectionFilter) {
+    docSql += ` AND ${collectionFilter.sql}`;
+    params.push(...collectionFilter.params);
   }
 
   if (sqlitePathFilter) {
@@ -7349,7 +7381,7 @@ export interface SearchHooks {
 }
 
 export interface HybridQueryOptions {
-  collection?: string;
+  collection?: string | string[];
   /** Restrict to documents whose path starts with any of these prefixes (OR). */
   pathPrefixes?: string[];
   limit?: number; // default 10
@@ -7802,7 +7834,7 @@ export async function hybridQuery(
 }
 
 export interface VectorSearchOptions {
-  collection?: string;
+  collection?: string | string[];
   /** Restrict to documents whose path starts with any of these prefixes (OR). */
   pathPrefixes?: string[];
   limit?: number; // default 10
