@@ -2138,6 +2138,8 @@ export async function reindexCollection(
   options?: {
     ignorePatterns?: string[];
     onProgress?: (info: ReindexProgress) => void;
+    /** Only index (and deactivate) documents whose path starts with one of these. */
+    pathPrefixes?: string[];
   },
 ): Promise<ReindexResult> {
   const db = store.db;
@@ -2149,11 +2151,17 @@ export async function reindexCollection(
     mark = t;
     return ms;
   };
-  const files = await listCollectionFiles(
-    collectionPath,
-    globPattern,
-    options?.ignorePatterns,
-  );
+  const prefixes = (options?.pathPrefixes ?? []).filter((p) => p.length > 0);
+  const inScope = (path: string): boolean =>
+    prefixes.length === 0 || prefixes.some((p) => path.startsWith(p));
+  // shortcut: the walk still lists the whole collection and filters after; scope the glob cwd if listing gets slow.
+  const files = (
+    await listCollectionFiles(
+      collectionPath,
+      globPattern,
+      options?.ignorePatterns,
+    )
+  ).filter((file) => inScope(normalizePathSeparators(file)));
 
   const total = files.length;
   let indexed = 0,
@@ -2193,7 +2201,7 @@ export async function reindexCollection(
   const allActive = getActiveDocumentPaths(db, collectionName);
   let removed = 0;
   for (const path of allActive) {
-    if (!seenPaths.has(path)) {
+    if (inScope(path) && !seenPaths.has(path)) {
       deactivateDocument(db, collectionName, path);
       removed++;
     }
@@ -2380,6 +2388,8 @@ export type EmbedOptions = {
    * When omitted, all pending documents across every collection are embedded.
    */
   collection?: string;
+  /** Restrict embedding to documents whose path starts with one of these. */
+  pathPrefixes?: string[];
   maxDocsPerBatch?: number;
   maxBatchBytes?: number;
   chunkStrategy?: ChunkStrategy;
@@ -2503,8 +2513,10 @@ function getPendingEmbeddingDocs(
   db: Database,
   collection?: string,
   model: string = DEFAULT_EMBED_MODEL,
+  pathPrefixes?: string[],
 ): PendingEmbeddingDoc[] {
   const collectionFilter = collection ? `AND d.collection = ?` : ``;
+  const pathFilter = buildPathFilterClause("d.path", pathPrefixes);
   // Byte length of the document body. SQLite spells it length(CAST(x AS BLOB));
   // Postgres has no BLOB type and spells it octet_length(). Both are wrapped in
   // an aggregate because the query groups by d.hash and c.doc is not a grouping
@@ -2527,13 +2539,15 @@ function getPendingEmbeddingDocs(
       WHERE d.active = 1
         AND (v.hash IS NULL OR v.chunk_count < v.expected_chunks)
         ${collectionFilter}
+        ${pathFilter ? `AND ${pathFilter.sql}` : ``}
       GROUP BY d.hash
       ORDER BY MIN(d.path)
     `);
-    return (
-      collection
-        ? stmt.all(model, fingerprint, collection)
-        : stmt.all(model, fingerprint)
+    return stmt.all(
+      model,
+      fingerprint,
+      ...(collection ? [collection] : []),
+      ...(pathFilter?.params ?? []),
     ) as PendingEmbeddingDoc[];
   });
 }
@@ -2618,7 +2632,12 @@ export async function generateEmbeddings(
     clearAllEmbeddings(db, options?.collection);
   }
 
-  const docsToEmbed = getPendingEmbeddingDocs(db, options?.collection, model);
+  const docsToEmbed = getPendingEmbeddingDocs(
+    db,
+    options?.collection,
+    model,
+    options?.pathPrefixes,
+  );
 
   if (docsToEmbed.length === 0) {
     return {
@@ -3470,8 +3489,10 @@ export function getHashesNeedingEmbedding(
   db: Database,
   collection?: string,
   model: string = DEFAULT_EMBED_MODEL,
+  pathPrefixes?: string[],
 ): number {
   const collectionFilter = collection ? `AND d.collection = ?` : ``;
+  const pathFilter = buildPathFilterClause("d.path", pathPrefixes);
   const fingerprint = getEmbeddingFingerprint(model);
   return withLazyContentVectorMigration(db, () => {
     const stmt = db.prepare(`
@@ -3486,11 +3507,13 @@ export function getHashesNeedingEmbedding(
       WHERE d.active = 1
         AND (v.hash IS NULL OR v.chunk_count < v.expected_chunks)
         ${collectionFilter}
+        ${pathFilter ? `AND ${pathFilter.sql}` : ``}
     `);
-    const result = (
-      collection
-        ? stmt.get(model, fingerprint, collection)
-        : stmt.get(model, fingerprint)
+    const result = stmt.get(
+      model,
+      fingerprint,
+      ...(collection ? [collection] : []),
+      ...(pathFilter?.params ?? []),
     ) as { count: number };
     return result.count;
   });

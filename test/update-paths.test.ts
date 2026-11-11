@@ -331,40 +331,31 @@ describe("reindexCollection mtime skip (dev#565)", () => {
     expect(getReindexReadCount() - readsBefore).toBe(0);
   });
 
-  test("a touched file (new mtime, same content) still ends unchanged", async () => {
+  test("a touched file (new mtime, same content) is read once, then not again", async () => {
     await seedCollection({ "a.md": "# A\n\nalpha" });
     const later = new Date(Date.now() + 60_000);
     await utimes(join(collectionDir, "a.md"), later, later);
-    const readsBefore = getReindexReadCount();
 
-    const result = await reindexCollection(
-      store,
-      collectionDir,
-      "**/*.md",
-      COLLECTION,
-    );
-
-    expect(result.unchanged).toBe(1);
-    expect(result.updated).toBe(0);
-    expect(getReindexReadCount() - readsBefore).toBe(1);
-  });
-
-  test("a touched file is not re-read on the update after it", async () => {
-    await seedCollection({ "a.md": "# A\n\nalpha" });
-    const later = new Date(Date.now() + 60_000);
-    await utimes(join(collectionDir, "a.md"), later, later);
-    await reindexCollection(store, collectionDir, "**/*.md", COLLECTION);
-    const readsBefore = getReindexReadCount();
-
-    const result = await reindexCollection(
-      store,
-      collectionDir,
-      "**/*.md",
-      COLLECTION,
-    );
-
-    expect(result.unchanged).toBe(1);
-    expect(getReindexReadCount() - readsBefore).toBe(0);
+    // One row per consecutive walk: the first re-reads to confirm the hash,
+    // the second trusts the mtime the first stored.
+    const walks = [
+      { unchanged: 1, updated: 0, reads: 1 },
+      { unchanged: 1, updated: 0, reads: 0 },
+    ];
+    for (const expected of walks) {
+      const readsBefore = getReindexReadCount();
+      const result = await reindexCollection(
+        store,
+        collectionDir,
+        "**/*.md",
+        COLLECTION,
+      );
+      expect({
+        unchanged: result.unchanged,
+        updated: result.updated,
+        reads: getReindexReadCount() - readsBefore,
+      }).toEqual(expected);
+    }
   });
 
   test("changed content with a new mtime ends updated", async () => {

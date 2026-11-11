@@ -825,7 +825,10 @@ function formatTimings(t: ReindexTimings): string {
     .join(", ");
 }
 
-async function updateCollections(only: string[] = []): Promise<void> {
+async function updateCollections(
+  only: string[] = [],
+  pathPrefixes?: string[],
+): Promise<void> {
   const updateStart = performance.now();
   const db = getDb();
   const storeInstance = getStore();
@@ -950,6 +953,7 @@ async function updateCollections(only: string[] = []): Promise<void> {
       col.name,
       {
         ignorePatterns: yamlCol?.ignore,
+        pathPrefixes,
         onProgress: (info) => {
           progress.set((info.current / info.total) * 100);
           const elapsed = (Date.now() - startTime) / 1000;
@@ -2467,6 +2471,7 @@ async function vectorIndex(
     chunkStrategy?: ChunkStrategy;
     collection?: string;
     maxDurationMs?: number;
+    pathPrefixes?: string[];
   },
 ): Promise<void> {
   const storeInstance = getStore();
@@ -2483,6 +2488,7 @@ async function vectorIndex(
     db,
     batchOptions?.collection,
     model,
+    batchOptions?.pathPrefixes,
   );
   if (hashesToEmbed === 0 && !force) {
     console.log(
@@ -2514,6 +2520,7 @@ async function vectorIndex(
     force,
     model,
     collection: batchOptions?.collection,
+    pathPrefixes: batchOptions?.pathPrefixes,
     maxDocsPerBatch: batchOptions?.maxDocsPerBatch,
     maxBatchBytes: batchOptions?.maxBatchBytes,
     chunkStrategy: batchOptions?.chunkStrategy,
@@ -4236,10 +4243,16 @@ function showHelp(): void {
     "  qmd update [--pull] [-c <name>] - Re-index collections (optionally git pull first)",
   );
   console.log(
+    "    --path <prefix>             - Only scan/deactivate docs under this path prefix (repeatable)",
+  );
+  console.log(
     "  qmd update <path>...          - Re-index only those files (adds, updates, removes)",
   );
   console.log(
     "  qmd embed [-f] [-c <name>]    - Generate/refresh vector embeddings",
+  );
+  console.log(
+    "    --path <prefix>             - Only embed docs under this path prefix (repeatable, not with -f)",
   );
   console.log(
     "    --max-docs-per-batch <n>    - Cap docs loaded into memory per embedding batch",
@@ -5616,6 +5629,7 @@ if (isMain) {
         // rather than silently reporting success against no collections.
         await updateCollections(
           resolveCollectionFilter(cli.opts.collection, false),
+          cli.opts.pathPrefixes,
         );
       }
       break;
@@ -5645,7 +5659,12 @@ if (isMain) {
           false,
         );
         const embedCollection = embedValidatedCollections[0];
+        // --force clears the whole collection's vectors, not just the prefix.
+        if (cli.opts.pathPrefixes && cli.values.force) {
+          throw new Error("qmd embed: --path cannot be combined with --force");
+        }
         await vectorIndex(resolveEmbedModelForCli(), !!cli.values.force, {
+          pathPrefixes: cli.opts.pathPrefixes,
           maxDocsPerBatch,
           maxBatchBytes:
             maxBatchMb === undefined ? undefined : maxBatchMb * 1024 * 1024,

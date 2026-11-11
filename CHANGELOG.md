@@ -4,6 +4,11 @@
 
 ### Added
 
+- `--path <prefix>` on `update -c <name>` and `embed -c <name>` scopes the
+  re-index (scan and deactivate) and the pending-embed set to documents under
+  the prefix. Without `--path` both are unchanged; `embed --force --path` is
+  refused.
+
 - `--path <prefix>` on `search`, `vsearch` and `query` restricts results to
   documents whose path starts with the prefix. The flag is repeatable and the
   prefixes are OR-ed; a trailing slash scopes to a directory, a full path to a
